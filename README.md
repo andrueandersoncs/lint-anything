@@ -39,15 +39,11 @@ The whole policy file is sent verbatim.
 
 ## How it works
 
-For each file and each policy whose globs match its path, one Clef request asks two yes/no questions over the complete file:
-
-- `applies`: is the policy's subject present?
-- `violates`: does the file break the policy?
+For each file and each policy whose globs match its path, one Clef request asks whether the complete file violates the policy. A policy that doesn't apply to the file scores low and passes.
 
 | Result | Verdict |
 | --- | --- |
 | `violates ≤ 0.55` | `pass` |
-| `applies < 0.70` | `inconclusive` |
 | `violates ≥ --threshold` | `violation` |
 | otherwise | `review` |
 | request over 64,000 bytes | `inconclusive` (Clef would truncate it) |
@@ -57,5 +53,5 @@ Exit codes: `0` no violations, `1` violations, `2` errors.
 ## Develop
 
 ```sh
-bunx tsc --noEmit && bun test
+bunx tsc --noEmit
 ```

@@ -9,18 +9,15 @@ export interface Finding {
   readonly path: string
   readonly policy: string
   readonly verdict: Verdict
-  readonly applies?: number
   readonly violates?: number
   readonly reason?: string
 }
 
 // Calibrated in better-typescript's evals: violation scores at or below 0.55 were mostly false.
 const reviewFloor = 0.55
-const applicabilityGate = 0.7
 
-export const classify = ({ applies, violates }: Judgment, threshold: number): Verdict => {
+export const classify = ({ violates }: Judgment, threshold: number): Verdict => {
   if (violates <= reviewFloor) return "pass"
-  if (applies < applicabilityGate) return "inconclusive"
   return violates >= threshold ? "violation" : "review"
 }
 

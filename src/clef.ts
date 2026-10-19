@@ -5,9 +5,8 @@ import type { SourceFile } from "./source.ts"
 
 export type Model = "clef" | "clef-flash"
 
-/** Probabilities that a policy applies to a file and that the file violates it. */
+/** Probability that the file violates a policy. */
 export interface Judgment {
-  readonly applies: number
   readonly violates: number
 }
 
@@ -25,9 +24,6 @@ export class RequestTooLarge extends Schema.TaggedError<RequestTooLarge>()("Requ
 // Clef's context is 65,536 tokens; one token is at least one byte, so this never truncates.
 const maxRequestBytes = 64_000
 
-const applicability =
-  "Is the subject of this rule present in `file`? Answer yes for any covered operation, even one that complies. Do not decide whether the rule is violated.\n\nRule:\n"
-
 const violation =
   "Decide whether `file`, read in light of `path`, contains at least one violation of the appended rule.\n" +
   "Use only the rule, path, and shown file. First check that the rule applies to this file and the content at issue. For each concrete candidate, test every required condition, qualifier, exception, scope limit, and explicit reporting direction. Answer yes only if one candidate meets the complete violation test.\n" +
@@ -41,7 +37,7 @@ const Noul = Schema.Struct({
 // Workers AI wraps every model response in `result`.
 const ClefResponse = Schema.Struct({
   result: Schema.Struct({
-    answers: Schema.Struct({ applies: Noul, violates: Noul })
+    answers: Schema.Struct({ violates: Noul })
   })
 })
 
@@ -50,14 +46,6 @@ const requestBody = (model: Model, file: SourceFile, policy: Policy) =>
     model,
     state: { path: file.path, file: file.source },
     questions: {
-      applies: {
-        type: "noul",
-        instructions: applicability + policy.source,
-        criteria: {
-          true: "The file contains content of the kind this policy governs, whether it complies or violates.",
-          false: "The file has no content of the kind this policy governs."
-        }
-      },
       violates: { type: "noul", instructions: violation + policy.source }
     }
   })
@@ -98,7 +86,7 @@ export class Clef extends Context.Service<Clef, {
             Effect.flatMap(HttpClientResponse.schemaBodyJson(ClefResponse)),
             Effect.mapError((cause) => new ClefError({ cause }))
           )
-          return { applies: result.answers.applies.noul, violates: result.answers.violates.noul }
+          return { violates: result.answers.violates.noul }
         })
 
         return Clef.of({ judge })

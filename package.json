@@ -1,0 +1,16 @@
+{
+  "name": "lint-anything",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "4.0.5",
+    "effect": "4.0.5"
+  }
+}

@@ -1,14 +1,10 @@
-// Measures policy `examples`. (a) Few-shot: do labeled examples in a policy make Clef judge its items
-// better? Each corpus selector policy gets examples from the other split, and the split's items are scored
-// with and without them. (b) `lint-anything check`: does judging a policy's examples against its rule
-// (without them) catch a badly worded rule? Each policy is checked in its original wording and in three
-// corrupted ones, on examples from dev.
+// Measures policy `examples` as few-shot: do labeled examples in a policy make Clef judge its items better?
+// Each corpus selector policy gets examples from the other split, and the split's items are scored with and
+// without them.
 //   bun evals/examples.ts [--concurrency 8]
 import { Effect } from "effect"
-import { outcomeOf } from "../src/check.ts"
-import type { Item } from "../src/item.ts"
-import { itemReviewFloor, defaultItemThreshold, verdictOf } from "../src/lint.ts"
-import { parsePolicy, type Policy, withoutExamples } from "../src/policy.ts"
+import { itemReviewFloor, defaultItemThreshold } from "../src/lint.ts"
+import { parsePolicy, type Policy } from "../src/policy.ts"
 import { makeClient } from "./client.ts"
 import { corpusDirectory, loadCorpus } from "./corpus.ts"
 import { auroc, brier, pairedInterval, quality, type Scored } from "./metrics.ts"
@@ -97,49 +93,4 @@ for (const split of ["dev", "test"] as const) {
         `${percent(q.caught)} / ${percent(q.surfaced)} / ${percent(q.falseAlarms)} | $${costPerThousand(tokens(run), scored.length).toFixed(3)} |`)
     }
   }
-}
-
-// --- (b) check on corrupted wordings --------------------------------------------------------------
-
-const bodyOf = (policy: Policy) => policy.source.replace(/^---\r?\n.*?\r?\n---(?:\r?\n|$)/s, "")
-const titleOf = (policy: Policy) => bodyOf(policy).split("\n").find((line) => line.startsWith("# ")) ?? "# Rule"
-const policies = set.policies.map(({ policy }) => policy)
-const variants = (policy: Policy, index: number): Array<[string, string]> => [
-  ["original", bodyOf(policy)],
-  // Another policy's rule under this policy's examples: the rule is about something else entirely.
-  ["another policy's rule", bodyOf(policies[(index + 1) % policies.length]!)],
-  ["inverted", `${titleOf(policy)}\n\nThe rule below is inverted: report code that follows it, and accept code that breaks it.\n\n${bodyOf(policy).replace(/^# .*\n/, "")}`],
-  ["title only", `${titleOf(policy)}\n`]
-]
-
-console.log("\n(b) check: 3 violating + 3 clean examples from dev (fixed pseudo-random), judged against each wording without the examples in the rule.")
-console.log("| Policy | Wording | Agree | Unsure | Disagree | check |")
-console.log("|---|---|---|---|---|---|")
-const tally = new Map<string, { failed: number; total: number; agree: number; examples: number }>()
-for (const [index, policy] of policies.entries()) {
-  const examples = pickExamples(policy.name, "dev", "typical")
-  for (const [wording, body] of variants(policy, index)) {
-    const rule = withoutExamples(withExamples(policy, examples, body))
-    const items: Array<ItemCase> = examples.map((example, slot) => {
-      const entry: Item = { id: `example ${slot + 1}`, text: example.text, evidence: [] }
-      return { id: `${policy.name}:${wording}:${slot}`, file: { id: policy.name } as ItemCase["file"], policy: rule, gold: { label: example.violates ? "violates" : "complies", note: "" }, entry }
-    })
-    const run = await scoreItems(ask, items, productionPlan)
-    const outcomes = run.scored.map((scored, slot) =>
-      outcomeOf(examples[slot]!.violates, verdictOf(scored.score ?? 0, itemReviewFloor, defaultItemThreshold)))
-    const count = (outcome: string) => outcomes.filter((value) => value === outcome).length
-    const failed = count("disagree") > 0
-    const entry = tally.get(wording) ?? { failed: 0, total: 0, agree: 0, examples: 0 }
-    tally.set(wording, {
-      failed: entry.failed + (failed ? 1 : 0),
-      total: entry.total + 1,
-      agree: entry.agree + count("agree"),
-      examples: entry.examples + outcomes.length
-    })
-    console.log(`| ${policy.name.replace(/^(semantic|control)\//, "")} | ${wording} | ${count("agree")} | ${count("unsure")} | ${count("disagree")} | ${failed ? "fails" : "passes"} |`)
-  }
-}
-console.log("\n| Wording | Policies whose check fails | Examples that agree |\n|---|---|---|")
-for (const [wording, { failed, total, agree, examples }] of tally) {
-  console.log(`| ${wording} | ${failed} / ${total} | ${agree} / ${examples} (${((100 * agree) / examples).toFixed(0)}%) |`)
 }

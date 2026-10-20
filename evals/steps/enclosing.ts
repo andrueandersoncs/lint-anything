@@ -1,5 +1,7 @@
+// Eval selector step: `bun "$EVAL_STEPS/enclosing.ts"` adds each item's enclosing block as `enclosing`
+// evidence (JSONL in, JSONL out). Paths are read from the current directory.
 import { Effect } from "effect"
-import { itemStep, SelectorError } from "./select.ts"
+import { runStep } from "./step.ts"
 
 const indent = (line: string) => line.length - line.trimStart().length
 const numbered = (lines: ReadonlyArray<string>, from: number, to: number) =>
@@ -36,24 +38,15 @@ export const enclosingBlock = (lines: ReadonlyArray<string>, [start, end]: reado
   return `no enclosing block; lines ${end + 1}-${to} follow:\n${numbered(lines, end + 1, to)}`
 }
 
-/**
- * `lint-anything enclosing`: reads items (JSONL) on stdin and writes them back with an `enclosing`
- * evidence field for each item that has a `path` and `lines`. Paths are read from the current directory.
- */
-export const enclosing = () => {
-  const files = new Map<string, ReadonlyArray<string>>()
-  return itemStep("enclosing", (items) =>
-    Effect.forEach(items, (item) =>
-      Effect.gen(function*() {
-        if (item.path === undefined || item.lines === undefined) return item
-        const path = item.path
-        if (!files.has(path)) {
-          const source = yield* Effect.tryPromise({
-            try: () => Bun.file(path).text(),
-            catch: () => new SelectorError({ message: `enclosing: cannot read ${path}` })
-          })
-          files.set(path, source.split("\n"))
-        }
-        return { ...item, evidence: [...item.evidence, ["enclosing", enclosingBlock(files.get(path)!, item.lines)] as const] }
-      })))
-}
+const files = new Map<string, ReadonlyArray<string>>()
+await runStep("enclosing", (items) =>
+  Effect.forEach(items, (item) =>
+    Effect.gen(function*() {
+      if (item.path === undefined || item.lines === undefined) return item
+      const path = item.path
+      if (!files.has(path)) {
+        const source = yield* Effect.tryPromise({ try: () => Bun.file(path).text(), catch: () => new Error(`cannot read ${path}`) })
+        files.set(path, source.split("\n"))
+      }
+      return { ...item, evidence: [...item.evidence, ["enclosing", enclosingBlock(files.get(path)!, item.lines)] as const] }
+    })))

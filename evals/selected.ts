@@ -10,6 +10,9 @@ import { type Case, type Corpus, corpusDirectory } from "./corpus.ts"
 import type { Scored } from "./metrics.ts"
 import { inputTokenPrice } from "./strategy.ts"
 
+// Eval selectors call helper steps as `bun "$EVAL_STEPS/<step>.ts"` (see evals/steps/).
+process.env.EVAL_STEPS = `${import.meta.dir}/steps`
+
 export type SelectPolicy = Policy & { readonly select: string }
 
 /** A directory of selector policies, each adding a `select` to the corpus policy of the same name. */

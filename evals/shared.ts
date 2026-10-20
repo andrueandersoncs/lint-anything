@@ -15,6 +15,7 @@ import { readSources } from "../src/source.ts"
 const directory = mkdtempSync(join(tmpdir(), "lint-anything-shared-"))
 const log = join(directory, "runs.log")
 process.env.RUNS_LOG = log
+process.env.EVAL_STEPS = `${import.meta.dir}/steps`
 const rules = ["Names describe intent.", "Comments explain why.", "Values that carry meaning are named.",
   "Errors keep their context.", "Functions do one thing.", "Exports are minimal."]
 const policies = rules.map((rule, index) =>
@@ -26,7 +27,7 @@ select: |
   echo select >> "$RUNS_LOG"
   rg --json -w 'const' "$@" |
     jq -c 'select(.type == "match") | {id: "\\(.data.path.text):\\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number], text: (.data.lines.text | rtrimstr("\\n"))}' |
-    $LINT_ANYTHING enclosing
+    bun "$EVAL_STEPS/enclosing.ts"
 ---
 # Rule ${index}
 
@@ -36,8 +37,7 @@ ${rule} The repository has {{files}} files.
 // Every judgment scores 0.1; this eval measures the steps, not Clef.
 const stub = Layer.succeed(Clef, Clef.of({
   judge: (_, applicable) => Effect.succeed(applicable.map(() => Result.succeed({ violates: 0.1 }))),
-  judgeItems: (_, items) => Effect.succeed(items.map(() => Result.succeed({ violates: 0.1 }))),
-  stats: Effect.succeed({ requests: 0, cached: 0 })
+  judgeItems: (_, items) => Effect.succeed(items.map(() => Result.succeed({ violates: 0.1 })))
 }))
 
 const started = performance.now()

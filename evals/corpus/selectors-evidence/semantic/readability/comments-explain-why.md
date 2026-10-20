@@ -4,7 +4,7 @@ globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
 select: |
   rg --json -U -P '^(?:[ \t]*(?://|#|/\*|\*).*\n)+.*' "$@" |
     jq -c 'select(.type == "match") | (.data.lines.text | rtrimstr("\n")) as $t | {id: "\(.data.path.text):\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number + ($t | split("\n") | length) - 1], text: $t}' |
-    $LINT_ANYTHING enclosing
+    bun "$EVAL_STEPS/enclosing.ts"
 ---
 # Comments explain why
 

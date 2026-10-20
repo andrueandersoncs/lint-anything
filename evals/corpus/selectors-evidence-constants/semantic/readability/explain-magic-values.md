@@ -7,7 +7,7 @@ evidence:
 select: |
   rg --json -P '(?<![\w.])(?:[2-9]|\d{2,})(?:\.\d+)?(?![\w.])' "$@" |
     jq -c 'select(.type == "match") | (.data.lines.text | rtrimstr("\n")) as $t | {id: "\(.data.path.text):\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number + ($t | split("\n") | length) - 1], text: $t}' |
-    $LINT_ANYTHING enclosing |
+    bun "$EVAL_STEPS/enclosing.ts" |
     jq -c --rawfile c "$EVIDENCE_constants" '(.path + ":") as $p | . + {constants: ([$c | split("\n")[] | select(startswith($p)) | ltrimstr($p)] | if length == 0 then "none" else join("\n") end)}'
 ---
 # Name values that carry meaning

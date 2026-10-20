@@ -4,6 +4,16 @@ globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
 alwaysApply: false
 ---
 
+## User experience is fixed
+
+lint-anything is a CLI; its interface is its user experience. You are FORBIDDEN from changing the user experience without the user's explicit permission. That includes:
+
+- **No CLI flags and no subcommands.** The CLI takes file globs and nothing else. Do not add flags, options, or subcommands, not even "for testing" or "for evals".
+- **No new output.** Do not change what the CLI prints (lines, summary, formats) or its exit codes.
+- **No new side effects.** Do not make the CLI write files (caches, reports, baselines) or require new environment variables.
+- **Eval needs stay in `evals/`.** If an eval needs a helper, a switch, or a measurement hook, build it in `evals/` (scripts, stub layers, programmatic calls to `src/`), never as CLI surface.
+- Approval of an idea is not approval of a new flag or command to expose it. If an idea needs new CLI surface, ask first.
+
 Default to using Bun instead of Node.js.
 
 - Use `bun <file>` instead of `node <file>` or `ts-node <file>`

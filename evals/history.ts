@@ -109,8 +109,8 @@ const arms = {
   none: `---\n${select("")}\n---\n${rule}\n`,
   today: `---\n${todayStep}${select("")}\n---\n${rule}\n\nToday is {{today}}.\n`,
   // The commit date alone; Clef has to work out the age.
-  date: `---\n${todayStep}${select(` |\n    $LINT_ANYTHING blame --today ${today} | jq -c '.changed |= (split(",")[0])'`)}\n---\n${rule}\n\nToday is {{today}}.\n`,
-  age: `---\n${todayStep}${select(` |\n    $LINT_ANYTHING blame --today ${today}`)}\n---\n${rule}\n\nToday is {{today}}.\n`
+  date: `---\n${todayStep}${select(` |\n    bun "$EVAL_STEPS/blame.ts" ${today} | jq -c '.changed |= (split(",")[0])'`)}\n---\n${rule}\n\nToday is {{today}}.\n`,
+  age: `---\n${todayStep}${select(` |\n    bun "$EVAL_STEPS/blame.ts" ${today}`)}\n---\n${rule}\n\nToday is {{today}}.\n`
 }
 
 // --- Run ------------------------------------------------------------------------------------------

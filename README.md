@@ -11,23 +11,7 @@ echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
 bun index.ts 'src/**/*.ts'
 ```
 
-Pass one or more globs. They are expanded relative to the current directory, deduplicated, and read whole. Scope them (for example `src/**/*.ts`, not `**/*`) to avoid `node_modules`.
-
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--rules-dir` | `.lint-anything/rules` | Policy directory |
-| `--threshold` | `0.45` | Violation probability (0–1) that fails the run, for policies judged per file |
-| `--item-threshold` | `0.65` | Violation probability (0–1) that fails the run, for items a selector emits |
-| `--model` | `clef` | `clef` or `clef-flash` |
-| `--json` | off | Print every finding as JSON |
-| `--cache` | `.lint-anything/cache` | Directory that caches Clef's answers across runs (add it to `.gitignore`) |
-| `--no-cache` | off | Neither read nor write the cache |
-| `--changed-since <ref>` | – | Judge only files that changed since a git ref (plus untracked files), and only selector items whose lines changed |
-| `--write-baseline <file>` | – | Record every non-passing finding as accepted in this file, and exit `0` |
-| `--baseline <file>` | – | Accept the findings recorded in this file; only new ones are reported and fail the run |
-| `--sarif <file>` | – | Also write the findings to this file as SARIF 2.1.0, for GitHub code scanning |
-
-`lint-anything check` takes the shared flags (`--rules-dir`, the thresholds, `--model`, `--json`, the cache), without file globs (see Examples and `check`).
+Pass one or more globs; the CLI takes nothing else. They are expanded relative to the current directory, deduplicated, and read whole. Scope them (for example `src/**/*.ts`, not `**/*`) to avoid `node_modules`. Policies are read from `.lint-anything/rules`, judged by the `clef` model, and printed as text.
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
@@ -36,11 +20,6 @@ Pass one or more globs. They are expanded relative to the current directory, ded
 | `CLOUDFLARE_API_BASE_URL` | no | Defaults to `https://api.cloudflare.com/client/v4` |
 
 Bun loads `.env` automatically.
-
-### Adopting rules on existing code
-
-- `--write-baseline lint-baseline.json` once, then `--baseline lint-baseline.json` on every run: what was already there is accepted and only new findings fail. An item finding is identified by its policy, path, and a fingerprint of its text (whitespace collapsed), not its lines, so moving code keeps it accepted; two accepted copies of the same text accept two findings. A whole-file finding is identified by policy and path, so a new violation in a file already accepted for that policy is not reported. The summary counts accepted findings and baseline entries that matched nothing (fixed, or gone).
-- `--changed-since origin/main` limits a run to what a branch changed: whole-file policies judge only changed files, and selectors get only changed files as arguments and keep only items whose lines changed. Items without a path (commit messages, say) are always kept.
 
 ## Policies
 
@@ -97,14 +76,7 @@ Every `TODO` or `FIXME` comment must reference a tracking issue, written as `#12
 
 Evidence is what Clef reads next to the thing it judges. There are two kinds.
 
-**Item evidence.** A selector can pipe its items through steps that add fields. Selectors run with `$LINT_ANYTHING` set to the command that runs this CLI, whose built-in steps read items as JSONL on stdin and write them back with a field added:
-
-| Step | Adds |
-| --- | --- |
-| `$LINT_ANYTHING enclosing` | `enclosing`: the block around each item with `path` and `lines` — the nearest less-indented line above that opens a function, method, class, or block, down to where it closes, numbered and capped at 80 lines. With no such block, the 15 lines after the item. |
-| `$LINT_ANYTHING blame [--today YYYY-MM-DD]` | `changed`: when the item's lines last changed in git and how long ago, e.g. `2026-07-22, 90 days before 2026-10-20`. Items git has no committed history for get no field. |
-
-Any program that reads and writes JSONL items works as a step.
+**Item evidence.** A selector can pipe its items through further programs that add fields. Any program that reads JSONL items on stdin and writes them back with a field added works as a step; `evals/steps/` has two, used by the evals: `enclosing.ts` (the block around each item) and `blame.ts` (when the item's lines last changed in git, and how many days ago).
 
 **Shared evidence.** `evidence` steps in the frontmatter are shell commands that run before the selector (or, for a policy without one, before its files are judged), in order, with the same arguments. Each step's output is available to every later step and to `select` as the file `$EVIDENCE_<name>`, and the rule text can include it as `{{name}}`:
 
@@ -115,7 +87,7 @@ evidence:
   today: date +%F
 select: |
   rg --json -w 'TODO|FIXME' "$@" | jq -c '…' |
-    $LINT_ANYTHING blame
+    ./scripts/add-commit-age.sh
 ---
 # Old TODOs reference an issue
 
@@ -149,7 +121,7 @@ violation     -      src/many.ts  todos  4 of 4 items violate the rule (at most 
 
 Write the rule about one item, and put the count in `limit`: Clef judges items well and counts badly (see Evals). Items in `review` are mentioned in the reason but not counted. `limit` needs `select`.
 
-### Examples and `check`
+### Examples
 
 A policy can carry labeled examples: items (for a selector policy) or files (for a policy judged per file) with `violates: true` or `false`. Each example takes the item fields (`text`, and optionally `id`, `path`, `lines`, and evidence fields such as `enclosing`, which a selector would otherwise have added).
 
@@ -169,16 +141,7 @@ examples:
 Every `TODO` or `FIXME` comment must reference a tracking issue.
 ````
 
-- Examples are part of the policy file, so Clef reads them with the rule on every request: they work as few-shot examples (a small gain in the evals).
-- `lint-anything check [--rules-dir …]` judges each policy's examples against the rule with the examples removed, so the wording alone has to get them right, using the same request shape and cut-offs as linting. Each example `agree`s (a violating example is a `violation`, a clean one passes), is `unsure` (`review`), or `disagree`s; any disagreement exits `1`.
-
-```
-agree      0.99   no-debugger  example 1 (violates): violation
-disagree   0.02   no-debugger  example 2 (violates): pass
-2 examples: 1 agree, 0 unsure, 1 disagree
-```
-
-- `check` catches a rule that's about the wrong thing, but not every bad wording: in the evals, Clef judged by a rule's topic and ignored an added "this rule is inverted" (see Evals).
+Examples are part of the policy file, so Clef reads them with the rule on every request: they work as few-shot examples (a small gain in the evals).
 
 ## How it works
 
@@ -186,33 +149,31 @@ Each file is paired with every policy without a selector whose globs match its p
 
 Selector policies run after the files, one at a time. Each request carries short guidance and the rule once, plus one yes/no question per item showing its location, context, and text: does the item violate the rule? Each item gets its own finding.
 
-A request holds at most 64 questions (Clef's limit) and 64,000 bytes (24,000 with `clef-flash`, whose context window is smaller). Policies or items that don't fit in one request are split across several. This request shape and the cut-offs below were chosen with the eval suite. Items score higher than whole files, so they have their own cut-offs.
+A request holds at most 64 questions (Clef's limit) and 64,000 bytes. Policies or items that don't fit in one request are split across several. This request shape and the cut-offs below were chosen with the eval suite. Items score higher than whole files, so they have their own cut-offs.
 
 | Result | File verdict | Item verdict |
 | --- | --- | --- |
 | `violates ≤ 0.3` (files) or `≤ 0.5` (items) | `pass` | `pass` |
-| `violates ≥ --threshold` (files) or `--item-threshold` (items) | `violation` | `violation` |
+| `violates ≥ 0.45` (files) or `≥ 0.65` (items) | `violation` | `violation` |
 | otherwise | `review`: uncertain, including cases where careful reviewers would disagree | `review` |
 | request with only that policy or item over the byte limit | `inconclusive` (not sent; Clef would truncate it) | `inconclusive` |
 
 Transient HTTP failures are retried up to 3 times with exponential backoff.
 
-Answers are cached on disk per question, keyed by the model, the request's text (guidance and excerpt, or guidance and rule), and the question (rule, or rendered item). Only questions whose inputs changed are sent: re-running on unchanged files sends nothing, and editing a policy re-asks only that policy. Clef's answer to one question shifts a little with the other questions in its request (see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers; with the cache, an edit in one file also leaves the verdicts of every other file as they were.
+Clef's answer to one question shifts a little with the other questions in its request (see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers.
 
 ## Output
 
-Text output prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the file's path; for an item, its `path:start-end`, or its `id` when it has no path and lines:
+The CLI prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the file's path; for an item, its `path:start-end`, or its `id` when it has no path and lines; a `limit` finding gives its count as the reason:
 
 ```
 violation     0.93   src/a.ts  no-debugger
 violation     0.97   src/a.ts:4-4  todo
 violation     0.97   9acebc18  commits
-3 checks: 3 violation, 0 review, 0 inconclusive, 0 pass (2 requests, 0 cached answers)
+3 checks: 3 violation, 0 review, 0 inconclusive, 0 pass
 ```
 
-`--json` prints `{ "findings": [...], "requests": …, "cached": … }` with every finding, passes included. Each finding has `policy`, `verdict`, and either `violates` or `reason`. A file finding has `path`; an item finding has `item` (its id) and the item's `path` and `lines` when it gave them; a `limit` finding has `violating`, the ids of the items it counted.
-
-Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`. With `--baseline`, accepted findings are left out of the lines, counted in the summary, and never fail the run; JSON findings carry `"accepted": true`, every item finding carries its `fingerprint`, and the summary has `stale` (baseline entries that matched nothing).
+Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -240,11 +201,9 @@ bun evals/items.ts --split test production
 bun evals/compare.ts --split test evals/corpus/selectors evals/corpus/selectors-evidence   # selector sets, policy by policy
 bun evals/history.ts                       # evidence from outside the file: a dated git fixture
 bun evals/shared.ts                        # shared steps run once (stub Clef, no requests)
-bun evals/examples.ts                      # policy examples: few-shot, and whether check catches bad wording
+bun evals/examples.ts                      # policy examples as few-shot
 bun evals/cutoffs.ts items                 # per-policy cut-offs tuned on dev vs. global (stored scores)
-bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
-bun evals/adoption.ts                      # --baseline and --changed-since on a generated git repo (stub Clef)
-bun evals/sarif.ts                         # --sarif validates against the SARIF 2.1.0 schema (stub Clef)
+bun evals/packing.ts                       # repeatability of fresh runs (real requests) and batch independence
 bun evals/counts.ts                        # limit vs. asking the count rule of the whole file
 ```
 
@@ -314,80 +273,77 @@ Selector findings, 2026-10-20 (shape and cut-offs chosen on dev; test: 567 items
 
 Each feature that adds evidence or changes how items are judged has an intended purpose, an eval that measures it, and a result. Choices are made on dev and confirmed on test; intervals are 95% paired bootstraps resampling files.
 
-| Feature | Intended purpose | Eval | Result | Shipped |
+| Feature | Intended purpose | Eval | Result | In the CLI |
 | --- | --- | --- | --- | --- |
-| Evidence fields, `$LINT_ANYTHING enclosing` | Items judged better with their surrounding code | `compare.ts` + `selectors-evidence` | Holds: test Brier better on both rules, magic values AUROC +0.002 to +0.051; 2.4–3.4× cost | yes |
-| `evidence` steps, `{{name}}`, `$LINT_ANYTHING blame` | Rules about time and history become judgeable | `history.ts` | Holds: accuracy 63% → 96% with a computed age; Clef can't derive it from dates | yes |
+| Evidence fields on items | Items judged better with their surrounding code | `compare.ts` + `selectors-evidence` | Holds on test: Brier better on both rules; 2.4–3.4× cost | yes |
+| `evidence` steps, `{{name}}` | Rules about time and history become judgeable | `history.ts` | Holds: accuracy 63% → 99% with a computed age; Clef can't derive it from dates | yes |
 | Steps refining earlier evidence | Better judgments from narrowed evidence | `compare.ts` + `selectors-evidence-constants` | Unconfirmed: test Brier better, dev not | yes (mechanism) |
 | Shared steps | Policies sharing a step don't repeat it | `shared.ts` | Holds: 6 → 1 runs, identical findings, ~5× faster | yes |
 | `examples` (few-shot) | Examples improve judgments | `examples.ts` | Small: test AUROC +0.001 to +0.020, dev unchanged | yes |
-| `lint-anything check` | Catch a badly worded rule | `examples.ts` | Partial: catches an off-topic rule, not an inverted one | yes |
-| Per-policy cut-offs | Better verdicts than global cut-offs | `cutoffs.ts` | Fails: overfits dev | no |
-| Answer cache | Re-runs pay only for changes; stable verdicts | `cache.ts` | Holds: 0 requests unchanged, 18 of 81 after an edit, 0 vs 25 verdict changes in untouched files | yes |
-| Sorted items | The same files get the same verdicts | `cache.ts` | Holds: two fresh runs went from 40 differing verdicts to 0 | yes |
-| `--baseline`, `--changed-since` | Adopt rules on existing code; lint only changes | `adoption.ts` | Holds: all 5 scenarios as expected | yes |
-| `ask` routing step | Drop items a rule doesn't govern, cutting false alarms | `compare.ts` + routed sets (commit `c825cff`) | Fails: dev false alarms rose, violations dropped | no |
-| `--sarif` | GitHub code-scanning upload | `sarif.ts` | Holds: schema-valid, every finding mapped | yes |
+| Sorted items | The same files get the same verdicts | `packing.ts` | Holds: two fresh runs went from 40 differing verdicts to 0 | yes |
 | `limit` | Count rules judged reliably | `counts.ts` | Holds: 100% vs 81% (63% at the boundary) | yes |
+| Per-policy cut-offs | Better verdicts than global cut-offs | `cutoffs.ts` | Fails: overfits dev | no |
+| `ask` routing step | Drop items a rule doesn't govern, cutting false alarms | (commit `c825cff`) | Fails: dev false alarms rose, violations dropped | no |
+| `check` subcommand, answer cache, `--baseline` / `--changed-since`, `--sarif` | Example checks; cheaper re-runs; adoption on existing code; code scanning | (commits `d4d5052` to `1eddf4d`) | Each measured; see below | no: removed, because the CLI takes no flags or subcommands |
 
-`evals/compare.ts` scores selector sets against the same item labels with the CLI's request shape and prints, per policy, AUROC and Brier with intervals against the first set, caught / surfaced / false-alarm rates at the item cut-offs, and cost per 1,000 items. A set whose selector drops items is scored over the union of all sets' items, a dropped item counting as a pass. Its scores go to `evals/results/items.<split>.<set>/production.jsonl`.
+`evals/compare.ts` scores selector sets against the same item labels with the CLI's request shape and prints, per policy, AUROC and Brier with intervals against the first set, caught / surfaced / false-alarm rates at the item cut-offs, and cost per 1,000 items. A set whose selector drops items is scored over the union of all sets' items, a dropped item counting as a pass. Its scores go to `evals/results/items.<split>.<set>/production.jsonl`. Eval selectors call helper steps in `evals/steps/` as `bun "$EVAL_STEPS/<step>.ts"`.
 
-#### Evidence fields and `$LINT_ANYTHING enclosing`
+The whole policy file, selector command included, is the rule text Clef reads, so changing only a selector's command text changes the answers about as much as repacking does. The numbers below were re-measured after the eval steps moved to `evals/steps/`; earlier versions of these tables used different command text.
 
-Purpose: Clef judges an item better when it sees the code around it. Measured on the two semantic selector policies whose items are short (comments, magic-value lines) by `evals/corpus/selectors-evidence/`, which pipes the same items through `$LINT_ANYTHING enclosing`.
+#### Evidence fields (enclosing block)
+
+Purpose: Clef judges an item better when it sees the code around it. Measured on the two semantic selector policies whose items are short (comments, magic-value lines) by `evals/corpus/selectors-evidence/`, which pipes the same items through `evals/steps/enclosing.ts`.
 
 | Policy, split | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items |
 | --- | --- | --- | --- | --- | --- |
-| comments, dev | 584 (36) | 0.865 → 0.900 [−0.013, +0.086] | 0.102 → 0.086 [−0.030, +0.001] | 33 / 72 / 8.2% → 33 / 75 / 7.7% | $0.043 → $0.148 |
-| comments, test | 290 (15) | 0.944 → 0.951 [−0.035, +0.042] | 0.083 → **0.070** [−0.021, −0.005] | 20 / 67 / 5.5% → 47 / 73 / 5.1% | $0.045 → $0.115 |
-| magic values, dev | 374 (6) | 0.974 → 0.986 [−0.003, +0.041] | 0.071 → **0.040** [−0.043, −0.020] | 83 / 83 / 5.7% → 67 / 83 / 3.5% | $0.044 → $0.128 |
-| magic values, test | 225 (16) | 0.972 → **0.993** [+0.002, +0.051] | 0.077 → **0.044** [−0.051, −0.019] | 44 / 100 / 8.6% → 81 / 88 / 2.4% | $0.044 → $0.107 |
+| comments, dev | 584 (36) | 0.865 → 0.892 [−0.031, +0.085] | 0.102 → 0.091 [−0.026, +0.011] | 33 / 72 / 8.2% → 33 / 75 / 9.5% | $0.043 → $0.149 |
+| comments, test | 290 (15) | 0.944 → 0.967 [−0.005, +0.056] | 0.083 → **0.065** [−0.025, −0.010] | 20 / 67 / 5.5% → 40 / 67 / 5.8% | $0.045 → $0.115 |
+| magic values, dev | 374 (6) | 0.974 → 0.985 [−0.003, +0.037] | 0.071 → **0.042** [−0.038, −0.018] | 83 / 83 / 5.7% → 83 / 83 / 4.3% | $0.044 → $0.128 |
+| magic values, test | 225 (16) | 0.972 → 0.981 [−0.004, +0.034] | 0.077 → **0.050** [−0.041, −0.015] | 44 / 100 / 8.6% → 75 / 81 / 3.8% | $0.044 → $0.108 |
 
-- The purpose holds: calibration improves on both rules on test (and on dev for magic values; comments is borderline on dev), magic values also ranks better on test, and clean items flagged fall from 8.6% to 2.4%. More violating comments reach `violation` (20% → 47% on test).
+- The purpose holds for calibration: Brier improves on test for both rules and on dev for magic values; for comments on dev it is within noise. AUROC gains are within noise. Clean magic-value items flagged fall from 8.6% to 3.8% on test.
 - It costs 2.4–3.4× more per item, because the block is repeated in each item's question.
 - Relevance matters, not volume: in a prototype, the 10 lines after each comment instead of its enclosing block lowered comment AUROC on test (interval −0.053 to −0.002).
 
-#### Shared evidence steps, `{{name}}`, and `$LINT_ANYTHING blame`
+#### Shared evidence steps and `{{name}}`
 
-Purpose 1: evidence from outside the file makes rules about time or history judgeable. `evals/history.ts` builds a git repository (deterministic, rebuilt each run) whose 126 TODOs in 18 TypeScript, Python, and Go files were committed on known dates, 35 of them within five days of the threshold, and judges "TODOs added more than 90 days ago must reference an issue" (47 violating) with four policies that differ only in evidence:
+Purpose 1: evidence from outside the file makes rules about time or history judgeable. `evals/history.ts` builds a git repository (deterministic, rebuilt each run) whose 126 TODOs in 18 TypeScript, Python, and Go files were committed on known dates, 35 of them within five days of the threshold, and judges "TODOs added more than 90 days ago must reference an issue" (47 violating) with four policies that differ only in evidence (`evals/steps/blame.ts` adds each TODO's commit date and age):
 
 | Evidence | AUROC | Brier | Accuracy at 0.65 | Near threshold (±5 days) | Issue-less TODOs ≤ 90 days old flagged | Caught / false alarms | $ / 1k items |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | none | 0.802 | 0.154 | 63% | 60% | 96% | 36% / 30% | $0.036 |
 | `today: echo …` step, `Today is {{today}}.` in the rule | 0.869 [+0.021, +0.113] | 0.138 [−0.025, −0.007] | 77% [+6, +22 pts] | 77% | 83% | 66% / 28% | $0.037 |
-| … plus each TODO's commit date (`blame`, age removed) | 0.891 [+0.032, +0.156] | 0.139 [−0.041, +0.014] | 83% [+9, +31 pts] | 63% | 92% | 94% / 29% | $0.041 |
-| … plus `blame`'s computed age | **0.991** [+0.111, +0.269] | **0.029** [−0.160, −0.088] | **96%** [+22, +44 pts] | **91%** | **0%** | 89% / 1% | $0.045 |
+| … plus each TODO's commit date | 0.869 [+0.008, +0.128] | 0.138 [−0.043, +0.012] | 82% [+7, +30 pts] | 60% | 83% | 94% / 25% | $0.042 |
+| … plus the computed age | **1.000** [+0.121, +0.278] | **0.015** [−0.167, −0.108] | **99%** [+25, +48 pts] | **97%** | **0%** | 98% / 1% | $0.045 |
 
-- The purpose holds once the evidence states the fact the rule turns on. With the age in days on each item, accuracy rises from 63% to 96% and false alarms from issue-less young TODOs vanish.
-- Clef doesn't do the date arithmetic: given today's date and each commit date, it still flags 92% of young issue-less TODOs. Compute facts in steps; don't ask Clef to derive them.
-- Today's date alone, through `{{today}}`, helps a little (accuracy +6 to +22 points), presumably by making Clef less sure undated TODOs are old.
+- The purpose holds once the evidence states the fact the rule turns on. With the age in days on each item, accuracy rises from 63% to 99% and false alarms from issue-less young TODOs vanish.
+- Clef doesn't do the date arithmetic: given today's date and each commit date, it still flags 83% of young issue-less TODOs. Compute facts in steps; don't ask Clef to derive them.
+- Today's date alone, through `{{today}}`, helps a little (accuracy +6 to +22 points).
 
 Purpose 2: later steps can refine earlier evidence. `evals/corpus/selectors-evidence-constants/` adds a `constants` step (every named constant in the files) that a final selector step narrows to each item's own file, on top of the enclosing block, for magic values:
 
 | Split | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms |
 | --- | --- | --- | --- | --- |
-| dev | 374 (6) | 0.986 → 0.980 [−0.024, +0.009] | 0.040 → 0.043 [−0.008, +0.017] | 67 / 83 / 3.5% → 67 / 83 / 3.0% |
-| test | 225 (16) | 0.993 → 0.995 [−0.006, +0.007] | 0.044 → **0.033** [−0.023, −0.001] | 81 / 88 / 2.4% → 75 / 88 / 1.4% |
+| dev | 374 (6) | 0.985 → 0.984 [−0.019, +0.015] | 0.042 → 0.044 [−0.006, +0.012] | 83 / 83 / 4.3% → 83 / 100 / 3.8% |
+| test | 225 (16) | 0.981 → 0.989 [−0.008, +0.020] | 0.050 → **0.039** [−0.021, −0.003] | 75 / 81 / 3.8% → 75 / 88 / 2.9% |
 
 - The chaining works, but its value is unconfirmed: calibration improves on test and not on dev, which has only 6 violating items. Cost rises about 10%.
 - In a prototype, the same constants placed once in the rule text (the state) instead of on each item did not help (test Brier interval −0.026 to +0.004), while on each item they did (−0.040 to −0.009). Item evidence is the stronger placement; `{{name}}` suits facts that really are global, like today's date.
 
 #### Shared steps
 
-Purpose: policies that share a selector or evidence step don't repeat the work. `evals/shared.ts` lints `src/**/*.ts` with six policies that share one evidence step and one selector (with `$LINT_ANYTHING enclosing`), against a stub Clef that sends no requests, and counts executions through a log each shared command appends to.
+Purpose: policies that share a selector or evidence step don't repeat the work. `evals/shared.ts` lints `src/**/*.ts` with six policies that share one evidence step and one selector (with the enclosing step), against a stub Clef that sends no requests, and counts executions through a log each shared command appends to.
 
 | Code | Evidence step runs | Selector runs | Findings | Time (3 runs) |
 | --- | --- | --- | --- | --- |
 | before sharing | 6 | 6 | 936 | 757–776 ms |
 | with sharing | **1** | **1** | 936, same digest | 142–149 ms |
 
-The purpose holds: each shared command runs once, findings are byte-identical (the eval prints a digest of the findings to compare; it depends on the current `src/`), and step time falls about 5×.
+The purpose holds: each shared command runs once, findings are byte-identical (the eval prints a digest of the findings to compare; it depends on the current `src/`), and step time falls about 5×. Sharing is scoped to one lint run.
 
-#### Policy examples and `check`
+#### Policy examples
 
-`evals/examples.ts` measures both purposes on the six corpus selector policies.
-
-Purpose 1: examples in a policy improve its judgments (few-shot). Each policy gets two violating items and the two clean items the baseline scored highest, taken from the other split, as `examples`:
+Purpose: examples in a policy improve its judgments (few-shot). `evals/examples.ts` gives each of the six corpus selector policies two violating items and the two clean items the baseline scored highest, taken from the other split, as `examples`:
 
 | Split | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items |
 | --- | --- | --- | --- | --- | --- |
@@ -396,94 +352,32 @@ Purpose 1: examples in a policy improve its judgments (few-shot). Each policy ge
 
 A small gain, confirmed on test and not on dev; magic values improves most on test (Brier 0.077 → 0.055, interval −0.035 to −0.012; false alarms 8.6% → 2.9%). Cost rises about 11%.
 
-Purpose 2: `check` catches a badly worded rule. Each policy is checked on three violating and three clean dev items (a fixed pseudo-random pick, standing in for clear examples an author writes) in its own wording and three corrupted ones:
-
-| Wording | Policies whose `check` fails | Examples that agree |
-| --- | --- | --- |
-| original | 2 / 6 | 28 / 31 (90%) |
-| another policy's rule | **5 / 6** | 15 / 31 (48%) |
-| title only | 3 / 6 | 24 / 31 (77%) |
-| "The rule below is inverted: …" + original | 2 / 6 | 27 / 31 (87%) |
-
-- The purpose holds only partly. `check` catches a rule about the wrong thing (agreement falls from 90% to 48%), barely notices a rule cut to its title, and doesn't notice an inverted one: Clef judges by the rule's topic and ignores the added inversion.
-- Its pass/fail gate is strict: the comments and magic-values policies fail in their original wording, because Clef misjudges one or two of their examples. Read the agreement, not just the exit code, for semantic rules.
-
 #### Per-policy cut-offs (not shipped)
 
-Purpose: cut-offs fitted to each policy beat the global ones. `evals/cutoffs.ts` tunes each policy's cut-offs on its dev scores (far more labeled cases than a policy's examples would give) and applies them to test:
+Purpose: cut-offs fitted to each policy beat the global ones. `evals/cutoffs.ts` tunes each policy's cut-offs on its dev scores and applies them to test:
 
 | Test split | Verdict F1, global → per policy | Violations → `violation` | Violations surfaced | Clean not passed | Ambiguous → `review` |
 | --- | --- | --- | --- | --- | --- |
 | items | 0.539 → 0.551 | 59.0% → 65.6% | 86.9% → 67.2% | 6.7% → 3.4% | – |
 | files | 0.559 → 0.510 | 43.2% → 71.6% | 62.2% → 78.4% | 8.3% → 11.6% | 32.4% → 2.9% |
 
-The purpose fails: per-policy cut-offs overfit dev. Items lose a fifth of surfaced violations for a 0.012 F1 gain; files lose the `review` band almost entirely. Policies keep the global cut-offs.
+The purpose fails: per-policy cut-offs overfit dev. Policies keep the global cut-offs.
 
-#### Answer cache
+#### Packing and repeatability
 
-Purpose: re-runs pay only for what changed, with results that hold still. `evals/cache.ts` lints 24 dev corpus files with four whole-file and two selector policies through the CLI's Clef path, with a fresh cache directory, then appends a function (narrating comment, issue-less TODO, magic number) to the three files first in path order, which shifts the packing of every item after them:
+Clef's answer to a question depends on the other questions packed with it. `evals/packing.ts` judges the same 1,076 dev items in the CLI's full batches and in two half-size batches (odd and even items): only 2.8% of answers are identical (mean change 0.068, largest 0.718, 81 verdicts different), but quality is unchanged (AUROC 0.951 → 0.944 [−0.021, +0.006], Brier 0.084 → 0.083 [−0.007, +0.006]). In a probe on one 40-item request, reversing the question order changed answers by 0.107 on average.
 
-| Run | Requests | Cached answers | Findings vs. a fresh run |
-| --- | --- | --- | --- |
-| 1. cold cache | 81 | 0 | – |
-| 2. re-run, nothing changed | **0** | 629 | identical (401 checks, every score equal) |
-| 3. after the edit, with the cache | **18** | 565 | 91.4% same verdict (35 of 407 differ), mean score change 0.058 |
-| 4. after the edit, no cache | 81 | 0 | – |
+Purpose of sorting items: the same files get the same verdicts. Before items were sorted, two fresh runs on the same files disagreed on 40 verdicts, because `rg` emits matches across files in varying order. `evals/packing.ts` runs the CLI's lint twice on 24 dev files (367 checks, real requests): 0 verdicts differ and every score is identical.
 
-Run 3 differs from run 4 because Clef's answer to a question depends on the other questions packed with it. The same 1,076 dev items judged in the CLI's full batches and in two half-size batches (odd and even items) gave identical answers for only 2.8% of items (mean change 0.068, largest 0.718, 81 verdicts different), and in a probe on one 40-item request, reversing the question order changed answers by 0.107 on average; swapping a single unrelated question changed every other answer slightly (up to 0.013). Packing varies answers without changing their quality: AUROC 0.951 → 0.944 [−0.021, +0.006], Brier 0.084 → 0.083 [−0.007, +0.006].
+#### Removed from the CLI: `check`, answer cache, baseline, changed-lines scope, SARIF
 
-So the fair comparison is stability, on the 262 checks of the 21 files nobody edited:
+These were built and measured with new flags and subcommands, then removed because the CLI takes nothing but file globs. The code and evals are in the git history.
 
-| After the edit | Verdicts changed vs. run 1 | Mean score change |
-| --- | --- | --- |
-| with the cache | **0** | 0 |
-| without the cache | 25 | 0.060 |
-
-- The purpose holds: an unchanged run sends nothing, an edit sends only its questions (18 of 81 requests), and without the cache an edit in three files flips verdicts in files nobody touched.
-- Repeatability: before items were sorted, two fresh runs on the same files disagreed on 40 verdicts, because `rg` emits matches across files in varying order and so packed items differently each time. Sorted, two fresh runs agree exactly.
-- An earlier version of this eval reported run 3 as identical to run 4; it was wrong. Shared steps were remembered for the whole process, so after the edit the selectors' old output was reused and the new items were never judged. Step sharing is now scoped to one lint run.
-
-#### Baseline and changed-lines scope
-
-Purposes: a baseline lets a team adopt a rule on existing code (what's there is accepted, new violations still fail, moving code doesn't break it), and `--changed-since` judges only what a branch changed without missing anything in it. `evals/adoption.ts` builds a 20-file git repository and lints it with an issue-less-TODO selector policy and a whole-file no-debugger policy, against a stub Clef that judges by rule (so the bookkeeping is measured exactly, without requests) and counts questions:
-
-| Step | Expected | Measured |
-| --- | --- | --- |
-| 1. re-run with the baseline | 0 new, 11 accepted, 0 stale | 0 new, 11 accepted, 0 stale |
-| 2. after shifting every file 5 lines | 0 new, 0 stale | 0 new, 0 stale (a baseline keyed by line would call 7 of 11 new) |
-| 3. after adding 4 violations, one of them in a file already accepted for no-debugger | 3 new | 3 new: the issue-less TODO, a second copy of an accepted TODO, the debugger in a clean file |
-| 4. after fixing 2 accepted TODOs | 3 new, 2 stale | 3 new, 2 stale |
-| 5. `--changed-since HEAD` after touching 3 files (one new) | all 3 violations in changed lines found | 3 of 3, with 5 questions instead of 37 |
-
-The purposes hold. The known gap is by design: a whole-file finding is accepted per file and policy, so a new violation in an accepted file is not reported (step 3's fourth violation). Use a selector when a rule's violations need to be told apart.
-
-#### Clef as a routing step (not shipped)
-
-Purpose: a cheap first question drops items a rule doesn't govern, cutting false alarms. The experiment (commit `c825cff`) added `$LINT_ANYTHING ask --field NAME "QUESTION"`, which adds each item's probability that the answer is yes, and routed the comments policy's items through "Is this comment a license header, a doc comment describing a public API, or a tool directive?" — the exemptions the rule lists — dropping items at 0.5 or more, asked of Clef or of the cheaper clef-flash (`evals/corpus/selectors-routed*/`, `evals/routing.ts`):
-
-| Split | Routing | Items dropped (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items (routing + judging) |
-| --- | --- | --- | --- | --- | --- | --- |
-| dev | none | – | 0.865 | 0.102 | 33 / 72 / 8.2% | $0.043 |
-| dev | Clef | 172 (3) | 0.856 [−0.046, +0.026] | 0.098 [−0.013, +0.007] | 47 / 67 / 11.5% | $0.035 + $0.033 |
-| dev | clef-flash | 58 (2) | 0.840 [−0.117, +0.043] | 0.098 [−0.011, +0.005] | 33 / 61 / 8.0% | $0.005 + $0.041 |
-| test | none | – | 0.944 | 0.083 | 20 / 67 / 5.5% | $0.045 |
-| test | Clef | 109 (1) | 0.901 [−0.180, +0.043] | **0.061** [−0.037, −0.006] | 27 / 73 / 5.1% | $0.036 + $0.031 |
-| test | clef-flash | 36 (0) | 0.942 [−0.021, +0.017] | **0.073** [−0.017, −0.003] | 20 / 73 / 4.4% | $0.006 + $0.043 |
-
-The purpose fails on dev, where it was to be chosen: routing with Clef raised false alarms (8.2% → 11.5%) and dropped 3 of 36 violating comments; routing with clef-flash changed little. Dropping items also repacks the rest, which moves their answers (see Answer cache). Test shows a calibration gain, not a false-alarm cut, and every variant costs more. `ask` was removed; filtering steps of any other kind still work, and `evals/compare.ts` scores them.
-
-#### SARIF output
-
-Purpose: findings can be uploaded to GitHub code scanning, which reads SARIF 2.1.0. `--sarif <file>` writes one rule per policy (its first heading as the short description, its rule text as the full one) and one result per non-passing finding: `error` for `violation`, `warning` for `review`, `note` for `inconclusive`, located at the finding's file and, for items, its lines. Baseline-accepted findings are included as suppressed results; `partialFingerprints` carry the item fingerprint, so a result can be followed as code moves. `evals/sarif.ts` lints a generated repository (whole-file, item, and path-less `git log` findings, one accepted by a baseline) against a stub Clef and validates the log with ajv against the published schema:
-
-| Check | Holds |
-| --- | --- |
-| validates against the SARIF 2.1.0 schema | yes |
-| the validator rejects the same log with an invalid level (a control) | yes |
-| one result per non-passing finding (4 of 4) | yes |
-| rule, level, file, lines, and suppression match each finding (1 without a path, 1 accepted, 2 with lines) | yes |
-
-The purpose holds as far as a schema can show; uploading to GitHub was not tested. A finding without a path (a commit message, say) becomes a result without a location, which a code-scanning view has nowhere to show.
+- `lint-anything check` (commit `d4d5052`): judged each policy's examples against the rule without them. It caught a rule about the wrong thing (examples agreeing fell from 90% to 48%) but not an inverted one (87%), and it failed two semantic policies in their own wording.
+- Answer cache (`--cache`, commit `91832ae`, re-measured in `d43f246`): a re-run on unchanged files sent 0 of 81 requests, an edit in 3 of 24 files sent 18, and unedited files kept all their verdicts (25 of 262 changed without the cache).
+- `--baseline` and `--changed-since` (commit `d43f246`): on a generated repository, all five adoption scenarios behaved as expected; a baseline keyed by item text survived line shifts (one keyed by line would have called 7 of 11 accepted findings new).
+- `--sarif` (commit `1eddf4d`): the log validated against the SARIF 2.1.0 schema and every finding mapped to one result.
+- `ask` routing step (commit `c825cff`): routing the comments policy's items through "is this exempt?" raised dev false alarms from 8.2% to 11.5% and dropped 3 of 36 violating comments.
 
 #### Counting with `limit`
 
@@ -494,4 +388,4 @@ Purpose: rules about a count ("at most 3 issue-less TODOs per file") are judged 
 | Clef asked the count rule about the whole file | 81% (52/64) | 63% (15/24) | 0.985 | $0.096 |
 | each TODO judged against "must reference an issue", counted by `limit: { max: 3 }` | **100%** (64/64) | **100%** (24/24) | 1.000 | $0.188 |
 
-The purpose holds: every file's count was exact, while the whole-file judgment ranked files well but misplaced the boundary in a third of the files at it. It costs about twice as much. In the eval, items are packed per file; the CLI packs a policy's items across files, which varies answers slightly without changing their quality (see Answer cache).
+The purpose holds: every file's count was exact, while the whole-file judgment ranked files well but misplaced the boundary in a third of the files at it. It costs about twice as much.

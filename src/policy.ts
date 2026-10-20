@@ -6,9 +6,8 @@ import { type Item, toItem } from "./item.ts"
  * `select`, a shell command emits the items to judge: it receives the matching files as arguments, or
  * none when the policy has no globs. `evidence` steps run first, in order, with the same arguments; the
  * rule text can include their output as `{{name}}`. `examples` are labeled items (or, without a selector,
- * labeled files) that `lint-anything check` judges against the rule. With `limit`, a selector policy
- * reports how many of its items violate the rule, per file or per run, against a maximum. The full policy
- * text is sent to Clef.
+ * labeled files) that Clef reads with the rule. With `limit`, a selector policy reports how many of its items
+ * violate the rule, per file or per run, against a maximum. The full policy text is sent to Clef.
  */
 export interface Policy {
   readonly name: string
@@ -92,23 +91,6 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
     ...(limit === undefined ? {} : { limit: { max: limit.max, per: limit.per ?? "file" } })
   } satisfies Policy
 })
-
-/**
- * The policy without its `examples` key, so the rule can be judged on examples it hasn't seen. The rest of
- * the frontmatter keeps its exact text.
- */
-export const withoutExamples = (policy: Policy): Policy => {
-  const match = frontmatterPattern.exec(policy.source)!
-  const kept: Array<string> = []
-  let inExamples = false
-  for (const line of match[1]!.split(/\r?\n/)) {
-    // A top-level key starts at column 0; the examples block runs until the next one.
-    const key = /^([A-Za-z_][\w-]*)\s*:/.exec(line)?.[1]
-    if (key !== undefined) inExamples = key === "examples"
-    if (!inExamples) kept.push(line)
-  }
-  return { ...policy, source: `---\n${kept.join("\n")}\n---\n${policy.source.slice(match[0].length)}`, examples: [] }
-}
 
 /** The policy with each `{{name}}` in its rule body replaced by that evidence step's output. */
 export const resolveReferences = (policy: Policy, outputs: ReadonlyMap<string, string>): Policy => {

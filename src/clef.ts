@@ -202,6 +202,18 @@ const itemQuestion = (item: Item) => ({ type: "noul", instructions: renderItem(i
 export const planItemRequests = (model: Model, policy: Policy, items: ReadonlyArray<Item>) =>
   pack(model, itemState(policy), items.map((_, index) => index), (index, taken) => serialize(`i${taken.size}`, itemQuestion(items[index]!)))
 
+// `lint-anything ask`: a yes/no question about each item, the question in the state once and each item
+// one question, as for judging items against a rule.
+const askGuidance = "Each question shows one item with its location and any context. Answer the question below " +
+  "about that item.\nReturn a calibrated probability that the answer is yes."
+const askCriteria = { true: "Yes, for this item.", false: "No, for this item." }
+const askState = (question: string) => `${askGuidance}\n\nQuestion:\n${question}`
+const askQuestion = (item: Item) => ({ type: "noul", instructions: renderItem(item), criteria: askCriteria })
+
+/** Plans the requests that ask `question` about each of `items`. Questions answer items by index. */
+export const planAskRequests = (model: Model, question: string, items: ReadonlyArray<Item>) =>
+  pack(model, askState(question), items.map((_, index) => index), (index, taken) => serialize(`i${taken.size}`, askQuestion(items[index]!)))
+
 /**
  * Answers kept on disk, one file per question, keyed by the model, the request text, and the question
  * (not its id or the other questions in the request), so unchanged questions aren't sent again.
@@ -235,6 +247,11 @@ export class Clef extends Context.Service<Clef, {
     policy: Policy,
     items: ReadonlyArray<Item>
   ): Effect.Effect<ReadonlyArray<Result.Result<Judgment, RequestTooLarge>>, ClefError>
+  /** The probability that the answer to yes/no `question` is yes, for each of `items`, in order. */
+  ask(
+    question: string,
+    items: ReadonlyArray<Item>
+  ): Effect.Effect<ReadonlyArray<Result.Result<number, RequestTooLarge>>, ClefError>
   /** Requests sent and answers taken from the cache so far. */
   readonly stats: Effect.Effect<{ readonly requests: number; readonly cached: number }>
 }>()("lint-anything/Clef") {
@@ -332,13 +349,19 @@ export class Clef extends Context.Service<Clef, {
           return results
         })
 
-        const judgeItems = Effect.fn("Clef.judgeItems")(function*(policy: Policy, items: ReadonlyArray<Item>) {
+        /** Answers one question per item, sharing `state`; results follow `items` order. */
+        const each = Effect.fn("Clef.each")(function*(
+          state: string,
+          items: ReadonlyArray<Item>,
+          question: (item: Item) => object,
+          plan: (subset: ReadonlyArray<Item>) => ReturnType<typeof planItemRequests>
+        ) {
           const { answers, oversized } = yield* answer(
-            itemState(policy),
+            state,
             items.map((_, index) => index),
-            (index) => itemQuestion(items[index]!),
+            (index) => question(items[index]!),
             (misses) => {
-              const planned = planItemRequests(model, policy, misses.map((index) => items[index]!))
+              const planned = plan(misses.map((index) => items[index]!))
               return {
                 requests: planned.requests.map(({ body, questions }) => ({ body, questions: questions.map(({ id, value }) => ({ id, value: misses[value]! })) })),
                 oversized: planned.oversized.map(({ value, bytes }) => ({ value: misses[value]!, bytes }))
@@ -346,13 +369,21 @@ export class Clef extends Context.Service<Clef, {
             },
             8
           )
-          const results: Array<Result.Result<Judgment, RequestTooLarge>> = []
+          const results: Array<Result.Result<number, RequestTooLarge>> = []
           for (const { value: index, bytes } of oversized) results[index] = Result.fail(new RequestTooLarge({ bytes }))
-          for (const { value: index, noul } of answers) results[index] = Result.succeed({ violates: noul })
+          for (const { value: index, noul } of answers) results[index] = Result.succeed(noul)
           return results
         })
 
-        return Clef.of({ judge, judgeItems, stats: Ref.get(counts) })
+        const judgeItems = (policy: Policy, items: ReadonlyArray<Item>) =>
+          each(itemState(policy), items, itemQuestion, (subset) => planItemRequests(model, policy, subset)).pipe(
+            Effect.map((results) => results.map(Result.map((violates): Judgment => ({ violates }))))
+          )
+
+        const ask = (question: string, items: ReadonlyArray<Item>) =>
+          each(askState(question), items, askQuestion, (subset) => planAskRequests(model, question, subset))
+
+        return Clef.of({ judge, judgeItems, ask, stats: Ref.get(counts) })
       })
     ).pipe(Layer.provide(FetchHttpClient.layer))
 }

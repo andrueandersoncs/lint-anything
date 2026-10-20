@@ -12,19 +12,22 @@ export class SelectorError extends Schema.TaggedError<SelectorError>()("Selector
 }
 
 /**
- * Runs a built-in selector step: reads items (JSONL) on stdin, passes each through `step`, and writes them
- * back (JSONL) to stdout in order. An invalid input line fails with the step's `name`.
+ * Runs a built-in selector step: reads every item (JSONL) on stdin, passes them through `step`, and writes
+ * the result back (JSONL) to stdout in order. An invalid input line fails with the step's `name`.
  */
-export const itemStep = Effect.fnUntraced(function*<E, R>(name: string, step: (item: Item) => Effect.Effect<Item, E, R>) {
+export const itemStep = Effect.fnUntraced(function*<E, R>(
+  name: string,
+  step: (items: ReadonlyArray<Item>) => Effect.Effect<ReadonlyArray<Item>, E, R>
+) {
   const input = yield* Effect.promise(() => Bun.stdin.text())
-  const output: Array<string> = []
+  const items: Array<Item> = []
   for (const [index, line] of input.split("\n").entries()) {
     if (line.trim() === "") continue
-    const item = yield* parseItem(line).pipe(
+    items.push(yield* parseItem(line).pipe(
       Effect.mapError((reason) => new SelectorError({ message: `${name}: input line ${index + 1} is not a valid item: ${reason}` }))
-    )
-    output.push(formatItem(yield* step(item)))
+    ))
   }
+  const output = (yield* step(items)).map(formatItem)
   if (output.length === 0) return
   // Bun.write(Bun.stdout, …) garbles large output on a pipe; process.stdout.write does not.
   const text = `${output.join("\n")}\n`

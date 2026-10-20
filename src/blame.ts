@@ -32,9 +32,10 @@ const lastChanged = (path: string, [start, end]: readonly [number, number], toda
 export const blame = (today: string) =>
   Number.isNaN(Date.parse(today))
     ? Effect.fail(new SelectorError({ message: `blame: --today ${today} is not a date` }))
-    : itemStep("blame", (item) =>
-      item.path === undefined || item.lines === undefined
-        ? Effect.succeed(item)
-        : lastChanged(item.path, item.lines, today).pipe(
-          Effect.map((changed) => (changed === undefined ? item : { ...item, evidence: [...item.evidence, ["changed", changed] as const] }))
-        ))
+    : itemStep("blame", (items) =>
+      Effect.forEach(items, (item) =>
+        item.path === undefined || item.lines === undefined
+          ? Effect.succeed(item)
+          : lastChanged(item.path, item.lines, today).pipe(
+            Effect.map((changed) => (changed === undefined ? item : { ...item, evidence: [...item.evidence, ["changed", changed] as const] }))
+          ), { concurrency: 8 }))

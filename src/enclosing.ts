@@ -42,17 +42,18 @@ export const enclosingBlock = (lines: ReadonlyArray<string>, [start, end]: reado
  */
 export const enclosing = () => {
   const files = new Map<string, ReadonlyArray<string>>()
-  return itemStep("enclosing", (item) =>
-    Effect.gen(function*() {
-      if (item.path === undefined || item.lines === undefined) return item
-      const path = item.path
-      if (!files.has(path)) {
-        const source = yield* Effect.tryPromise({
-          try: () => Bun.file(path).text(),
-          catch: () => new SelectorError({ message: `enclosing: cannot read ${path}` })
-        })
-        files.set(path, source.split("\n"))
-      }
-      return { ...item, evidence: [...item.evidence, ["enclosing", enclosingBlock(files.get(path)!, item.lines)] as const] }
-    }))
+  return itemStep("enclosing", (items) =>
+    Effect.forEach(items, (item) =>
+      Effect.gen(function*() {
+        if (item.path === undefined || item.lines === undefined) return item
+        const path = item.path
+        if (!files.has(path)) {
+          const source = yield* Effect.tryPromise({
+            try: () => Bun.file(path).text(),
+            catch: () => new SelectorError({ message: `enclosing: cannot read ${path}` })
+          })
+          files.set(path, source.split("\n"))
+        }
+        return { ...item, evidence: [...item.evidence, ["enclosing", enclosingBlock(files.get(path)!, item.lines)] as const] }
+      })))
 }

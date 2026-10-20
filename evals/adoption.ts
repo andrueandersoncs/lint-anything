@@ -63,6 +63,7 @@ const stub = Layer.succeed(Clef, Clef.of({
     questions += items.length
     return Effect.succeed(items.map((item) => Result.succeed({ violates: issueless(item.text) ? 0.95 : 0.05 })))
   },
+  ask: (_, items) => Effect.succeed(items.map(() => Result.succeed(0))),
   stats: Effect.succeed({ requests: 0, cached: 0 })
 }))
 const run = async (changes?: Awaited<ReturnType<typeof changes0>>) => {

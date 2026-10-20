@@ -50,15 +50,24 @@ console.log(`\nitems.${split}, CLI request shape, verdicts at ${floor}/${thresho
 for (const { policy } of baseline!.set.policies) {
   const compared = candidates.filter(({ set }) => set.policies.some((entry) => entry.policy.name === policy.name))
   if (compared.length === 0) continue
+  const sets = [baseline!, ...compared]
+  // A selector may drop items (for example after `$LINT_ANYTHING ask`); a dropped item is never reported,
+  // so it counts as a pass (score 0). Every set is scored over the union of the items any set selected.
   const own = ({ run }: (typeof runs)[number]) => run.scored.filter((entry) => entry.item.policy.name === policy.name)
-  const base = own(baseline!)
-  console.log(`\n${policy.name}\n| Selector set | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items |`)
+  const union = new Map<string, Scored>()
+  for (const entry of sets) for (const scored of own(entry)) if (!union.has(scored.item.id)) union.set(scored.item.id, scored)
+  const aligned = (entry: (typeof runs)[number]): Array<Scored> => {
+    const scores = new Map(own(entry).map((scored) => [scored.item.id, scored.score]))
+    return [...union.values()].map((scored) => ({ item: scored.item, score: scores.has(scored.item.id) ? scores.get(scored.item.id)! : 0 }))
+  }
+  const base = aligned(baseline!)
+  console.log(`\n${policy.name}\n| Selector set | Items judged / union (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items |`)
   console.log("|---|---|---|---|---|---|")
-  for (const entry of [baseline!, ...compared]) {
-    const scored = own(entry)
+  for (const entry of sets) {
+    const scored = aligned(entry)
     const q = quality(scored, thresholds)
     const isBase = entry === baseline
-    console.log(`| ${entry.set.name} | ${scored.length} (${scored.filter((s) => s.item.gold.label === "violates").length}) | ` +
+    console.log(`| ${entry.set.name} | ${own(entry).length} / ${scored.length} (${scored.filter((s) => s.item.gold.label === "violates").length}) | ` +
       `${fixed(auroc(scored))}${isBase ? "" : delta(base, scored, auroc)} | ${fixed(brier(scored))}${isBase ? "" : delta(base, scored, brier)} | ` +
       `${percent(q.caught)} / ${percent(q.surfaced)} / ${percent(q.falseAlarms)} | ` +
       `$${costPerThousand(entry.run.inputTokens.get(policy.name) ?? 0, scored.length).toFixed(3)} |`)

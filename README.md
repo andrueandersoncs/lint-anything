@@ -20,6 +20,10 @@ Pass one or more globs. They are expanded relative to the current directory, ded
 | `--item-threshold` | `0.65` | Violation probability (0–1) that fails the run, for items a selector emits |
 | `--model` | `clef` | `clef` or `clef-flash` |
 | `--json` | off | Print every finding as JSON |
+| `--cache` | `.lint-anything/cache` | Directory that caches Clef's answers across runs (add it to `.gitignore`) |
+| `--no-cache` | off | Neither read nor write the cache |
+
+`lint-anything check` takes the same flags, without file globs (see Examples and `check`).
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
@@ -162,6 +166,8 @@ A request holds at most 64 questions (Clef's limit) and 64,000 bytes (24,000 wit
 
 Transient HTTP failures are retried up to 3 times with exponential backoff.
 
+Answers are cached on disk per question, keyed by the model, the request's text (guidance and excerpt, or guidance and rule), and the question (rule, or rendered item). Only questions whose inputs changed are sent: re-running on unchanged files sends nothing, and editing a policy re-asks only that policy. Clef's answer to one question shifts a little with the other questions in its request (see Evals), so a cached answer can differ from what a fresh run would say, by as much as any other packing would, at no measured cost in quality.
+
 ## Output
 
 Text output prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the file's path; for an item, its `path:start-end`, or its `id` when it has no path and lines:
@@ -170,10 +176,10 @@ Text output prints one line per non-passing finding — verdict, violation proba
 violation     0.93   src/a.ts  no-debugger
 violation     0.97   src/a.ts:4-4  todo
 violation     0.97   9acebc18  commits
-3 checks: 3 violation, 0 review, 0 inconclusive, 0 pass
+3 checks: 3 violation, 0 review, 0 inconclusive, 0 pass (2 requests, 0 cached answers)
 ```
 
-`--json` prints `{ "findings": [...] }` with every finding, passes included. Each finding has `policy`, `verdict`, and either `violates` or `reason`. A file finding has `path`; an item finding has `item` (its id) and the item's `path` and `lines` when it gave them.
+`--json` prints `{ "findings": [...], "requests": …, "cached": … }` with every finding, passes included. Each finding has `policy`, `verdict`, and either `violates` or `reason`. A file finding has `path`; an item finding has `item` (its id) and the item's `path` and `lines` when it gave them.
 
 Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`.
 
@@ -205,6 +211,7 @@ bun evals/history.ts                       # evidence from outside the file: a d
 bun evals/shared.ts                        # shared steps run once (stub Clef, no requests)
 bun evals/examples.ts                      # policy examples: few-shot, and whether check catches bad wording
 bun evals/cutoffs.ts items                 # per-policy cut-offs tuned on dev vs. global (stored scores)
+bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
 ```
 
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
@@ -321,10 +328,10 @@ Purpose: policies that share a selector or evidence step don't repeat the work. 
 
 | Code | Evidence step runs | Selector runs | Findings | Time (3 runs) |
 | --- | --- | --- | --- | --- |
-| before sharing | 6 | 6 | 936, digest `08b03c81…` | 757–776 ms |
-| with sharing | **1** | **1** | 936, digest `08b03c81…` | 142–149 ms |
+| before sharing | 6 | 6 | 936 | 757–776 ms |
+| with sharing | **1** | **1** | 936, same digest | 142–149 ms |
 
-The purpose holds: each shared command runs once, findings are byte-identical, and step time falls about 5×.
+The purpose holds: each shared command runs once, findings are byte-identical (the eval prints a digest of the findings to compare; it depends on the current `src/`), and step time falls about 5×.
 
 #### Policy examples and `check`
 
@@ -361,3 +368,19 @@ Purpose: cut-offs fitted to each policy beat the global ones. `evals/cutoffs.ts`
 | files | 0.559 → 0.510 | 43.2% → 71.6% | 62.2% → 78.4% | 8.3% → 11.6% | 32.4% → 2.9% |
 
 The purpose fails: per-policy cut-offs overfit dev. Items lose a fifth of surfaced violations for a 0.012 F1 gain; files lose the `review` band almost entirely. Policies keep the global cut-offs.
+
+#### Answer cache
+
+Purpose: re-runs pay only for what changed, with the same results. `evals/cache.ts` lints 24 dev corpus files with four whole-file and two selector policies through the CLI's Clef path, with a fresh cache directory, then appends a function (narrating comment, issue-less TODO, magic number) to the three files first in path order:
+
+| Run | Requests | Cached answers | Time | Findings vs. a fresh run |
+| --- | --- | --- | --- | --- |
+| 1. cold cache | 81 | 0 | 7.3 s | – |
+| 2. re-run, nothing changed | **0** | 629 | 0.0 s | identical (401 checks, every score equal) |
+| 3. after the edit, with the cache | **16** | 565 | 4.9 s | identical to run 4 |
+| 4. after the edit, no cache | 81 | 0 | 7.6 s | – |
+
+Whether that equality holds in general depends on Clef answering each question independently of the others in its request. It doesn't: the same 1,076 dev items judged in the CLI's full batches and in two half-size batches (odd and even items) gave identical answers for only 2.8% of items (mean change 0.068, largest 0.718, 81 verdicts different). In a probe on one 40-item request, reversing the question order changed answers by 0.107 on average, and swapping a single unrelated question changed every other answer slightly (up to 0.013). Packing is a source of variation in its own right, and it costs nothing in quality: AUROC 0.951 → 0.944 [−0.021, +0.006], Brier 0.084 → 0.083 [−0.007, +0.006].
+
+- The purpose holds: an unchanged run sends nothing and an edit sends only its questions (16 of 81 requests here).
+- Whole-file answers are exact: an unchanged excerpt is always asked the same questions together. Item answers taken from the cache may differ from a fresh run's packing as much as two packings differ from each other, without losing accuracy.

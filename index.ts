@@ -29,7 +29,7 @@ const verdicts: ReadonlyArray<Verdict> = ["violation", "review", "inconclusive",
 const location = ({ path, item, lines }: Finding) =>
   path !== undefined && lines !== undefined ? `${path}:${lines[0]}-${lines[1]}` : item ?? path ?? ""
 
-const formatText = (findings: ReadonlyArray<Finding>): string => {
+const formatText = (findings: ReadonlyArray<Finding>, stats: { readonly requests: number; readonly cached: number }): string => {
   const lines = findings
     .filter((finding) => finding.verdict !== "pass")
     .map((finding) =>
@@ -44,7 +44,7 @@ const formatText = (findings: ReadonlyArray<Finding>): string => {
   const counts = verdicts.map((verdict) =>
     `${findings.filter((finding) => finding.verdict === verdict).length} ${verdict}`
   )
-  return [...lines, `${findings.length} checks: ${counts.join(", ")}`].join("\n")
+  return [...lines, `${findings.length} checks: ${counts.join(", ")} (${stats.requests} requests, ${stats.cached} cached answers)`].join("\n")
 }
 
 const formatCheck = (results: ReadonlyArray<ExampleResult>): string => {
@@ -82,8 +82,18 @@ const sharedFlags = {
   json: Flag.Boolean("json").pipe(
     Flag.withDescription("Print machine-readable results"),
     Flag.withDefault(false)
+  ),
+  cache: Flag.String("cache").pipe(
+    Flag.withDescription("Directory that caches Clef's answers across runs, per question"),
+    Flag.withDefault(".lint-anything/cache")
+  ),
+  noCache: Flag.Boolean("no-cache").pipe(
+    Flag.withDescription("Neither read nor write the answer cache"),
+    Flag.withDefault(false)
   )
 }
+
+const clefLayer = (model: "clef" | "clef-flash", cache: string, noCache: boolean) => Clef.layer(model, noCache ? undefined : cache)
 
 const command = Command.make(
   "lint-anything",
@@ -94,11 +104,14 @@ const command = Command.make(
     ),
     ...sharedFlags
   },
-  Effect.fn(function*({ files, rulesDir, threshold, itemThreshold, model, json }) {
+  Effect.fn(function*({ files, rulesDir, threshold, itemThreshold, model, json, cache, noCache }) {
     const policies = yield* loadPolicies(rulesDir)
     const sources = yield* readSources(files)
-    const findings = yield* lint(sources, policies, { threshold, itemThreshold }).pipe(Effect.provide(Clef.layer(model)))
-    yield* Console.log(json ? JSON.stringify({ findings }, null, 2) : formatText(findings))
+    const { findings, stats } = yield* Effect.gen(function*() {
+      const findings = yield* lint(sources, policies, { threshold, itemThreshold })
+      return { findings, stats: yield* (yield* Clef).stats }
+    }).pipe(Effect.provide(clefLayer(model, cache, noCache)))
+    yield* Console.log(json ? JSON.stringify({ findings, ...stats }, null, 2) : formatText(findings, stats))
     const count = findings.filter((finding) => finding.verdict === "violation").length
     if (count > 0) {
       return yield* new ViolationsFound({ count })
@@ -107,9 +120,9 @@ const command = Command.make(
 ).pipe(
   Command.withDescription("Lint files against natural-language policies with Cloudflare Clef"),
   Command.withSubcommands([
-    Command.make("check", sharedFlags, Effect.fn(function*({ rulesDir, threshold, itemThreshold, model, json }) {
+    Command.make("check", sharedFlags, Effect.fn(function*({ rulesDir, threshold, itemThreshold, model, json, cache, noCache }) {
       const policies = yield* loadPolicies(rulesDir)
-      const results = yield* check(policies, { threshold, itemThreshold }).pipe(Effect.provide(Clef.layer(model)))
+      const results = yield* check(policies, { threshold, itemThreshold }).pipe(Effect.provide(clefLayer(model, cache, noCache)))
       yield* Console.log(json ? JSON.stringify({ examples: results }, null, 2) : formatCheck(results))
       const count = results.filter((result) => result.outcome === "disagree").length
       if (count > 0) return yield* new ExamplesDisagree({ count })

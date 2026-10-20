@@ -1,7 +1,9 @@
-import { Config, Context, Effect, flow, Layer, Result, Runtime, Schedule, Schema } from "effect"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { Config, Context, Effect, flow, Layer, Ref, Result, Runtime, Schedule, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
-import type { Policy } from "./policy.ts"
 import type { Item } from "./item.ts"
+import type { Policy } from "./policy.ts"
 import type { SourceFile } from "./source.ts"
 
 export type Model = "clef" | "clef-flash"
@@ -160,17 +162,16 @@ const pack = <A>(
   return { requests, oversized }
 }
 
+/** The request text and one policy's question, for judging an excerpt (or whole file). */
+const fileState = (file: SourceFile) => `${guidance}\n\npath: ${file.path}\n\nfile:\n${file.source}`
+const fileQuestion = (policy: Policy) => ({ type: "noul", instructions: `Rule:\n${policy.source}`, criteria })
+
 /**
  * Plans the requests that judge one excerpt (or whole file) against `policies`: the text once per
  * request and one question per policy.
  */
 export const planRequests = (model: Model, file: SourceFile, policies: ReadonlyArray<Policy>) =>
-  pack(
-    model,
-    `${guidance}\n\npath: ${file.path}\n\nfile:\n${file.source}`,
-    policies,
-    (policy, taken) => serialize(questionId(policy, taken), { type: "noul", instructions: `Rule:\n${policy.source}`, criteria })
-  )
+  pack(model, fileState(file), policies, (policy, taken) => serialize(questionId(policy, taken), fileQuestion(policy)))
 
 // Selector items: the eval suite's item sweep (evals/items.ts, see README) chose this shape. The rule goes
 // in the state once and each item is one question; one request per item scored worse and cost 2.5×.
@@ -190,17 +191,38 @@ export const renderItem = (item: Item) =>
     `item:\n${item.text}`
   ].join("\n\n")
 
+/** The request text and one item's question, for judging a selector's items against a policy. */
+const itemState = (policy: Policy) => `${itemGuidance}\n\nRule:\n${policy.source}`
+const itemQuestion = (item: Item) => ({ type: "noul", instructions: renderItem(item), criteria: itemCriteria })
+
 /**
  * Plans the requests that judge a selector's `items` against `policy`: the rule once per request and one
  * question per item. Questions answer items by index into `items`.
  */
 export const planItemRequests = (model: Model, policy: Policy, items: ReadonlyArray<Item>) =>
-  pack(
-    model,
-    `${itemGuidance}\n\nRule:\n${policy.source}`,
-    items.map((_, index) => index),
-    (index, taken) => serialize(`i${taken.size}`, { type: "noul", instructions: renderItem(items[index]!), criteria: itemCriteria })
-  )
+  pack(model, itemState(policy), items.map((_, index) => index), (index, taken) => serialize(`i${taken.size}`, itemQuestion(items[index]!)))
+
+/**
+ * Answers kept on disk, one file per question, keyed by the model, the request text, and the question
+ * (not its id or the other questions in the request), so unchanged questions aren't sent again.
+ */
+const answerCache = (model: Model, directory: string) => {
+  const path = (state: string, question: object) => {
+    const key = new Bun.CryptoHasher("sha256").update(`${model}\0${state}\0${JSON.stringify(question)}`).digest("hex")
+    return join(directory, key.slice(0, 2), key)
+  }
+  return {
+    get: (state: string, question: object): number | undefined => {
+      const file = path(state, question)
+      return existsSync(file) ? Number(readFileSync(file, "utf8")) : undefined
+    },
+    set: (state: string, question: object, noul: number) => {
+      const file = path(state, question)
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, String(noul))
+    }
+  }
+}
 
 export class Clef extends Context.Service<Clef, {
   /** Judges `file` against every policy, excerpt by excerpt; results follow `policies` order. */
@@ -213,8 +235,11 @@ export class Clef extends Context.Service<Clef, {
     policy: Policy,
     items: ReadonlyArray<Item>
   ): Effect.Effect<ReadonlyArray<Result.Result<Judgment, RequestTooLarge>>, ClefError>
+  /** Requests sent and answers taken from the cache so far. */
+  readonly stats: Effect.Effect<{ readonly requests: number; readonly cached: number }>
 }>()("lint-anything/Clef") {
-  static readonly layer = (model: Model) =>
+  /** Clef on Workers AI; with `cacheDirectory`, answers are cached there per question across runs. */
+  static readonly layer = (model: Model, cacheDirectory?: string) =>
     Layer.effect(
       Clef,
       Effect.gen(function*() {
@@ -235,8 +260,12 @@ export class Clef extends Context.Service<Clef, {
           HttpClient.retryTransient({ schedule: Schedule.exponential(500), times: 3 })
         )
 
+        const cache = cacheDirectory === undefined ? undefined : answerCache(model, cacheDirectory)
+        const counts = yield* Ref.make({ requests: 0, cached: 0 })
+
         /** Sends one planned request and returns each question's answer, keyed like `request.questions`. */
         const send = Effect.fn("Clef.send")(function*<A>(request: Planned<A>) {
+          yield* Ref.update(counts, (count) => ({ ...count, requests: count.requests + 1 }))
           const { result } = yield* HttpClientRequest.post(`/${model}`).pipe(
             HttpClientRequest.bodyText(request.body, "application/json"),
             client.execute,
@@ -254,18 +283,42 @@ export class Clef extends Context.Service<Clef, {
           return answers
         })
 
+        /**
+         * Answers each value's question: from the cache when it has one, otherwise by sending the misses,
+         * planned by `plan`, and caching their answers. Returns answers and values too large to send.
+         */
+        const answer = Effect.fn("Clef.answer")(function*<A>(
+          state: string,
+          values: ReadonlyArray<A>,
+          question: (value: A) => object,
+          plan: (misses: ReadonlyArray<A>) => { readonly requests: ReadonlyArray<Planned<A>>; readonly oversized: ReadonlyArray<{ readonly value: A; readonly bytes: number }> },
+          concurrency: number
+        ) {
+          const answers: Array<{ readonly value: A; readonly noul: number }> = []
+          const misses: Array<A> = []
+          for (const value of values) {
+            const noul = cache?.get(state, question(value))
+            if (noul === undefined) misses.push(value)
+            else answers.push({ value, noul })
+          }
+          if (answers.length > 0) yield* Ref.update(counts, (count) => ({ ...count, cached: count.cached + answers.length }))
+          const { requests, oversized } = plan(misses)
+          for (const sent of (yield* Effect.forEach(requests, send, { concurrency })).flat()) {
+            cache?.set(state, question(sent.value), sent.noul)
+            answers.push(sent)
+          }
+          return { answers, oversized }
+        })
+
         const judge = Effect.fn("Clef.judge")(function*(file: SourceFile, policies: ReadonlyArray<Policy>) {
           // Each policy keeps its highest score across excerpts; it is too large only if no excerpt could send it.
           const scores = new Map<Policy, number>()
           const tooLarge = new Map<Policy, number>()
           for (const excerpt of excerpts(file, excerptBytes)) {
-            const { requests, oversized } = planRequests(model, excerpt, policies)
+            const { answers, oversized } = yield* answer(
+              fileState(excerpt), policies, fileQuestion, (misses) => planRequests(model, excerpt, misses), 1)
             for (const { value: policy, bytes } of oversized) tooLarge.set(policy, Math.max(bytes, tooLarge.get(policy) ?? 0))
-            for (const request of requests) {
-              for (const { value: policy, noul } of yield* send(request)) {
-                scores.set(policy, Math.max(noul, scores.get(policy) ?? 0))
-              }
-            }
+            for (const { value: policy, noul } of answers) scores.set(policy, Math.max(noul, scores.get(policy) ?? 0))
           }
           const results: Array<Result.Result<Judgment, RequestTooLarge>> = []
           for (const policy of policies) {
@@ -273,22 +326,33 @@ export class Clef extends Context.Service<Clef, {
             const bytes = tooLarge.get(policy)
             if (violates !== undefined) results.push(Result.succeed({ violates }))
             else if (bytes !== undefined) results.push(Result.fail(new RequestTooLarge({ bytes })))
-            // planRequests places every policy in a request or in `oversized` for every excerpt.
+            // Every policy is answered, cached, or in `oversized` for every excerpt.
             else return yield* Effect.die(new Error(`no judgment for ${policy.name}`))
           }
           return results
         })
 
         const judgeItems = Effect.fn("Clef.judgeItems")(function*(policy: Policy, items: ReadonlyArray<Item>) {
-          const { requests, oversized } = planItemRequests(model, policy, items)
+          const { answers, oversized } = yield* answer(
+            itemState(policy),
+            items.map((_, index) => index),
+            (index) => itemQuestion(items[index]!),
+            (misses) => {
+              const planned = planItemRequests(model, policy, misses.map((index) => items[index]!))
+              return {
+                requests: planned.requests.map(({ body, questions }) => ({ body, questions: questions.map(({ id, value }) => ({ id, value: misses[value]! })) })),
+                oversized: planned.oversized.map(({ value, bytes }) => ({ value: misses[value]!, bytes }))
+              }
+            },
+            8
+          )
           const results: Array<Result.Result<Judgment, RequestTooLarge>> = []
           for (const { value: index, bytes } of oversized) results[index] = Result.fail(new RequestTooLarge({ bytes }))
-          const answered = yield* Effect.forEach(requests, send, { concurrency: 8 })
-          for (const { value: index, noul } of answered.flat()) results[index] = Result.succeed({ violates: noul })
+          for (const { value: index, noul } of answers) results[index] = Result.succeed({ violates: noul })
           return results
         })
 
-        return Clef.of({ judge, judgeItems })
+        return Clef.of({ judge, judgeItems, stats: Ref.get(counts) })
       })
     ).pipe(Layer.provide(FetchHttpClient.layer))
 }

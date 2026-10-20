@@ -80,21 +80,38 @@ Every `TODO` or `FIXME` comment must reference a tracking issue, written as `#12
 - A non-zero exit or a line that isn't a valid item stops the run (exit 2). `rg` and `grep` exit 1 when nothing matches, so end a bare search with `|| true`, or pipe it on as above.
 - Each item is judged on its own, with only its evidence and location. Pick items that carry what the rule needs: a rule about whole files is better judged per file.
 
-#### Evidence steps
+#### Evidence
 
-A selector can pipe its items through further steps that add evidence. Selectors run with `$LINT_ANYTHING` set to the command that runs this CLI, whose built-in steps read items as JSONL on stdin and write them back with a field added:
+Evidence is what Clef reads next to the thing it judges. There are two kinds.
+
+**Item evidence.** A selector can pipe its items through steps that add fields. Selectors run with `$LINT_ANYTHING` set to the command that runs this CLI, whose built-in steps read items as JSONL on stdin and write them back with a field added:
 
 | Step | Adds |
 | --- | --- |
 | `$LINT_ANYTHING enclosing` | `enclosing`: the block around each item with `path` and `lines` — the nearest less-indented line above that opens a function, method, class, or block, down to where it closes, numbered and capped at 80 lines. With no such block, the 15 lines after the item. |
+| `$LINT_ANYTHING blame [--today YYYY-MM-DD]` | `changed`: when the item's lines last changed in git and how long ago, e.g. `2026-07-22, 90 days before 2026-10-20`. Items git has no committed history for get no field. |
 
-```yaml
+Any program that reads and writes JSONL items works as a step.
+
+**Shared evidence.** `evidence` steps in the frontmatter are shell commands that run before the selector (or, for a policy without one, before its files are judged), in order, with the same arguments. Each step's output is available to every later step and to `select` as the file `$EVIDENCE_<name>`, and the rule text can include it as `{{name}}`:
+
+````md
+---
+globs: ["src/**/*.{ts,py,go}"]
+evidence:
+  today: date +%F
 select: |
-  rg --json -P '(?<![\w.])(?:[2-9]|\d{2,})(?![\w.])' "$@" | jq -c '…' |
-    $LINT_ANYTHING enclosing
-```
+  rg --json -w 'TODO|FIXME' "$@" | jq -c '…' |
+    $LINT_ANYTHING blame
+---
+# Old TODOs reference an issue
 
-Any program that reads and writes JSONL items works as a step. Evidence costs input tokens: the enclosing block made items 2.5–3.3× as expensive in the evals, and paid for it (see Evals).
+A `TODO` or `FIXME` comment added more than 90 days ago must reference a tracking issue. Today is {{today}}.
+````
+
+- Step names match `[A-Za-z_][A-Za-z0-9_]*`. A `{{name}}` no step defines, or a step that exits non-zero, stops the run (exit 2).
+- A later step can refine an earlier one's output. `evals/corpus/selectors-evidence-constants/` has a `constants` step listing every file's named constants, and a final selector step that attaches to each item only its own file's (`jq --rawfile c "$EVIDENCE_constants" '…'`).
+- What helps, from the evals: evidence placed on each item beats the same evidence placed once in the rule, and a computed fact beats raw data Clef has to reason over (an age in days, not a commit date). Evidence costs input tokens: the enclosing block made items 2.4–3.4× as expensive.
 
 ## How it works
 
@@ -152,6 +169,7 @@ bun evals/run.ts --split test --category semantic production production,chunk=0
 bun evals/items.ts                         # selector item request shapes on the dev split
 bun evals/items.ts --split test production
 bun evals/compare.ts --split test evals/corpus/selectors evals/corpus/selectors-evidence   # selector sets, policy by policy
+bun evals/history.ts                       # evidence from outside the file: a dated git fixture
 ```
 
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
@@ -236,3 +254,28 @@ Purpose: Clef judges an item better when it sees the code around it. Measured on
 - The purpose holds: calibration improves on both rules on test (and on dev for magic values; comments is borderline on dev), magic values also ranks better on test, and clean items flagged fall from 8.6% to 2.4%. More violating comments reach `violation` (20% → 47% on test).
 - It costs 2.4–3.4× more per item, because the block is repeated in each item's question.
 - Relevance matters, not volume: in a prototype, the 10 lines after each comment instead of its enclosing block lowered comment AUROC on test (interval −0.053 to −0.002).
+
+#### Shared evidence steps, `{{name}}`, and `$LINT_ANYTHING blame`
+
+Purpose 1: evidence from outside the file makes rules about time or history judgeable. `evals/history.ts` builds a git repository (deterministic, rebuilt each run) whose 126 TODOs in 18 TypeScript, Python, and Go files were committed on known dates, 35 of them within five days of the threshold, and judges "TODOs added more than 90 days ago must reference an issue" (47 violating) with four policies that differ only in evidence:
+
+| Evidence | AUROC | Brier | Accuracy at 0.65 | Near threshold (±5 days) | Issue-less TODOs ≤ 90 days old flagged | Caught / false alarms | $ / 1k items |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| none | 0.802 | 0.154 | 63% | 60% | 96% | 36% / 30% | $0.036 |
+| `today: echo …` step, `Today is {{today}}.` in the rule | 0.869 [+0.021, +0.113] | 0.138 [−0.025, −0.007] | 77% [+6, +22 pts] | 77% | 83% | 66% / 28% | $0.037 |
+| … plus each TODO's commit date (`blame`, age removed) | 0.891 [+0.032, +0.156] | 0.139 [−0.041, +0.014] | 83% [+9, +31 pts] | 63% | 92% | 94% / 29% | $0.041 |
+| … plus `blame`'s computed age | **0.991** [+0.111, +0.269] | **0.029** [−0.160, −0.088] | **96%** [+22, +44 pts] | **91%** | **0%** | 89% / 1% | $0.045 |
+
+- The purpose holds once the evidence states the fact the rule turns on. With the age in days on each item, accuracy rises from 63% to 96% and false alarms from issue-less young TODOs vanish.
+- Clef doesn't do the date arithmetic: given today's date and each commit date, it still flags 92% of young issue-less TODOs. Compute facts in steps; don't ask Clef to derive them.
+- Today's date alone, through `{{today}}`, helps a little (accuracy +6 to +22 points), presumably by making Clef less sure undated TODOs are old.
+
+Purpose 2: later steps can refine earlier evidence. `evals/corpus/selectors-evidence-constants/` adds a `constants` step (every named constant in the files) that a final selector step narrows to each item's own file, on top of the enclosing block, for magic values:
+
+| Split | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms |
+| --- | --- | --- | --- | --- |
+| dev | 374 (6) | 0.986 → 0.980 [−0.024, +0.009] | 0.040 → 0.043 [−0.008, +0.017] | 67 / 83 / 3.5% → 67 / 83 / 3.0% |
+| test | 225 (16) | 0.993 → 0.995 [−0.006, +0.007] | 0.044 → **0.033** [−0.023, −0.001] | 81 / 88 / 2.4% → 75 / 88 / 1.4% |
+
+- The chaining works, but its value is unconfirmed: calibration improves on test and not on dev, which has only 6 violating items. Cost rises about 10%.
+- In a prototype, the same constants placed once in the rule text (the state) instead of on each item did not help (test Brier interval −0.026 to +0.004), while on each item they did (−0.040 to −0.009). Item evidence is the stronger placement; `{{name}}` suits facts that really are global, like today's date.

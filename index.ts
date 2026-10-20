@@ -1,6 +1,7 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Runtime, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
+import { blame, currentDate } from "./src/blame.ts"
 import { Clef } from "./src/clef.ts"
 import { enclosing } from "./src/enclosing.ts"
 import { defaultItemThreshold, defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
@@ -83,6 +84,14 @@ const command = Command.make(
   Command.withSubcommands([
     Command.make("enclosing", {}, enclosing).pipe(
       Command.withDescription("Selector step: add each item's enclosing block as `enclosing` evidence (JSONL in, JSONL out)")
+    ),
+    Command.make("blame", {
+      today: Flag.String("today").pipe(
+        Flag.withDescription("Date ages are counted to, YYYY-MM-DD (default: today, UTC)"),
+        Flag.withDefault(currentDate())
+      )
+    }, ({ today }) => blame(today)).pipe(
+      Command.withDescription("Selector step: add when each item's lines last changed in git as `changed` evidence (JSONL in, JSONL out)")
     )
   ])
 )

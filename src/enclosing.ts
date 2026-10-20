@@ -1,5 +1,5 @@
 import { Effect } from "effect"
-import { formatItem, type Item, parseItem, SelectorError } from "./select.ts"
+import { itemStep, SelectorError } from "./select.ts"
 
 const indent = (line: string) => line.length - line.trimStart().length
 const numbered = (lines: ReadonlyArray<string>, from: number, to: number) =>
@@ -40,28 +40,19 @@ export const enclosingBlock = (lines: ReadonlyArray<string>, [start, end]: reado
  * `lint-anything enclosing`: reads items (JSONL) on stdin and writes them back with an `enclosing`
  * evidence field for each item that has a `path` and `lines`. Paths are read from the current directory.
  */
-export const enclosing = Effect.fn("enclosing")(function*() {
-  const input = yield* Effect.promise(() => Bun.stdin.text())
+export const enclosing = () => {
   const files = new Map<string, ReadonlyArray<string>>()
-  const output: Array<string> = []
-  for (const [index, line] of input.split("\n").entries()) {
-    if (line.trim() === "") continue
-    const item: Item = yield* parseItem(line).pipe(
-      Effect.mapError((reason) => new SelectorError({ message: `enclosing: input line ${index + 1} is not a valid item: ${reason}` }))
-    )
-    if (item.path === undefined || item.lines === undefined) {
-      output.push(formatItem(item))
-      continue
-    }
-    const path = item.path
-    if (!files.has(path)) {
-      const source = yield* Effect.tryPromise({
-        try: () => Bun.file(path).text(),
-        catch: () => new SelectorError({ message: `enclosing: cannot read ${path}` })
-      })
-      files.set(path, source.split("\n"))
-    }
-    output.push(formatItem({ ...item, evidence: [...item.evidence, ["enclosing", enclosingBlock(files.get(path)!, item.lines)]] }))
-  }
-  if (output.length > 0) yield* Effect.promise(() => Bun.write(Bun.stdout, `${output.join("\n")}\n`))
-})
+  return itemStep("enclosing", (item) =>
+    Effect.gen(function*() {
+      if (item.path === undefined || item.lines === undefined) return item
+      const path = item.path
+      if (!files.has(path)) {
+        const source = yield* Effect.tryPromise({
+          try: () => Bun.file(path).text(),
+          catch: () => new SelectorError({ message: `enclosing: cannot read ${path}` })
+        })
+        files.set(path, source.split("\n"))
+      }
+      return { ...item, evidence: [...item.evidence, ["enclosing", enclosingBlock(files.get(path)!, item.lines)] as const] }
+    }))
+}

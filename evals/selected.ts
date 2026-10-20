@@ -3,7 +3,7 @@
 import { Effect } from "effect"
 import { planItemRequests } from "../src/clef.ts"
 import { matches, parsePolicy, type Policy } from "../src/policy.ts"
-import { type Item, runSelector } from "../src/select.ts"
+import { type Item, runSelector, withEvidence } from "../src/select.ts"
 import type { makeClient } from "./client.ts"
 import { type Case, type Corpus, corpusDirectory } from "./corpus.ts"
 import type { Scored } from "./metrics.ts"
@@ -48,9 +48,10 @@ export interface ItemCase extends Case {
 }
 
 /**
- * Runs each selector on every non-ambiguous corpus file case of `split` (from the file's directory, with
- * its path as the only argument) and labels the items. Also counts how many gold violation ranges some
- * item overlaps.
+ * Runs each selector, after its evidence steps, on every non-ambiguous corpus file case of `split` (from
+ * the file's directory, with its path as the only argument) and labels the items. Each item carries the
+ * policy with its `{{name}}` references filled in for that run. Also counts how many gold violation ranges
+ * some item overlaps.
  */
 export const selectItems = async (corpus: Corpus, split: string, set: SelectorSet) => {
   const fileCases = corpus.cases.filter((item) =>
@@ -65,9 +66,10 @@ export const selectItems = async (corpus: Corpus, split: string, set: SelectorSe
   for (const fileCase of fileCases) {
     const { policy } = set.policies.find(({ original }) => original === fileCase.policy)!
     if (!matches(policy, fileCase.file.path)) continue
-    const selected = await Effect.runPromise(
-      runSelector(policy, [fileCase.file.path], `${corpusDirectory}/files/${fileCase.file.id}`)
-    )
+    const cwd = `${corpusDirectory}/files/${fileCase.file.id}`
+    const paths = [fileCase.file.path]
+    const { selected, resolved } = await Effect.runPromise(withEvidence(policy, paths, cwd, (resolved, env) =>
+      runSelector({ ...resolved, select: policy.select }, paths, cwd, env).pipe(Effect.map((selected) => ({ selected, resolved })))))
     const gold = fileCase.gold.label === "violates" ? fileCase.gold.lines ?? [] : []
     for (const entry of selected) {
       if (entry.lines === undefined) throw new Error(`${policy.name}: eval selectors must emit lines (${entry.id})`)
@@ -75,7 +77,7 @@ export const selectItems = async (corpus: Corpus, split: string, set: SelectorSe
       items.push({
         id: `${fileCase.id}:${entry.id}`,
         file: fileCase.file,
-        policy,
+        policy: resolved,
         gold: { label: violates ? "violates" : "complies", note: "" },
         entry
       })

@@ -1,7 +1,8 @@
 import { Array as Arr, Effect, Result } from "effect"
 import { Clef, type Judgment, type RequestTooLarge } from "./clef.ts"
 import { matches, type Policy } from "./policy.ts"
-import { type Item, runSelector, withEvidence } from "./select.ts"
+import type { Item } from "./item.ts"
+import { runSelector, withEvidence } from "./select.ts"
 import type { SourceFile } from "./source.ts"
 
 export type Verdict = "pass" | "review" | "violation" | "inconclusive"
@@ -28,7 +29,8 @@ export const defaultThreshold = 0.45
 export const itemReviewFloor = 0.5
 export const defaultItemThreshold = 0.65
 
-const classify = ({ violates }: Judgment, floor: number, threshold: number): Verdict =>
+/** The verdict for violation probability `violates` under the given cut-offs. */
+export const verdictOf = (violates: number, floor: number, threshold: number): Verdict =>
   violates <= floor ? "pass" : violates >= threshold ? "violation" : "review"
 
 const toFinding = (
@@ -38,7 +40,7 @@ const toFinding = (
   threshold: number
 ): Finding =>
   Result.match(judgment, {
-    onSuccess: (judgment): Finding => ({ ...base, verdict: classify(judgment, floor, threshold), ...judgment }),
+    onSuccess: (judgment): Finding => ({ ...base, verdict: verdictOf(judgment.violates, floor, threshold), ...judgment }),
     onFailure: ({ bytes }): Finding => ({ ...base, verdict: "inconclusive", reason: `request is ${bytes} bytes; Clef would truncate it` })
   })
 

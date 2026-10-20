@@ -1,10 +1,12 @@
 import { Effect, FileSystem, Path, Runtime, Schema } from "effect"
+import { type Item, toItem } from "./item.ts"
 
 /**
  * A Markdown rule. Without `select` it is judged against each whole file its globs match. With
  * `select`, a shell command emits the items to judge: it receives the matching files as arguments, or
  * none when the policy has no globs. `evidence` steps run first, in order, with the same arguments; the
- * rule text can include their output as `{{name}}`. The full policy text is sent to Clef.
+ * rule text can include their output as `{{name}}`. `examples` are labeled items (or, without a selector,
+ * labeled files) that `lint-anything check` judges against the rule. The full policy text is sent to Clef.
  */
 export interface Policy {
   readonly name: string
@@ -12,6 +14,7 @@ export interface Policy {
   readonly globs: ReadonlyArray<Bun.Glob>
   readonly select?: string
   readonly evidence: ReadonlyArray<{ readonly name: string; readonly command: string }>
+  readonly examples: ReadonlyArray<{ readonly violates: boolean; readonly item: Item }>
 }
 
 export class PolicyError extends Schema.TaggedError<PolicyError>()("PolicyError", {
@@ -23,7 +26,8 @@ export class PolicyError extends Schema.TaggedError<PolicyError>()("PolicyError"
 const Frontmatter = Schema.Struct({
   globs: Schema.optional(Schema.NonEmptyArray(Schema.NonEmptyString)),
   select: Schema.optional(Schema.NonEmptyString),
-  evidence: Schema.optional(Schema.Record(Schema.String, Schema.NonEmptyString))
+  evidence: Schema.optional(Schema.Record(Schema.String, Schema.NonEmptyString)),
+  examples: Schema.optional(Schema.Array(Schema.Unknown))
 })
 
 const frontmatterPattern = /^---\r?\n(.*?)\r?\n---(?:\r?\n|$)/s
@@ -41,7 +45,7 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
   if (body.trim() === "") {
     return yield* new PolicyError({ message: `${name}: empty policy` })
   }
-  const { globs, select, evidence } = yield* Effect.try(() => Bun.YAML.parse(match[1] ?? "")).pipe(
+  const { globs, select, evidence, examples } = yield* Effect.try(() => Bun.YAML.parse(match[1] ?? "")).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Frontmatter)),
     Effect.mapError((error) => new PolicyError({ message: `${name}: invalid frontmatter: ${String(error.message ?? error)}` }))
   )
@@ -57,14 +61,43 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
   if (unknown !== undefined) {
     return yield* new PolicyError({ message: `${name}: the rule references {{${unknown}}}, which no evidence step defines` })
   }
+  const labeled: Array<{ readonly violates: boolean; readonly item: Item }> = []
+  for (const [index, example] of (examples ?? []).entries()) {
+    const { violates, ...fields } = (typeof example === "object" && example !== null ? example : {}) as Record<string, unknown>
+    if (typeof violates !== "boolean") {
+      return yield* new PolicyError({ message: `${name}: example ${index + 1} needs violates: true or false` })
+    }
+    const item = yield* toItem({ id: `example ${index + 1}`, ...fields }).pipe(
+      Effect.mapError((reason) => new PolicyError({ message: `${name}: example ${index + 1} is not a valid item: ${reason}` }))
+    )
+    labeled.push({ violates, item })
+  }
   return {
     name,
     source,
     globs: (globs ?? []).map((glob) => new Bun.Glob(glob)),
     ...(select === undefined ? {} : { select }),
-    evidence: steps
+    evidence: steps,
+    examples: labeled
   } satisfies Policy
 })
+
+/**
+ * The policy without its `examples` key, so the rule can be judged on examples it hasn't seen. The rest of
+ * the frontmatter keeps its exact text.
+ */
+export const withoutExamples = (policy: Policy): Policy => {
+  const match = frontmatterPattern.exec(policy.source)!
+  const kept: Array<string> = []
+  let inExamples = false
+  for (const line of match[1]!.split(/\r?\n/)) {
+    // A top-level key starts at column 0; the examples block runs until the next one.
+    const key = /^([A-Za-z_][\w-]*)\s*:/.exec(line)?.[1]
+    if (key !== undefined) inExamples = key === "examples"
+    if (!inExamples) kept.push(line)
+  }
+  return { ...policy, source: `---\n${kept.join("\n")}\n---\n${policy.source.slice(match[0].length)}`, examples: [] }
+}
 
 /** The policy with each `{{name}}` in its rule body replaced by that evidence step's output. */
 export const resolveReferences = (policy: Policy, outputs: ReadonlyMap<string, string>): Policy => {

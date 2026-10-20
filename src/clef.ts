@@ -1,7 +1,7 @@
 import { Config, Context, Effect, flow, Layer, Result, Runtime, Schedule, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import type { Policy } from "./policy.ts"
-import type { Item } from "./select.ts"
+import type { Item } from "./item.ts"
 import type { SourceFile } from "./source.ts"
 
 export type Model = "clef" | "clef-flash"

@@ -114,6 +114,37 @@ A `TODO` or `FIXME` comment added more than 90 days ago must reference a trackin
 - What helps, from the evals: evidence placed on each item beats the same evidence placed once in the rule, and a computed fact beats raw data Clef has to reason over (an age in days, not a commit date). Evidence costs input tokens: the enclosing block made items 2.4–3.4× as expensive.
 - Policies can share steps. A selector or evidence step whose command, arguments, directory, and earlier evidence (by content) match one already run in this lint run reuses its output instead of running again. Put a selector several policies use in a script (for example `.lint-anything/lib/functions.sh`) and call it from each.
 
+### Examples and `check`
+
+A policy can carry labeled examples: items (for a selector policy) or files (for a policy judged per file) with `violates: true` or `false`. Each example takes the item fields (`text`, and optionally `id`, `path`, `lines`, and evidence fields such as `enclosing`, which a selector would otherwise have added).
+
+````md
+---
+globs: ["src/**/*.ts"]
+select: |
+  rg --json -w 'TODO|FIXME' "$@" | jq -c '…'
+examples:
+  - violates: true
+    text: "// TODO: make this faster"
+  - violates: false
+    text: "// TODO(#412): drop once the v1 API is gone"
+---
+# TODOs reference an issue
+
+Every `TODO` or `FIXME` comment must reference a tracking issue.
+````
+
+- Examples are part of the policy file, so Clef reads them with the rule on every request: they work as few-shot examples (a small gain in the evals).
+- `lint-anything check [--rules-dir …]` judges each policy's examples against the rule with the examples removed, so the wording alone has to get them right, using the same request shape and cut-offs as linting. Each example `agree`s (a violating example is a `violation`, a clean one passes), is `unsure` (`review`), or `disagree`s; any disagreement exits `1`.
+
+```
+agree      0.99   no-debugger  example 1 (violates): violation
+disagree   0.02   no-debugger  example 2 (violates): pass
+2 examples: 1 agree, 0 unsure, 1 disagree
+```
+
+- `check` catches a rule that's about the wrong thing, but not every bad wording: in the evals, Clef judged by a rule's topic and ignored an added "this rule is inverted" (see Evals).
+
 ## How it works
 
 Each file is paired with every policy without a selector whose globs match its path, and all of a file's policies are judged together, with up to 8 files in flight. Files over 4,000 bytes are judged as excerpts of at most 4,000 bytes, cut before top-level declarations where possible; each excerpt's path names its lines. One Clef request carries short judging guidance, the excerpt's path and text, plus one yes/no question per policy: does the file violate it? Clef answers each question with a probability, and a policy's score is its highest across the file's excerpts. A policy that doesn't apply to a file scores low and passes. Files with no matching policy send nothing.
@@ -172,6 +203,8 @@ bun evals/items.ts --split test production
 bun evals/compare.ts --split test evals/corpus/selectors evals/corpus/selectors-evidence   # selector sets, policy by policy
 bun evals/history.ts                       # evidence from outside the file: a dated git fixture
 bun evals/shared.ts                        # shared steps run once (stub Clef, no requests)
+bun evals/examples.ts                      # policy examples: few-shot, and whether check catches bad wording
+bun evals/cutoffs.ts items                 # per-policy cut-offs tuned on dev vs. global (stored scores)
 ```
 
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
@@ -292,3 +325,39 @@ Purpose: policies that share a selector or evidence step don't repeat the work. 
 | with sharing | **1** | **1** | 936, digest `08b03c81…` | 142–149 ms |
 
 The purpose holds: each shared command runs once, findings are byte-identical, and step time falls about 5×.
+
+#### Policy examples and `check`
+
+`evals/examples.ts` measures both purposes on the six corpus selector policies.
+
+Purpose 1: examples in a policy improve its judgments (few-shot). Each policy gets two violating items and the two clean items the baseline scored highest, taken from the other split, as `examples`:
+
+| Split | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items |
+| --- | --- | --- | --- | --- | --- |
+| dev | 1,076 (97) | 0.951 → 0.953 [−0.005, +0.011] | 0.084 → 0.083 [−0.006, +0.005] | 71 / 88 / 7.2% → 74 / 89 / 8.0% | $0.047 → $0.052 |
+| test | 567 (61) | 0.967 → **0.976** [+0.001, +0.020] | 0.078 → **0.069** [−0.016, −0.004] | 59 / 87 / 6.7% → 62 / 85 / 5.5% | $0.050 → $0.056 |
+
+A small gain, confirmed on test and not on dev; magic values improves most on test (Brier 0.077 → 0.055, interval −0.035 to −0.012; false alarms 8.6% → 2.9%). Cost rises about 11%.
+
+Purpose 2: `check` catches a badly worded rule. Each policy is checked on three violating and three clean dev items (a fixed pseudo-random pick, standing in for clear examples an author writes) in its own wording and three corrupted ones:
+
+| Wording | Policies whose `check` fails | Examples that agree |
+| --- | --- | --- |
+| original | 2 / 6 | 28 / 31 (90%) |
+| another policy's rule | **5 / 6** | 15 / 31 (48%) |
+| title only | 3 / 6 | 24 / 31 (77%) |
+| "The rule below is inverted: …" + original | 2 / 6 | 27 / 31 (87%) |
+
+- The purpose holds only partly. `check` catches a rule about the wrong thing (agreement falls from 90% to 48%), barely notices a rule cut to its title, and doesn't notice an inverted one: Clef judges by the rule's topic and ignores the added inversion.
+- Its pass/fail gate is strict: the comments and magic-values policies fail in their original wording, because Clef misjudges one or two of their examples. Read the agreement, not just the exit code, for semantic rules.
+
+#### Per-policy cut-offs (not shipped)
+
+Purpose: cut-offs fitted to each policy beat the global ones. `evals/cutoffs.ts` tunes each policy's cut-offs on its dev scores (far more labeled cases than a policy's examples would give) and applies them to test:
+
+| Test split | Verdict F1, global → per policy | Violations → `violation` | Violations surfaced | Clean not passed | Ambiguous → `review` |
+| --- | --- | --- | --- | --- | --- |
+| items | 0.539 → 0.551 | 59.0% → 65.6% | 86.9% → 67.2% | 6.7% → 3.4% | – |
+| files | 0.559 → 0.510 | 43.2% → 71.6% | 62.2% → 78.4% | 8.3% → 11.6% | 32.4% → 2.9% |
+
+The purpose fails: per-policy cut-offs overfit dev. Items lose a fifth of surfaced violations for a 0.012 F1 gain; files lose the `review` band almost entirely. Policies keep the global cut-offs.

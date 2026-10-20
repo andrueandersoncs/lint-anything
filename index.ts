@@ -2,6 +2,7 @@ import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Runtime, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { Clef } from "./src/clef.ts"
+import { enclosing } from "./src/enclosing.ts"
 import { defaultItemThreshold, defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
 import { loadPolicies } from "./src/policy.ts"
 import { readSources } from "./src/source.ts"
@@ -77,7 +78,14 @@ const command = Command.make(
       return yield* new ViolationsFound({ count })
     }
   })
-).pipe(Command.withDescription("Lint files against natural-language policies with Cloudflare Clef"))
+).pipe(
+  Command.withDescription("Lint files against natural-language policies with Cloudflare Clef"),
+  Command.withSubcommands([
+    Command.make("enclosing", {}, enclosing).pipe(
+      Command.withDescription("Selector step: add each item's enclosing block as `enclosing` evidence (JSONL in, JSONL out)")
+    )
+  ])
+)
 
 command.pipe(
   Command.run({ version: "0.1.0" }),

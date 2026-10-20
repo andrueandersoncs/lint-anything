@@ -75,10 +75,26 @@ Every `TODO` or `FIXME` comment must reference a tracking issue, written as `#12
   | `text` | yes | What Clef judges against the rule |
   | `path` | no | The item's file |
   | `lines` | no | `[start, end]`, 1-based and inclusive |
-  | `context` | no | Extra text Clef reads alongside the item, such as the enclosing function |
+  | any other field | no | Evidence: a string Clef reads alongside the item, under the field's name (for example `enclosing`). Fields are shown in the order the selector wrote them; empty ones are skipped |
 
 - A non-zero exit or a line that isn't a valid item stops the run (exit 2). `rg` and `grep` exit 1 when nothing matches, so end a bare search with `|| true`, or pipe it on as above.
-- Each item is judged on its own, with only its `context` and location. Pick items that carry what the rule needs: a rule about whole files is better judged per file.
+- Each item is judged on its own, with only its evidence and location. Pick items that carry what the rule needs: a rule about whole files is better judged per file.
+
+#### Evidence steps
+
+A selector can pipe its items through further steps that add evidence. Selectors run with `$LINT_ANYTHING` set to the command that runs this CLI, whose built-in steps read items as JSONL on stdin and write them back with a field added:
+
+| Step | Adds |
+| --- | --- |
+| `$LINT_ANYTHING enclosing` | `enclosing`: the block around each item with `path` and `lines` — the nearest less-indented line above that opens a function, method, class, or block, down to where it closes, numbered and capped at 80 lines. With no such block, the 15 lines after the item. |
+
+```yaml
+select: |
+  rg --json -P '(?<![\w.])(?:[2-9]|\d{2,})(?![\w.])' "$@" | jq -c '…' |
+    $LINT_ANYTHING enclosing
+```
+
+Any program that reads and writes JSONL items works as a step. Evidence costs input tokens: the enclosing block made items 2.5–3.3× as expensive in the evals, and paid for it (see Evals).
 
 ## How it works
 
@@ -135,6 +151,7 @@ bun evals/run.ts                           # one-factor sweep around production 
 bun evals/run.ts --split test --category semantic production production,chunk=0
 bun evals/items.ts                         # selector item request shapes on the dev split
 bun evals/items.ts --split test production
+bun evals/compare.ts --split test evals/corpus/selectors evals/corpus/selectors-evidence   # selector sets, policy by policy
 ```
 
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
@@ -198,3 +215,24 @@ Selector findings, 2026-10-20 (shape and cut-offs chosen on dev; test: 567 items
 - A matched selector beats judging the whole file for the same rules. Taking a policy's highest item score as its file score lifts AUROC from 0.920 to 0.966 on test (0.923 to 0.974 on dev), outside noise, and each finding points at its lines.
 - Items score higher than whole files: at the file cut-offs (0.3 / 0.45), 28% of clean items would be flagged. On dev, 0.5 / 0.65 catches 71% of violating items as `violation` with 2% of clean items flagged, and surfaces 88% with 7% flagged; on test, 59% at 2% and 87% at 7%.
 - Mechanical rules are solved (item AUROC 1.0 for TODOs, `any`, and swallowed exceptions). Semantic items: comments 0.944, magic values 0.972, test names 0.767 on 11 items.
+
+### Evidence findings
+
+Each feature that adds evidence or changes how items are judged has an intended purpose, an eval that measures it, and a result. Choices are made on dev and confirmed on test; intervals are 95% paired bootstraps resampling files.
+
+`evals/compare.ts` scores selector sets against the same item labels with the CLI's request shape and prints, per policy, AUROC and Brier with intervals against the first set, caught / surfaced / false-alarm rates at the item cut-offs, and cost per 1,000 items. Its scores go to `evals/results/items.<split>.<set>/production.jsonl`.
+
+#### Evidence fields and `$LINT_ANYTHING enclosing`
+
+Purpose: Clef judges an item better when it sees the code around it. Measured on the two semantic selector policies whose items are short (comments, magic-value lines) by `evals/corpus/selectors-evidence/`, which pipes the same items through `$LINT_ANYTHING enclosing`.
+
+| Policy, split | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items |
+| --- | --- | --- | --- | --- | --- |
+| comments, dev | 584 (36) | 0.865 → 0.900 [−0.013, +0.086] | 0.102 → 0.086 [−0.030, +0.001] | 33 / 72 / 8.2% → 33 / 75 / 7.7% | $0.043 → $0.148 |
+| comments, test | 290 (15) | 0.944 → 0.951 [−0.035, +0.042] | 0.083 → **0.070** [−0.021, −0.005] | 20 / 67 / 5.5% → 47 / 73 / 5.1% | $0.045 → $0.115 |
+| magic values, dev | 374 (6) | 0.974 → 0.986 [−0.003, +0.041] | 0.071 → **0.040** [−0.043, −0.020] | 83 / 83 / 5.7% → 67 / 83 / 3.5% | $0.044 → $0.128 |
+| magic values, test | 225 (16) | 0.972 → **0.993** [+0.002, +0.051] | 0.077 → **0.044** [−0.051, −0.019] | 44 / 100 / 8.6% → 81 / 88 / 2.4% | $0.044 → $0.107 |
+
+- The purpose holds: calibration improves on both rules on test (and on dev for magic values; comments is borderline on dev), magic values also ranks better on test, and clean items flagged fall from 8.6% to 2.4%. More violating comments reach `violation` (20% → 47% on test).
+- It costs 2.4–3.4× more per item, because the block is repeated in each item's question.
+- Relevance matters, not volume: in a prototype, the 10 lines after each comment instead of its enclosing block lowered comment AUROC on test (interval −0.053 to −0.002).

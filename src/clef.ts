@@ -182,11 +182,11 @@ export const itemCriteria = {
   false: "The item follows the rule, or the rule governs nothing in it."
 }
 
-/** An item as the judge reads it: where it is, any context, then the item itself. */
+/** An item as the judge reads it: where it is, each non-empty evidence field under its name, then the item. */
 export const renderItem = (item: Item) =>
   [
     `location: ${item.path ?? item.id}${item.lines === undefined ? "" : ` (lines ${item.lines[0]}-${item.lines[1]})`}`,
-    ...(item.context === undefined || item.context === "" ? [] : [`context:\n${item.context}`]),
+    ...item.evidence.flatMap(([name, value]) => (value === "" ? [] : [`${name}:\n${value}`])),
     `item:\n${item.text}`
   ].join("\n\n")
 

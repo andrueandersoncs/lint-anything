@@ -37,7 +37,8 @@ ${rule} The repository has {{files}} files.
 // Every judgment scores 0.1; this eval measures the steps, not Clef.
 const stub = Layer.succeed(Clef, Clef.of({
   judge: (_, applicable) => Effect.succeed(applicable.map(() => Result.succeed({ violates: 0.1 }))),
-  judgeItems: (_, items) => Effect.succeed(items.map(() => Result.succeed({ violates: 0.1 })))
+  judgeItems: (_, items) => Effect.succeed(items.map(() => Result.succeed({ violates: 0.1 }))),
+  stats: Effect.succeed({ requests: 0, cached: 0 })
 }))
 
 const started = performance.now()

@@ -14,6 +14,7 @@ class ViolationsFound extends Schema.TaggedError<ViolationsFound>()("ViolationsF
 }
 
 const rulesDirectory = ".lint-anything/rules"
+const cacheDirectory = ".lint-anything/cache"
 const verdicts: ReadonlyArray<Verdict> = ["violation", "review", "inconclusive", "pass"]
 
 /** Where a finding is: a file's path, an item's `path:start-end`, or else the item's id. */
@@ -50,7 +51,7 @@ const command = Command.make(
     const policies = yield* loadPolicies(rulesDirectory)
     const sources = yield* readSources(files)
     const findings = yield* lint(sources, policies, { threshold: defaultThreshold, itemThreshold: defaultItemThreshold }).pipe(
-      Effect.provide(Clef.layer("clef"))
+      Effect.provide(Clef.layer("clef", cacheDirectory))
     )
     yield* Console.log(formatText(findings))
     const count = findings.filter((finding) => finding.verdict === "violation").length

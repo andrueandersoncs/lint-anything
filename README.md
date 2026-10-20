@@ -11,7 +11,7 @@ echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
 bun index.ts 'src/**/*.ts'
 ```
 
-Pass one or more globs; the CLI takes nothing else. They are expanded relative to the current directory, deduplicated, and read whole. Scope them (for example `src/**/*.ts`, not `**/*`) to avoid `node_modules`. Policies are read from `.lint-anything/rules`, judged by the `clef` model, and printed as text.
+Pass one or more globs; the CLI takes nothing else. They are expanded relative to the current directory, deduplicated, and read whole. Scope them (for example `src/**/*.ts`, not `**/*`) to avoid `node_modules`. Policies are read from `.lint-anything/rules`, judged by the `clef` model, and printed as text. Clef's answers are cached in `.lint-anything/cache` (add it to `.gitignore`).
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
@@ -160,7 +160,9 @@ A request holds at most 64 questions (Clef's limit) and 64,000 bytes. Policies o
 
 Transient HTTP failures are retried up to 3 times with exponential backoff.
 
-Clef's answer to one question shifts a little with the other questions in its request (see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers.
+Answers are cached on disk in `.lint-anything/cache`, one file per question, keyed by the model, the request's text (guidance and excerpt, or guidance and rule), and the question (rule, or rendered item). Only questions whose inputs changed are sent: re-running on unchanged files sends nothing, and editing a policy re-asks only that policy. Delete the directory to judge everything afresh.
+
+Clef's answer to one question shifts a little with the other questions in its request (see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers; with the cache, an edit in one file also leaves the verdicts of every other file as they were.
 
 ## Output
 
@@ -203,6 +205,7 @@ bun evals/history.ts                       # evidence from outside the file: a d
 bun evals/shared.ts                        # shared steps run once (stub Clef, no requests)
 bun evals/examples.ts                      # policy examples as few-shot
 bun evals/cutoffs.ts items                 # per-policy cut-offs tuned on dev vs. global (stored scores)
+bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
 bun evals/packing.ts                       # repeatability of fresh runs (real requests) and batch independence
 bun evals/counts.ts                        # limit vs. asking the count rule of the whole file
 ```
@@ -253,7 +256,7 @@ Findings, 2026-10-20. Strategies and cut-offs were chosen on dev; these are held
 - Clef can separate semantic violations from clean code, but long files dilute them. AUROC falls from 0.90 for files under 4 KB to 0.74 above 9 KB. Judging excerpts restores much of it: on dev, clear-case AUROC rose from 0.822 to 0.871 and concordance from 0.798 to 0.843, both outside noise. On test, concordance improved by +0.041 (interval +0.006 to +0.076); the AUROC gain (+0.031) is within noise on test's smaller sample. Control rules are unchanged.
 - The old cut-offs were the biggest problem. Semantic violations mostly score 0.2–0.5, so 0.55 / 0.7 passed nearly all of them. Re-tuned cut-offs lift semantic verdict F1 from 0.375 to about 0.5 on their own.
 - Clef sees ambiguity only partly. It ranks ambiguous cases above clean ones (0.80) but barely below clear violations (about 0.6). Asking directly whether reviewers would disagree (`contest=ask`), a three-way `verdict` question, or `calibrated` wording didn't change that. With excerpts, `review` catches about a third of the ambiguous cases.
-- Nothing else helped measurably. Neither wording, question type, question ids, nor smaller batches beat production. Per-rule batches cost more without gaining once excerpts are used. clef-flash still misses most violations.
+- Nothing else helped measurably. Neither wording, question type, question ids, nor smaller batches beat production. Per-rule batches cost more without gaining once excerpts are used. clef-flash still misses most violations (and Workers AI no longer serves it; its eval answers come from `evals/.cache`).
 - The earlier synthetic-corpus finding that batching was free held only for mechanical rules. On semantic rules it lowers scores, and excerpts recover that loss more cheaply than one question per request.
 
 Selector findings, 2026-10-20 (shape and cut-offs chosen on dev; test: 567 items, 61 violating, in 149 file cases; selectors cover 62 of 71 gold violation ranges):
@@ -281,10 +284,11 @@ Each feature that adds evidence or changes how items are judged has an intended 
 | Shared steps | Policies sharing a step don't repeat it | `shared.ts` | Holds: 6 → 1 runs, identical findings, ~5× faster | yes |
 | `examples` (few-shot) | Examples improve judgments | `examples.ts` | Small: test AUROC +0.001 to +0.020, dev unchanged | yes |
 | Sorted items | The same files get the same verdicts | `packing.ts` | Holds: two fresh runs went from 40 differing verdicts to 0 | yes |
+| Answer cache (always on) | Re-runs pay only for changes; stable verdicts | `cache.ts` | Holds: 0 requests unchanged, 18 of 81 after an edit, 0 vs 25 verdict changes in untouched files | yes |
 | `limit` | Count rules judged reliably | `counts.ts` | Holds: 100% vs 81% (63% at the boundary) | yes |
 | Per-policy cut-offs | Better verdicts than global cut-offs | `cutoffs.ts` | Fails: overfits dev | no |
 | `ask` routing step | Drop items a rule doesn't govern, cutting false alarms | (commit `c825cff`) | Fails: dev false alarms rose, violations dropped | no |
-| `check` subcommand, answer cache, `--baseline` / `--changed-since`, `--sarif` | Example checks; cheaper re-runs; adoption on existing code; code scanning | (commits `d4d5052` to `1eddf4d`) | Each measured; see below | no: removed, because the CLI takes no flags or subcommands |
+| `check` subcommand, `--baseline` / `--changed-since`, `--sarif` | Example checks; adoption on existing code; code scanning | (commits `d4d5052` to `1eddf4d`) | Each measured; see below | no: removed, because the CLI takes no flags or subcommands |
 
 `evals/compare.ts` scores selector sets against the same item labels with the CLI's request shape and prints, per policy, AUROC and Brier with intervals against the first set, caught / surfaced / false-alarm rates at the item cut-offs, and cost per 1,000 items. A set whose selector drops items is scored over the union of all sets' items, a dropped item counting as a pass. Its scores go to `evals/results/items.<split>.<set>/production.jsonl`. Eval selectors call helper steps in `evals/steps/` as `bun "$EVAL_STEPS/<step>.ts"`.
 
@@ -367,14 +371,60 @@ The purpose fails: per-policy cut-offs overfit dev. Policies keep the global cut
 
 Clef's answer to a question depends on the other questions packed with it. `evals/packing.ts` judges the same 1,076 dev items in the CLI's full batches and in two half-size batches (odd and even items): only 2.8% of answers are identical (mean change 0.068, largest 0.718, 81 verdicts different), but quality is unchanged (AUROC 0.951 → 0.944 [−0.021, +0.006], Brier 0.084 → 0.083 [−0.007, +0.006]). In a probe on one 40-item request, reversing the question order changed answers by 0.107 on average.
 
-Purpose of sorting items: the same files get the same verdicts. Before items were sorted, two fresh runs on the same files disagreed on 40 verdicts, because `rg` emits matches across files in varying order. `evals/packing.ts` runs the CLI's lint twice on 24 dev files (367 checks, real requests): 0 verdicts differ and every score is identical.
+Purpose of sorting items: the same files get the same verdicts. Before items were sorted, two fresh runs on the same files disagreed on 40 verdicts, because `rg` emits matches across files in varying order. `evals/packing.ts` runs the CLI's lint twice on 24 dev files without the cache (367 checks, real requests): 0 verdicts differ and every score is identical.
 
-#### Removed from the CLI: `check`, answer cache, baseline, changed-lines scope, SARIF
+#### Answer cache
+
+Purpose: re-runs pay only for what changed, with results that hold still. `evals/cache.ts` lints 24 dev corpus files with four whole-file and two selector policies through the CLI's Clef path, with a fresh cache directory, then appends a function (narrating comment, issue-less TODO, magic number) to the three files first in path order, which shifts the packing of every item after them:
+
+| Run | Requests | Cached answers | Findings vs. a fresh run |
+| --- | --- | --- | --- |
+| 1. cold cache | 81 | 0 | – |
+| 2. re-run, nothing changed | **0** | 629 | identical (401 checks, every score equal) |
+| 3. after the edit, with the cache | **18** | 565 | 91.4% same verdict (35 of 407 differ), mean score change 0.058 |
+| 4. after the edit, no cache | 81 | 0 | – |
+
+Run 3 differs from run 4 because a cached answer was given with other questions than a fresh request would pack it with; packing moves answers without changing their quality (see Packing). So the fair comparison is stability, on the 262 checks of the 21 files nobody edited:
+
+| After the edit | Verdicts changed vs. run 1 | Mean score change |
+| --- | --- | --- |
+| with the cache | **0** | 0 |
+| without the cache | 25 | 0.060 |
+
+The purpose holds: an unchanged run sends nothing, an edit sends only its questions (18 of 81 requests), and without the cache an edit in three files flips verdicts in files nobody touched. The cache is always on.
+
+#### Defaults of the removed flags
+
+Each flag the CLI used to take is now fixed at one value. Whether that value is the best default, measured where an eval can measure it (2026-10-20):
+
+| Flag | Fixed at | Evidence | Best default? |
+| --- | --- | --- | --- |
+| `--threshold` (files) | floor 0.3, threshold 0.45 | `run.ts`, dev, 1,081 cases: the F1-maximizing cut-offs are exactly 0.3 / 0.45 (F1 0.558). Test at 0.3 / 0.45: F1 0.559 | yes |
+| `--item-threshold` | floor 0.5, threshold 0.65 | `items.ts`, dev, 1,076 items: F1 0.564 at 0.5 / 0.65; the F1 maximum, 0.65 / 0.675, gains 0.006 by nearly closing the `review` band. On test it gives F1 0.537 vs. 0.539 and catches 56% vs. 59% | yes: equal F1, and the band keeps uncertain items visible |
+| `--model` | `clef` | `run.ts` (cached answers): clef-flash AUROC 0.896 → 0.758 [−0.175, −0.102] on dev, 0.871 → 0.743 [−0.172, −0.083] on test; false alarms 6% → 35% (dev). Workers AI now rejects `clef-flash` ("Unsupported model 'clef-flash'. Use 'clef'") | yes; the only model that runs |
+| `--no-cache` | cache on | `cache.ts` above | yes (on) |
+| `--changed-since` | off | Throwaway script on `adoption.ts`'s repository and stub (below) | yes (off) |
+| `--baseline` / `--write-baseline` | off | Same script | yes (off) |
+| `--json`, `--sarif`, `--rules-dir` | text to stdout, no SARIF file, `.lint-anything/rules` | Output format, an extra output file, and a location: no eval measures them. Text was the default before any of these flags existed; SARIF would write a file on every run | not measurable; kept as before |
+
+`--changed-since HEAD` and an automatic baseline as defaults, on a 20-file repository with 11 committed violations (the stub judges by rule, so counts are exact):
+
+| Scenario | Default | Violations reported | Questions | Exit |
+| --- | --- | --- | --- | --- |
+| clean checkout (CI on a pushed commit) | off | 11 of 11 | 32 | 1 |
+| | changed since HEAD | 0 of 11 | 0 | 0 |
+| | baseline written on first run | 0 of 11 | 32 | 0 |
+| 3 new violations uncommitted | off | 14 of 14 | 35 | 1 |
+| | changed since HEAD | 3 of 14 | 5 | 1 |
+| | baseline from the first run | 3 of 14 | 35 | 1 |
+
+Either default passes a clean checkout that has violations, and changed-since fails outright outside a git repository (`git diff HEAD` errors, exit 2). Off reports everything in the files given; scope a run by passing fewer globs.
+
+#### Removed from the CLI: `check`, baseline, changed-lines scope, SARIF
 
 These were built and measured with new flags and subcommands, then removed because the CLI takes nothing but file globs. The code and evals are in the git history.
 
 - `lint-anything check` (commit `d4d5052`): judged each policy's examples against the rule without them. It caught a rule about the wrong thing (examples agreeing fell from 90% to 48%) but not an inverted one (87%), and it failed two semantic policies in their own wording.
-- Answer cache (`--cache`, commit `91832ae`, re-measured in `d43f246`): a re-run on unchanged files sent 0 of 81 requests, an edit in 3 of 24 files sent 18, and unedited files kept all their verdicts (25 of 262 changed without the cache).
 - `--baseline` and `--changed-since` (commit `d43f246`): on a generated repository, all five adoption scenarios behaved as expected; a baseline keyed by item text survived line shifts (one keyed by line would have called 7 of 11 accepted findings new).
 - `--sarif` (commit `1eddf4d`): the log validated against the SARIF 2.1.0 schema and every finding mapped to one result.
 - `ask` routing step (commit `c825cff`): routing the comments policy's items through "is this exempt?" raised dev false alarms from 8.2% to 11.5% and dropped 3 of 36 violating comments.

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { Effect, Runtime, Schema } from "effect"
@@ -72,11 +72,24 @@ export const itemStep = Effect.fnUntraced(function*<E, R>(name: string, step: (i
 /** The shell command that runs this CLI, given to selectors as `$LINT_ANYTHING` for its helper subcommands. */
 export const selfCommand = `${process.execPath} ${resolve(import.meta.dir, "../index.ts")}`
 
-/** Runs `command` with `sh -c` and `paths` as `"$@"`, from `cwd`, with `$LINT_ANYTHING` and `env` set. */
+// Policies often share a selector or an evidence step; within one process each distinct run happens once.
+const runs = new Map<string, Promise<Awaited<ReturnType<typeof Bun.$>>>>()
+
+/**
+ * Runs `command` with `sh -c` and `paths` as `"$@"`, from `cwd`, with `$LINT_ANYTHING` and `env` set,
+ * once per distinct command, arguments, directory, and evidence (by content, not by file path).
+ */
 const shell = (command: string, paths: ReadonlyArray<string>, cwd: string | undefined, env: Readonly<Record<string, string>>) =>
   Effect.promise(() => {
-    const run = Bun.$`sh -c ${command} sh ${paths}`.env({ ...process.env, LINT_ANYTHING: selfCommand, ...env }).quiet().nothrow()
-    return cwd === undefined ? run : run.cwd(cwd)
+    const evidence = Object.entries(env).map(([name, file]) => [name, readFileSync(file, "utf8")])
+    const key = JSON.stringify([command, paths, cwd ?? process.cwd(), evidence])
+    let run = runs.get(key)
+    if (run === undefined) {
+      const started = Bun.$`sh -c ${command} sh ${paths}`.env({ ...process.env, LINT_ANYTHING: selfCommand, ...env }).quiet().nothrow()
+      run = Promise.resolve(cwd === undefined ? started : started.cwd(cwd))
+      runs.set(key, run)
+    }
+    return run
   })
 
 /**

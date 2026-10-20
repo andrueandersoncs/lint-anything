@@ -112,6 +112,7 @@ A `TODO` or `FIXME` comment added more than 90 days ago must reference a trackin
 - Step names match `[A-Za-z_][A-Za-z0-9_]*`. A `{{name}}` no step defines, or a step that exits non-zero, stops the run (exit 2).
 - A later step can refine an earlier one's output. `evals/corpus/selectors-evidence-constants/` has a `constants` step listing every file's named constants, and a final selector step that attaches to each item only its own file's (`jq --rawfile c "$EVIDENCE_constants" '…'`).
 - What helps, from the evals: evidence placed on each item beats the same evidence placed once in the rule, and a computed fact beats raw data Clef has to reason over (an age in days, not a commit date). Evidence costs input tokens: the enclosing block made items 2.4–3.4× as expensive.
+- Policies can share steps. A selector or evidence step whose command, arguments, directory, and earlier evidence (by content) match one already run in this lint run reuses its output instead of running again. Put a selector several policies use in a script (for example `.lint-anything/lib/functions.sh`) and call it from each.
 
 ## How it works
 
@@ -170,6 +171,7 @@ bun evals/items.ts                         # selector item request shapes on the
 bun evals/items.ts --split test production
 bun evals/compare.ts --split test evals/corpus/selectors evals/corpus/selectors-evidence   # selector sets, policy by policy
 bun evals/history.ts                       # evidence from outside the file: a dated git fixture
+bun evals/shared.ts                        # shared steps run once (stub Clef, no requests)
 ```
 
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
@@ -279,3 +281,14 @@ Purpose 2: later steps can refine earlier evidence. `evals/corpus/selectors-evid
 
 - The chaining works, but its value is unconfirmed: calibration improves on test and not on dev, which has only 6 violating items. Cost rises about 10%.
 - In a prototype, the same constants placed once in the rule text (the state) instead of on each item did not help (test Brier interval −0.026 to +0.004), while on each item they did (−0.040 to −0.009). Item evidence is the stronger placement; `{{name}}` suits facts that really are global, like today's date.
+
+#### Shared steps
+
+Purpose: policies that share a selector or evidence step don't repeat the work. `evals/shared.ts` lints `src/**/*.ts` with six policies that share one evidence step and one selector (with `$LINT_ANYTHING enclosing`), against a stub Clef that sends no requests, and counts executions through a log each shared command appends to.
+
+| Code | Evidence step runs | Selector runs | Findings | Time (3 runs) |
+| --- | --- | --- | --- | --- |
+| before sharing | 6 | 6 | 936, digest `08b03c81…` | 757–776 ms |
+| with sharing | **1** | **1** | 936, digest `08b03c81…` | 142–149 ms |
+
+The purpose holds: each shared command runs once, findings are byte-identical, and step time falls about 5×.

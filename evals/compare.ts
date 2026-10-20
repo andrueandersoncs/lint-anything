@@ -51,8 +51,8 @@ for (const { policy } of baseline!.set.policies) {
   const compared = candidates.filter(({ set }) => set.policies.some((entry) => entry.policy.name === policy.name))
   if (compared.length === 0) continue
   const sets = [baseline!, ...compared]
-  // A selector may drop items (for example after `$LINT_ANYTHING ask`); a dropped item is never reported,
-  // so it counts as a pass (score 0). Every set is scored over the union of the items any set selected.
+  // A selector may drop items (a filtering step); a dropped item is never reported, so it counts as a pass
+  // (score 0). Every set is scored over the union of the items any set selected.
   const own = ({ run }: (typeof runs)[number]) => run.scored.filter((entry) => entry.item.policy.name === policy.name)
   const union = new Map<string, Scored>()
   for (const entry of sets) for (const scored of own(entry)) if (!union.has(scored.item.id)) union.set(scored.item.id, scored)

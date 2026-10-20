@@ -37,7 +37,6 @@ ${rule} The repository has {{files}} files.
 const stub = Layer.succeed(Clef, Clef.of({
   judge: (_, applicable) => Effect.succeed(applicable.map(() => Result.succeed({ violates: 0.1 }))),
   judgeItems: (_, items) => Effect.succeed(items.map(() => Result.succeed({ violates: 0.1 }))),
-  ask: (_, items) => Effect.succeed(items.map(() => Result.succeed(0))),
   stats: Effect.succeed({ requests: 0, cached: 0 })
 }))
 

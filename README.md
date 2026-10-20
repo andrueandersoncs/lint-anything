@@ -289,7 +289,7 @@ Selector findings, 2026-10-20 (shape and cut-offs chosen on dev; test: 567 items
 
 Each feature that adds evidence or changes how items are judged has an intended purpose, an eval that measures it, and a result. Choices are made on dev and confirmed on test; intervals are 95% paired bootstraps resampling files.
 
-`evals/compare.ts` scores selector sets against the same item labels with the CLI's request shape and prints, per policy, AUROC and Brier with intervals against the first set, caught / surfaced / false-alarm rates at the item cut-offs, and cost per 1,000 items. Its scores go to `evals/results/items.<split>.<set>/production.jsonl`.
+`evals/compare.ts` scores selector sets against the same item labels with the CLI's request shape and prints, per policy, AUROC and Brier with intervals against the first set, caught / surfaced / false-alarm rates at the item cut-offs, and cost per 1,000 items. A set whose selector drops items is scored over the union of all sets' items, a dropped item counting as a pass. Its scores go to `evals/results/items.<split>.<set>/production.jsonl`.
 
 #### Evidence fields and `$LINT_ANYTHING enclosing`
 
@@ -415,3 +415,18 @@ Purposes: a baseline lets a team adopt a rule on existing code (what's there is 
 | 5. `--changed-since HEAD` after touching 3 files (one new) | all 3 violations in changed lines found | 3 of 3, with 5 questions instead of 37 |
 
 The purposes hold. The known gap is by design: a whole-file finding is accepted per file and policy, so a new violation in an accepted file is not reported (step 3's fourth violation). Use a selector when a rule's violations need to be told apart.
+
+#### Clef as a routing step (not shipped)
+
+Purpose: a cheap first question drops items a rule doesn't govern, cutting false alarms. The experiment (commit `c825cff`) added `$LINT_ANYTHING ask --field NAME "QUESTION"`, which adds each item's probability that the answer is yes, and routed the comments policy's items through "Is this comment a license header, a doc comment describing a public API, or a tool directive?" — the exemptions the rule lists — dropping items at 0.5 or more, asked of Clef or of the cheaper clef-flash (`evals/corpus/selectors-routed*/`, `evals/routing.ts`):
+
+| Split | Routing | Items dropped (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items (routing + judging) |
+| --- | --- | --- | --- | --- | --- | --- |
+| dev | none | – | 0.865 | 0.102 | 33 / 72 / 8.2% | $0.043 |
+| dev | Clef | 172 (3) | 0.856 [−0.046, +0.026] | 0.098 [−0.013, +0.007] | 47 / 67 / 11.5% | $0.035 + $0.033 |
+| dev | clef-flash | 58 (2) | 0.840 [−0.117, +0.043] | 0.098 [−0.011, +0.005] | 33 / 61 / 8.0% | $0.005 + $0.041 |
+| test | none | – | 0.944 | 0.083 | 20 / 67 / 5.5% | $0.045 |
+| test | Clef | 109 (1) | 0.901 [−0.180, +0.043] | **0.061** [−0.037, −0.006] | 27 / 73 / 5.1% | $0.036 + $0.031 |
+| test | clef-flash | 36 (0) | 0.942 [−0.021, +0.017] | **0.073** [−0.017, −0.003] | 20 / 73 / 4.4% | $0.006 + $0.043 |
+
+The purpose fails on dev, where it was to be chosen: routing with Clef raised false alarms (8.2% → 11.5%) and dropped 3 of 36 violating comments; routing with clef-flash changed little. Dropping items also repacks the rest, which moves their answers (see Answer cache). Test shows a calibration gain, not a false-alarm cut, and every variant costs more. `ask` was removed; filtering steps of any other kind still work, and `evals/compare.ts` scores them.

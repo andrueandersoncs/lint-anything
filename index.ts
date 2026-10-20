@@ -1,7 +1,6 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Option, Runtime, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
-import { ask } from "./src/ask.ts"
 import { applyBaseline, writeBaseline } from "./src/baseline.ts"
 import { blame, currentDate } from "./src/blame.ts"
 import { changedSince } from "./src/changes.ts"
@@ -163,18 +162,6 @@ const command = Command.make(
       if (count > 0) return yield* new ExamplesDisagree({ count })
     })).pipe(
       Command.withDescription("Judge each policy's examples against its rule (without the examples); fails when one disagrees")
-    ),
-    Command.make("ask", {
-      question: Argument.String("question").pipe(Argument.withDescription("A yes/no question about each item")),
-      field: Flag.String("field").pipe(
-        Flag.withDescription("Field that receives the probability that the answer is yes"),
-        Flag.withDefault("answer")
-      ),
-      model: sharedFlags.model,
-      cache: sharedFlags.cache,
-      noCache: sharedFlags.noCache
-    }, ({ question, field, model, cache, noCache }) => ask(question, field).pipe(Effect.provide(clefLayer(model, cache, noCache)))).pipe(
-      Command.withDescription("Selector step: ask Clef a yes/no question about each item and add the probability as a field (JSONL in, JSONL out)")
     ),
     Command.make("enclosing", {}, enclosing).pipe(
       Command.withDescription("Selector step: add each item's enclosing block as `enclosing` evidence (JSONL in, JSONL out)")

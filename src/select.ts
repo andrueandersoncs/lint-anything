@@ -36,21 +36,37 @@ export const itemStep = Effect.fnUntraced(function*<E, R>(name: string, step: (i
 /** The shell command that runs this CLI, given to selectors as `$LINT_ANYTHING` for its helper subcommands. */
 export const selfCommand = `${process.execPath} ${resolve(import.meta.dir, "../index.ts")}`
 
-// Policies often share a selector or an evidence step; within one process each distinct run happens once.
-const runs = new Map<string, Promise<Awaited<ReturnType<typeof Bun.$>>>>()
+type ShellOutput = Awaited<ReturnType<typeof Bun.$>>
 
 /**
- * Runs `command` with `sh -c` and `paths` as `"$@"`, from `cwd`, with `$LINT_ANYTHING` and `env` set,
- * once per distinct command, arguments, directory, and evidence (by content, not by file path).
+ * The steps one lint run has started, so policies that share a selector or an evidence step run it once.
+ * Create one per run: files may change between runs.
  */
-const shell = (command: string, paths: ReadonlyArray<string>, cwd: string | undefined, env: Readonly<Record<string, string>>) =>
+export type StepRuns = Map<string, Promise<ShellOutput>>
+
+/**
+ * Runs `command` with `sh -c` and `paths` as `"$@"`, from `cwd`, with `$LINT_ANYTHING` and `env` set. With
+ * `runs`, a command already run with the same arguments, directory, and evidence (by content, not by file
+ * path) reuses that run's output.
+ */
+const shell = (
+  command: string,
+  paths: ReadonlyArray<string>,
+  cwd: string | undefined,
+  env: Readonly<Record<string, string>>,
+  runs: StepRuns | undefined
+) =>
   Effect.promise(() => {
+    const start = () => {
+      const started = Bun.$`sh -c ${command} sh ${paths}`.env({ ...process.env, LINT_ANYTHING: selfCommand, ...env }).quiet().nothrow()
+      return Promise.resolve(cwd === undefined ? started : started.cwd(cwd))
+    }
+    if (runs === undefined) return start()
     const evidence = Object.entries(env).map(([name, file]) => [name, readFileSync(file, "utf8")])
     const key = JSON.stringify([command, paths, cwd ?? process.cwd(), evidence])
     let run = runs.get(key)
     if (run === undefined) {
-      const started = Bun.$`sh -c ${command} sh ${paths}`.env({ ...process.env, LINT_ANYTHING: selfCommand, ...env }).quiet().nothrow()
-      run = Promise.resolve(cwd === undefined ? started : started.cwd(cwd))
+      run = start()
       runs.set(key, run)
     }
     return run
@@ -65,7 +81,8 @@ export const withEvidence = <A, E, R>(
   policy: Policy,
   paths: ReadonlyArray<string>,
   cwd: string | undefined,
-  use: (policy: Policy, env: Readonly<Record<string, string>>) => Effect.Effect<A, E, R>
+  use: (policy: Policy, env: Readonly<Record<string, string>>) => Effect.Effect<A, E, R>,
+  runs?: StepRuns
 ): Effect.Effect<A, E | SelectorError, R> =>
   policy.evidence.length === 0
     ? use(policy, {})
@@ -76,7 +93,7 @@ export const withEvidence = <A, E, R>(
           const env: Record<string, string> = {}
           const outputs = new Map<string, string>()
           for (const step of policy.evidence) {
-            const result = yield* shell(step.command, paths, cwd, env)
+            const result = yield* shell(step.command, paths, cwd, env, runs)
             if (result.exitCode !== 0) {
               return yield* new SelectorError({
                 message: `${policy.name}: evidence step ${step.name} exited ${result.exitCode}: ${result.stderr.toString().trim().slice(0, 500)}`
@@ -102,9 +119,10 @@ export const runSelector = Effect.fn("runSelector")(function*(
   policy: Policy & { readonly select: string },
   paths: ReadonlyArray<string>,
   cwd?: string,
-  env: Readonly<Record<string, string>> = {}
+  env: Readonly<Record<string, string>> = {},
+  runs?: StepRuns
 ) {
-  const result = yield* shell(policy.select, paths, cwd, env)
+  const result = yield* shell(policy.select, paths, cwd, env, runs)
   if (result.exitCode !== 0) {
     return yield* new SelectorError({
       message: `${policy.name}: selector exited ${result.exitCode}: ${result.stderr.toString().trim().slice(0, 500)}`

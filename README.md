@@ -22,8 +22,11 @@ Pass one or more globs. They are expanded relative to the current directory, ded
 | `--json` | off | Print every finding as JSON |
 | `--cache` | `.lint-anything/cache` | Directory that caches Clef's answers across runs (add it to `.gitignore`) |
 | `--no-cache` | off | Neither read nor write the cache |
+| `--changed-since <ref>` | – | Judge only files that changed since a git ref (plus untracked files), and only selector items whose lines changed |
+| `--write-baseline <file>` | – | Record every non-passing finding as accepted in this file, and exit `0` |
+| `--baseline <file>` | – | Accept the findings recorded in this file; only new ones are reported and fail the run |
 
-`lint-anything check` takes the same flags, without file globs (see Examples and `check`).
+`lint-anything check` takes the shared flags (`--rules-dir`, the thresholds, `--model`, `--json`, the cache), without file globs (see Examples and `check`).
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
@@ -32,6 +35,11 @@ Pass one or more globs. They are expanded relative to the current directory, ded
 | `CLOUDFLARE_API_BASE_URL` | no | Defaults to `https://api.cloudflare.com/client/v4` |
 
 Bun loads `.env` automatically.
+
+### Adopting rules on existing code
+
+- `--write-baseline lint-baseline.json` once, then `--baseline lint-baseline.json` on every run: what was already there is accepted and only new findings fail. An item finding is identified by its policy, path, and a fingerprint of its text (whitespace collapsed), not its lines, so moving code keeps it accepted; two accepted copies of the same text accept two findings. A whole-file finding is identified by policy and path, so a new violation in a file already accepted for that policy is not reported. The summary counts accepted findings and baseline entries that matched nothing (fixed, or gone).
+- `--changed-since origin/main` limits a run to what a branch changed: whole-file policies judge only changed files, and selectors get only changed files as arguments and keep only items whose lines changed. Items without a path (commit messages, say) are always kept.
 
 ## Policies
 
@@ -166,7 +174,7 @@ A request holds at most 64 questions (Clef's limit) and 64,000 bytes (24,000 wit
 
 Transient HTTP failures are retried up to 3 times with exponential backoff.
 
-Answers are cached on disk per question, keyed by the model, the request's text (guidance and excerpt, or guidance and rule), and the question (rule, or rendered item). Only questions whose inputs changed are sent: re-running on unchanged files sends nothing, and editing a policy re-asks only that policy. Clef's answer to one question shifts a little with the other questions in its request (see Evals), so a cached answer can differ from what a fresh run would say, by as much as any other packing would, at no measured cost in quality.
+Answers are cached on disk per question, keyed by the model, the request's text (guidance and excerpt, or guidance and rule), and the question (rule, or rendered item). Only questions whose inputs changed are sent: re-running on unchanged files sends nothing, and editing a policy re-asks only that policy. Clef's answer to one question shifts a little with the other questions in its request (see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers; with the cache, an edit in one file also leaves the verdicts of every other file as they were.
 
 ## Output
 
@@ -181,7 +189,7 @@ violation     0.97   9acebc18  commits
 
 `--json` prints `{ "findings": [...], "requests": …, "cached": … }` with every finding, passes included. Each finding has `policy`, `verdict`, and either `violates` or `reason`. A file finding has `path`; an item finding has `item` (its id) and the item's `path` and `lines` when it gave them.
 
-Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`.
+Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`. With `--baseline`, accepted findings are left out of the lines, counted in the summary, and never fail the run; JSON findings carry `"accepted": true`, every item finding carries its `fingerprint`, and the summary has `stale` (baseline entries that matched nothing).
 
 | Exit code | Meaning |
 | --- | --- |
@@ -212,6 +220,7 @@ bun evals/shared.ts                        # shared steps run once (stub Clef, n
 bun evals/examples.ts                      # policy examples: few-shot, and whether check catches bad wording
 bun evals/cutoffs.ts items                 # per-policy cut-offs tuned on dev vs. global (stored scores)
 bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
+bun evals/adoption.ts                      # --baseline and --changed-since on a generated git repo (stub Clef)
 ```
 
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
@@ -371,16 +380,38 @@ The purpose fails: per-policy cut-offs overfit dev. Items lose a fifth of surfac
 
 #### Answer cache
 
-Purpose: re-runs pay only for what changed, with the same results. `evals/cache.ts` lints 24 dev corpus files with four whole-file and two selector policies through the CLI's Clef path, with a fresh cache directory, then appends a function (narrating comment, issue-less TODO, magic number) to the three files first in path order:
+Purpose: re-runs pay only for what changed, with results that hold still. `evals/cache.ts` lints 24 dev corpus files with four whole-file and two selector policies through the CLI's Clef path, with a fresh cache directory, then appends a function (narrating comment, issue-less TODO, magic number) to the three files first in path order, which shifts the packing of every item after them:
 
-| Run | Requests | Cached answers | Time | Findings vs. a fresh run |
-| --- | --- | --- | --- | --- |
-| 1. cold cache | 81 | 0 | 7.3 s | – |
-| 2. re-run, nothing changed | **0** | 629 | 0.0 s | identical (401 checks, every score equal) |
-| 3. after the edit, with the cache | **16** | 565 | 4.9 s | identical to run 4 |
-| 4. after the edit, no cache | 81 | 0 | 7.6 s | – |
+| Run | Requests | Cached answers | Findings vs. a fresh run |
+| --- | --- | --- | --- |
+| 1. cold cache | 81 | 0 | – |
+| 2. re-run, nothing changed | **0** | 629 | identical (401 checks, every score equal) |
+| 3. after the edit, with the cache | **18** | 565 | 91.4% same verdict (35 of 407 differ), mean score change 0.058 |
+| 4. after the edit, no cache | 81 | 0 | – |
 
-Whether that equality holds in general depends on Clef answering each question independently of the others in its request. It doesn't: the same 1,076 dev items judged in the CLI's full batches and in two half-size batches (odd and even items) gave identical answers for only 2.8% of items (mean change 0.068, largest 0.718, 81 verdicts different). In a probe on one 40-item request, reversing the question order changed answers by 0.107 on average, and swapping a single unrelated question changed every other answer slightly (up to 0.013). Packing is a source of variation in its own right, and it costs nothing in quality: AUROC 0.951 → 0.944 [−0.021, +0.006], Brier 0.084 → 0.083 [−0.007, +0.006].
+Run 3 differs from run 4 because Clef's answer to a question depends on the other questions packed with it. The same 1,076 dev items judged in the CLI's full batches and in two half-size batches (odd and even items) gave identical answers for only 2.8% of items (mean change 0.068, largest 0.718, 81 verdicts different), and in a probe on one 40-item request, reversing the question order changed answers by 0.107 on average; swapping a single unrelated question changed every other answer slightly (up to 0.013). Packing varies answers without changing their quality: AUROC 0.951 → 0.944 [−0.021, +0.006], Brier 0.084 → 0.083 [−0.007, +0.006].
 
-- The purpose holds: an unchanged run sends nothing and an edit sends only its questions (16 of 81 requests here).
-- Whole-file answers are exact: an unchanged excerpt is always asked the same questions together. Item answers taken from the cache may differ from a fresh run's packing as much as two packings differ from each other, without losing accuracy.
+So the fair comparison is stability, on the 262 checks of the 21 files nobody edited:
+
+| After the edit | Verdicts changed vs. run 1 | Mean score change |
+| --- | --- | --- |
+| with the cache | **0** | 0 |
+| without the cache | 25 | 0.060 |
+
+- The purpose holds: an unchanged run sends nothing, an edit sends only its questions (18 of 81 requests), and without the cache an edit in three files flips verdicts in files nobody touched.
+- Repeatability: before items were sorted, two fresh runs on the same files disagreed on 40 verdicts, because `rg` emits matches across files in varying order and so packed items differently each time. Sorted, two fresh runs agree exactly.
+- An earlier version of this eval reported run 3 as identical to run 4; it was wrong. Shared steps were remembered for the whole process, so after the edit the selectors' old output was reused and the new items were never judged. Step sharing is now scoped to one lint run.
+
+#### Baseline and changed-lines scope
+
+Purposes: a baseline lets a team adopt a rule on existing code (what's there is accepted, new violations still fail, moving code doesn't break it), and `--changed-since` judges only what a branch changed without missing anything in it. `evals/adoption.ts` builds a 20-file git repository and lints it with an issue-less-TODO selector policy and a whole-file no-debugger policy, against a stub Clef that judges by rule (so the bookkeeping is measured exactly, without requests) and counts questions:
+
+| Step | Expected | Measured |
+| --- | --- | --- |
+| 1. re-run with the baseline | 0 new, 11 accepted, 0 stale | 0 new, 11 accepted, 0 stale |
+| 2. after shifting every file 5 lines | 0 new, 0 stale | 0 new, 0 stale (a baseline keyed by line would call 7 of 11 new) |
+| 3. after adding 4 violations, one of them in a file already accepted for no-debugger | 3 new | 3 new: the issue-less TODO, a second copy of an accepted TODO, the debugger in a clean file |
+| 4. after fixing 2 accepted TODOs | 3 new, 2 stale | 3 new, 2 stale |
+| 5. `--changed-since HEAD` after touching 3 files (one new) | all 3 violations in changed lines found | 3 of 3, with 5 questions instead of 37 |
+
+The purposes hold. The known gap is by design: a whole-file finding is accepted per file and policy, so a new violation in an accepted file is not reported (step 3's fourth violation). Use a selector when a rule's violations need to be told apart.

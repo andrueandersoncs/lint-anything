@@ -1,7 +1,9 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun"
-import { Console, Effect, Runtime, Schema } from "effect"
+import { Console, Effect, Option, Runtime, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
+import { applyBaseline, writeBaseline } from "./src/baseline.ts"
 import { blame, currentDate } from "./src/blame.ts"
+import { changedSince } from "./src/changes.ts"
 import { check, type ExampleResult } from "./src/check.ts"
 import { Clef } from "./src/clef.ts"
 import { enclosing } from "./src/enclosing.ts"
@@ -29,9 +31,16 @@ const verdicts: ReadonlyArray<Verdict> = ["violation", "review", "inconclusive",
 const location = ({ path, item, lines }: Finding) =>
   path !== undefined && lines !== undefined ? `${path}:${lines[0]}-${lines[1]}` : item ?? path ?? ""
 
-const formatText = (findings: ReadonlyArray<Finding>, stats: { readonly requests: number; readonly cached: number }): string => {
+interface RunSummary {
+  readonly requests: number
+  readonly cached: number
+  /** Baseline entries that matched no finding (fixed or gone), when a baseline was applied. */
+  readonly stale?: number
+}
+
+const formatText = (findings: ReadonlyArray<Finding>, summary: RunSummary): string => {
   const lines = findings
-    .filter((finding) => finding.verdict !== "pass")
+    .filter((finding) => finding.verdict !== "pass" && finding.accepted !== true)
     .map((finding) =>
       [
         finding.verdict.padEnd(12),
@@ -41,10 +50,13 @@ const formatText = (findings: ReadonlyArray<Finding>, stats: { readonly requests
         finding.reason ?? ""
       ].join("  ").trimEnd()
     )
+  const fresh = findings.filter((finding) => finding.accepted !== true)
   const counts = verdicts.map((verdict) =>
-    `${findings.filter((finding) => finding.verdict === verdict).length} ${verdict}`
+    `${fresh.filter((finding) => finding.verdict === verdict).length} ${verdict}`
   )
-  return [...lines, `${findings.length} checks: ${counts.join(", ")} (${stats.requests} requests, ${stats.cached} cached answers)`].join("\n")
+  const accepted = findings.length - fresh.length
+  const baseline = summary.stale === undefined ? "" : `, ${accepted} accepted by the baseline (${summary.stale} baseline entries matched nothing)`
+  return [...lines, `${findings.length} checks: ${counts.join(", ")}${baseline} (${summary.requests} requests, ${summary.cached} cached answers)`].join("\n")
 }
 
 const formatCheck = (results: ReadonlyArray<ExampleResult>): string => {
@@ -102,17 +114,39 @@ const command = Command.make(
       Argument.withDescription("Globs of files to lint, relative to the current directory"),
       Argument.variadic({ min: 1 })
     ),
-    ...sharedFlags
+    ...sharedFlags,
+    changedSince: Flag.String("changed-since").pipe(
+      Flag.withDescription("Judge only files and selector items changed since this git ref (plus untracked files)"),
+      Flag.optional
+    ),
+    baseline: Flag.String("baseline").pipe(
+      Flag.withDescription("Accept the findings recorded in this file (from --write-baseline); only new ones fail"),
+      Flag.optional
+    ),
+    writeBaseline: Flag.String("write-baseline").pipe(
+      Flag.withDescription("Record every non-passing finding of this run in this file as accepted, and exit 0"),
+      Flag.optional
+    )
   },
-  Effect.fn(function*({ files, rulesDir, threshold, itemThreshold, model, json, cache, noCache }) {
+  Effect.fn(function*({ files, rulesDir, threshold, itemThreshold, model, json, cache, noCache, changedSince: ref, baseline, writeBaseline: record }) {
     const policies = yield* loadPolicies(rulesDir)
     const sources = yield* readSources(files)
-    const { findings, stats } = yield* Effect.gen(function*() {
-      const findings = yield* lint(sources, policies, { threshold, itemThreshold })
+    const changes = Option.isSome(ref) ? yield* changedSince(ref.value) : undefined
+    const { findings: judged, stats } = yield* Effect.gen(function*() {
+      const findings = yield* lint(sources, policies, { threshold, itemThreshold }, changes)
       return { findings, stats: yield* (yield* Clef).stats }
     }).pipe(Effect.provide(clefLayer(model, cache, noCache)))
-    yield* Console.log(json ? JSON.stringify({ findings, ...stats }, null, 2) : formatText(findings, stats))
-    const count = findings.filter((finding) => finding.verdict === "violation").length
+    if (Option.isSome(record)) {
+      yield* writeBaseline(record.value, judged)
+      yield* Console.log(`${judged.filter((finding) => finding.verdict !== "pass").length} findings recorded in ${record.value}`)
+      return
+    }
+    const { findings, stale } = Option.isSome(baseline)
+      ? yield* applyBaseline(baseline.value, judged)
+      : { findings: judged, stale: undefined }
+    const summary = { ...stats, ...(stale === undefined ? {} : { stale }) }
+    yield* Console.log(json ? JSON.stringify({ findings, ...summary }, null, 2) : formatText(findings, summary))
+    const count = findings.filter((finding) => finding.verdict === "violation" && finding.accepted !== true).length
     if (count > 0) {
       return yield* new ViolationsFound({ count })
     }

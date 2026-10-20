@@ -62,6 +62,10 @@ const compare = (a: ReadonlyArray<Finding>, b: ReadonlyArray<Finding>) => {
 try {
   const cold = await run(true)
   const rerun = await run(true)
+  // Repeatability without the cache: two fresh runs on the same, unchanged files.
+  const again = compare((await run(false)).findings, (await run(false)).findings)
+  console.log(`\nTwo fresh runs (no cache) on unchanged files: ${again.changedVerdicts} verdicts differ, ` +
+    `${(again.identical * 100).toFixed(1)}% identical scores, mean Δ ${again.meanDelta.toFixed(4)}.`)
   // Edit three files: append a function with a narrating comment, a magic number, and an issue-less TODO.
   const snippets: Record<string, string> = {
     go: "\n// increment the counter\n// TODO: make this configurable\nfunc bump(count int) int {\n\treturn count + 37\n}\n",
@@ -88,6 +92,15 @@ try {
   row("2. re-run, nothing changed", rerun, cold.findings)
   row(`3. after editing ${edited.length} files, cache`, warm, fresh.findings)
   row(`4. after editing ${edited.length} files, no cache`, fresh)
+  // Stability: checks of the files nobody edited, before the edit (run 1) vs. after it with and without the cache.
+  const editedPaths = new Set(edited.map((file) => `${file.id}/${file.path}`))
+  const untouched = (findings: ReadonlyArray<Finding>) => findings.filter((finding) => finding.path !== undefined && !editedPaths.has(finding.path))
+  const churn = (after: ReadonlyArray<Finding>) => compare(untouched(cold.findings), untouched(after))
+  const withCache = churn(warm.findings)
+  const withoutCache = churn(fresh.findings)
+  console.log(`\nChecks of the ${files.length - edited.length} unedited files (${untouched(cold.findings).length}), compared with run 1: ` +
+    `with the cache ${withCache.changedVerdicts} verdicts changed (mean Δ ${withCache.meanDelta.toFixed(4)}); ` +
+    `without it ${withoutCache.changedVerdicts} changed (mean Δ ${withoutCache.meanDelta.toFixed(4)}).`)
 } finally {
   process.chdir(import.meta.dir)
   rmSync(workspace, { recursive: true, force: true })

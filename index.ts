@@ -9,7 +9,10 @@ import { Clef } from "./src/clef.ts"
 import { enclosing } from "./src/enclosing.ts"
 import { defaultItemThreshold, defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
 import { loadPolicies } from "./src/policy.ts"
+import { toSarif, writeSarif } from "./src/sarif.ts"
 import { readSources } from "./src/source.ts"
+
+const version = "0.1.0"
 
 class ViolationsFound extends Schema.TaggedError<ViolationsFound>()("ViolationsFound", {
   count: Schema.Number
@@ -126,9 +129,13 @@ const command = Command.make(
     writeBaseline: Flag.String("write-baseline").pipe(
       Flag.withDescription("Record every non-passing finding of this run in this file as accepted, and exit 0"),
       Flag.optional
+    ),
+    sarif: Flag.String("sarif").pipe(
+      Flag.withDescription("Also write the findings to this file as SARIF 2.1.0 (for GitHub code scanning)"),
+      Flag.optional
     )
   },
-  Effect.fn(function*({ files, rulesDir, threshold, itemThreshold, model, json, cache, noCache, changedSince: ref, baseline, writeBaseline: record }) {
+  Effect.fn(function*({ files, rulesDir, threshold, itemThreshold, model, json, cache, noCache, changedSince: ref, baseline, writeBaseline: record, sarif }) {
     const policies = yield* loadPolicies(rulesDir)
     const sources = yield* readSources(files)
     const changes = Option.isSome(ref) ? yield* changedSince(ref.value) : undefined
@@ -146,6 +153,7 @@ const command = Command.make(
       : { findings: judged, stale: undefined }
     const summary = { ...stats, ...(stale === undefined ? {} : { stale }) }
     yield* Console.log(json ? JSON.stringify({ findings, ...summary }, null, 2) : formatText(findings, summary))
+    if (Option.isSome(sarif)) yield* writeSarif(sarif.value, toSarif(findings, policies, version))
     const count = findings.filter((finding) => finding.verdict === "violation" && finding.accepted !== true).length
     if (count > 0) {
       return yield* new ViolationsFound({ count })
@@ -178,7 +186,7 @@ const command = Command.make(
 )
 
 command.pipe(
-  Command.run({ version: "0.1.0" }),
+  Command.run({ version }),
   Effect.provide(BunServices.layer),
   BunRuntime.runMain
 )

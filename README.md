@@ -25,6 +25,7 @@ Pass one or more globs. They are expanded relative to the current directory, ded
 | `--changed-since <ref>` | – | Judge only files that changed since a git ref (plus untracked files), and only selector items whose lines changed |
 | `--write-baseline <file>` | – | Record every non-passing finding as accepted in this file, and exit `0` |
 | `--baseline <file>` | – | Accept the findings recorded in this file; only new ones are reported and fail the run |
+| `--sarif <file>` | – | Also write the findings to this file as SARIF 2.1.0, for GitHub code scanning |
 
 `lint-anything check` takes the shared flags (`--rules-dir`, the thresholds, `--model`, `--json`, the cache), without file globs (see Examples and `check`).
 
@@ -221,6 +222,7 @@ bun evals/examples.ts                      # policy examples: few-shot, and whet
 bun evals/cutoffs.ts items                 # per-policy cut-offs tuned on dev vs. global (stored scores)
 bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
 bun evals/adoption.ts                      # --baseline and --changed-since on a generated git repo (stub Clef)
+bun evals/sarif.ts                         # --sarif validates against the SARIF 2.1.0 schema (stub Clef)
 ```
 
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
@@ -430,3 +432,16 @@ Purpose: a cheap first question drops items a rule doesn't govern, cutting false
 | test | clef-flash | 36 (0) | 0.942 [−0.021, +0.017] | **0.073** [−0.017, −0.003] | 20 / 73 / 4.4% | $0.006 + $0.043 |
 
 The purpose fails on dev, where it was to be chosen: routing with Clef raised false alarms (8.2% → 11.5%) and dropped 3 of 36 violating comments; routing with clef-flash changed little. Dropping items also repacks the rest, which moves their answers (see Answer cache). Test shows a calibration gain, not a false-alarm cut, and every variant costs more. `ask` was removed; filtering steps of any other kind still work, and `evals/compare.ts` scores them.
+
+#### SARIF output
+
+Purpose: findings can be uploaded to GitHub code scanning, which reads SARIF 2.1.0. `--sarif <file>` writes one rule per policy (its first heading as the short description, its rule text as the full one) and one result per non-passing finding: `error` for `violation`, `warning` for `review`, `note` for `inconclusive`, located at the finding's file and, for items, its lines. Baseline-accepted findings are included as suppressed results; `partialFingerprints` carry the item fingerprint, so a result can be followed as code moves. `evals/sarif.ts` lints a generated repository (whole-file, item, and path-less `git log` findings, one accepted by a baseline) against a stub Clef and validates the log with ajv against the published schema:
+
+| Check | Holds |
+| --- | --- |
+| validates against the SARIF 2.1.0 schema | yes |
+| the validator rejects the same log with an invalid level (a control) | yes |
+| one result per non-passing finding (4 of 4) | yes |
+| rule, level, file, lines, and suppression match each finding (1 without a path, 1 accepted, 2 with lines) | yes |
+
+The purpose holds as far as a schema can show; uploading to GitHub was not tested. A finding without a path (a commit message, say) becomes a result without a location, which a code-scanning view has nowhere to show.

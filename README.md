@@ -314,6 +314,22 @@ Selector findings, 2026-10-20 (shape and cut-offs chosen on dev; test: 567 items
 
 Each feature that adds evidence or changes how items are judged has an intended purpose, an eval that measures it, and a result. Choices are made on dev and confirmed on test; intervals are 95% paired bootstraps resampling files.
 
+| Feature | Intended purpose | Eval | Result | Shipped |
+| --- | --- | --- | --- | --- |
+| Evidence fields, `$LINT_ANYTHING enclosing` | Items judged better with their surrounding code | `compare.ts` + `selectors-evidence` | Holds: test Brier better on both rules, magic values AUROC +0.002 to +0.051; 2.4–3.4× cost | yes |
+| `evidence` steps, `{{name}}`, `$LINT_ANYTHING blame` | Rules about time and history become judgeable | `history.ts` | Holds: accuracy 63% → 96% with a computed age; Clef can't derive it from dates | yes |
+| Steps refining earlier evidence | Better judgments from narrowed evidence | `compare.ts` + `selectors-evidence-constants` | Unconfirmed: test Brier better, dev not | yes (mechanism) |
+| Shared steps | Policies sharing a step don't repeat it | `shared.ts` | Holds: 6 → 1 runs, identical findings, ~5× faster | yes |
+| `examples` (few-shot) | Examples improve judgments | `examples.ts` | Small: test AUROC +0.001 to +0.020, dev unchanged | yes |
+| `lint-anything check` | Catch a badly worded rule | `examples.ts` | Partial: catches an off-topic rule, not an inverted one | yes |
+| Per-policy cut-offs | Better verdicts than global cut-offs | `cutoffs.ts` | Fails: overfits dev | no |
+| Answer cache | Re-runs pay only for changes; stable verdicts | `cache.ts` | Holds: 0 requests unchanged, 18 of 81 after an edit, 0 vs 25 verdict changes in untouched files | yes |
+| Sorted items | The same files get the same verdicts | `cache.ts` | Holds: two fresh runs went from 40 differing verdicts to 0 | yes |
+| `--baseline`, `--changed-since` | Adopt rules on existing code; lint only changes | `adoption.ts` | Holds: all 5 scenarios as expected | yes |
+| `ask` routing step | Drop items a rule doesn't govern, cutting false alarms | `compare.ts` + routed sets (commit `c825cff`) | Fails: dev false alarms rose, violations dropped | no |
+| `--sarif` | GitHub code-scanning upload | `sarif.ts` | Holds: schema-valid, every finding mapped | yes |
+| `limit` | Count rules judged reliably | `counts.ts` | Holds: 100% vs 81% (63% at the boundary) | yes |
+
 `evals/compare.ts` scores selector sets against the same item labels with the CLI's request shape and prints, per policy, AUROC and Brier with intervals against the first set, caught / surfaced / false-alarm rates at the item cut-offs, and cost per 1,000 items. A set whose selector drops items is scored over the union of all sets' items, a dropped item counting as a pass. Its scores go to `evals/results/items.<split>.<set>/production.jsonl`.
 
 #### Evidence fields and `$LINT_ANYTHING enclosing`

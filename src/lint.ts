@@ -10,8 +10,9 @@ import type { SourceFile } from "./source.ts"
 export type Verdict = "pass" | "review" | "violation" | "inconclusive"
 
 /**
- * One judgment: of a whole file, or of one item a policy's selector emitted (`item`, its id, and
- * `fingerprint`, a hash of its text). `accepted` marks a finding the baseline accepts.
+ * One judgment: of a whole file, of one item a policy's selector emitted (`item`, its id, and
+ * `fingerprint`, a hash of its text), or of a policy's `limit` over its items (`violating`, the ids of the
+ * items that count). `accepted` marks a finding the baseline accepts.
  */
 export interface Finding {
   readonly policy: string
@@ -22,7 +23,34 @@ export interface Finding {
   readonly fingerprint?: string
   readonly violates?: number
   readonly reason?: string
+  readonly violating?: ReadonlyArray<string>
   readonly accepted?: true
+}
+
+/**
+ * A `limit` policy's findings: its item findings counted per file (or once per run). A group is a
+ * `violation` when more than `max` of its items are violations; items in `review` are counted in the reason
+ * but not against the limit.
+ */
+export const aggregate = (
+  policy: string,
+  limit: { readonly max: number; readonly per: "file" | "run" },
+  items: ReadonlyArray<Finding>
+): Array<Finding> => {
+  const groups = new Map<string | undefined, Array<Finding>>()
+  if (limit.per === "run") groups.set(undefined, [...items])
+  else for (const item of items) groups.set(item.path, [...(groups.get(item.path) ?? []), item])
+  return [...groups].map(([path, group]) => {
+    const violating = group.filter((item) => item.verdict === "violation")
+    const review = group.filter((item) => item.verdict === "review").length
+    return {
+      policy,
+      ...(path === undefined ? {} : { path }),
+      verdict: violating.length > limit.max ? "violation" : "pass",
+      reason: `${violating.length} of ${group.length} items violate the rule (at most ${limit.max} allowed)${review > 0 ? `; ${review} more in review` : ""}`,
+      violating: violating.map((item) => item.item!)
+    }
+  })
 }
 
 // Tuned in evals/ on the dev split (semantic and control rules together) for the excerpt request shape,
@@ -108,10 +136,11 @@ export const lint = Effect.fn("lint")(function*(
         Effect.map((items) => items.filter(inScope).toSorted(byLocation)),
         Effect.flatMap((items) =>
           clef.judgeItems(resolved, items).pipe(
-            Effect.map((judgments) =>
-              Arr.zipWith(items, judgments, (item, judgment) =>
+            Effect.map((judgments) => {
+              const findings = Arr.zipWith(items, judgments, (item, judgment) =>
                 toFinding(judgment, { policy: policy.name, ...itemLocation(item) }, itemReviewFloor, cutoffs.itemThreshold))
-            )
+              return policy.limit === undefined ? findings : aggregate(policy.name, policy.limit, findings)
+            })
           )
         )
       ), runs)

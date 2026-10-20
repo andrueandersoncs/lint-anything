@@ -6,7 +6,9 @@ import { type Item, toItem } from "./item.ts"
  * `select`, a shell command emits the items to judge: it receives the matching files as arguments, or
  * none when the policy has no globs. `evidence` steps run first, in order, with the same arguments; the
  * rule text can include their output as `{{name}}`. `examples` are labeled items (or, without a selector,
- * labeled files) that `lint-anything check` judges against the rule. The full policy text is sent to Clef.
+ * labeled files) that `lint-anything check` judges against the rule. With `limit`, a selector policy
+ * reports how many of its items violate the rule, per file or per run, against a maximum. The full policy
+ * text is sent to Clef.
  */
 export interface Policy {
   readonly name: string
@@ -15,6 +17,7 @@ export interface Policy {
   readonly select?: string
   readonly evidence: ReadonlyArray<{ readonly name: string; readonly command: string }>
   readonly examples: ReadonlyArray<{ readonly violates: boolean; readonly item: Item }>
+  readonly limit?: { readonly max: number; readonly per: "file" | "run" }
 }
 
 export class PolicyError extends Schema.TaggedError<PolicyError>()("PolicyError", {
@@ -27,7 +30,11 @@ const Frontmatter = Schema.Struct({
   globs: Schema.optional(Schema.NonEmptyArray(Schema.NonEmptyString)),
   select: Schema.optional(Schema.NonEmptyString),
   evidence: Schema.optional(Schema.Record(Schema.String, Schema.NonEmptyString)),
-  examples: Schema.optional(Schema.Array(Schema.Unknown))
+  examples: Schema.optional(Schema.Array(Schema.Unknown)),
+  limit: Schema.optional(Schema.Struct({
+    max: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+    per: Schema.optional(Schema.Literals(["file", "run"]))
+  }))
 })
 
 const frontmatterPattern = /^---\r?\n(.*?)\r?\n---(?:\r?\n|$)/s
@@ -45,12 +52,15 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
   if (body.trim() === "") {
     return yield* new PolicyError({ message: `${name}: empty policy` })
   }
-  const { globs, select, evidence, examples } = yield* Effect.try(() => Bun.YAML.parse(match[1] ?? "")).pipe(
+  const { globs, select, evidence, examples, limit } = yield* Effect.try(() => Bun.YAML.parse(match[1] ?? "")).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Frontmatter)),
     Effect.mapError((error) => new PolicyError({ message: `${name}: invalid frontmatter: ${String(error.message ?? error)}` }))
   )
   if (globs === undefined && select === undefined) {
     return yield* new PolicyError({ message: `${name}: frontmatter needs non-empty globs, a select command, or both` })
+  }
+  if (limit !== undefined && select === undefined) {
+    return yield* new PolicyError({ message: `${name}: limit counts a selector's items, so it needs select` })
   }
   const steps = Object.entries(evidence ?? {}).map(([step, command]) => ({ name: step, command }))
   const badName = steps.find((step) => !stepName.test(step.name))
@@ -78,7 +88,8 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
     globs: (globs ?? []).map((glob) => new Bun.Glob(glob)),
     ...(select === undefined ? {} : { select }),
     evidence: steps,
-    examples: labeled
+    examples: labeled,
+    ...(limit === undefined ? {} : { limit: { max: limit.max, per: limit.per ?? "file" } })
   } satisfies Policy
 })
 

@@ -127,6 +127,28 @@ A `TODO` or `FIXME` comment added more than 90 days ago must reference a trackin
 - What helps, from the evals: evidence placed on each item beats the same evidence placed once in the rule, and a computed fact beats raw data Clef has to reason over (an age in days, not a commit date). Evidence costs input tokens: the enclosing block made items 2.4–3.4× as expensive.
 - Policies can share steps. A selector or evidence step whose command, arguments, directory, and earlier evidence (by content) match one already run in this lint run reuses its output instead of running again. Put a selector several policies use in a script (for example `.lint-anything/lib/functions.sh`) and call it from each.
 
+### Counting items: `limit`
+
+A selector policy can count instead of reporting each item: with `limit`, its items are judged against the rule as usual, and then the policy reports one finding per file (or, with `per: run`, one for the whole run) that is a `violation` when more than `max` items are violations.
+
+````md
+---
+globs: ["src/**/*.ts"]
+select: |
+  rg --json -w 'TODO|FIXME' "$@" | jq -c '…'
+limit: { max: 3, per: file }
+---
+# TODOs reference an issue
+
+Every `TODO` or `FIXME` comment must reference a tracking issue.
+````
+
+```
+violation     -      src/many.ts  todos  4 of 4 items violate the rule (at most 3 allowed)
+```
+
+Write the rule about one item, and put the count in `limit`: Clef judges items well and counts badly (see Evals). Items in `review` are mentioned in the reason but not counted. `limit` needs `select`.
+
 ### Examples and `check`
 
 A policy can carry labeled examples: items (for a selector policy) or files (for a policy judged per file) with `violates: true` or `false`. Each example takes the item fields (`text`, and optionally `id`, `path`, `lines`, and evidence fields such as `enclosing`, which a selector would otherwise have added).
@@ -188,7 +210,7 @@ violation     0.97   9acebc18  commits
 3 checks: 3 violation, 0 review, 0 inconclusive, 0 pass (2 requests, 0 cached answers)
 ```
 
-`--json` prints `{ "findings": [...], "requests": …, "cached": … }` with every finding, passes included. Each finding has `policy`, `verdict`, and either `violates` or `reason`. A file finding has `path`; an item finding has `item` (its id) and the item's `path` and `lines` when it gave them.
+`--json` prints `{ "findings": [...], "requests": …, "cached": … }` with every finding, passes included. Each finding has `policy`, `verdict`, and either `violates` or `reason`. A file finding has `path`; an item finding has `item` (its id) and the item's `path` and `lines` when it gave them; a `limit` finding has `violating`, the ids of the items it counted.
 
 Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`. With `--baseline`, accepted findings are left out of the lines, counted in the summary, and never fail the run; JSON findings carry `"accepted": true`, every item finding carries its `fingerprint`, and the summary has `stale` (baseline entries that matched nothing).
 
@@ -223,6 +245,7 @@ bun evals/cutoffs.ts items                 # per-policy cut-offs tuned on dev vs
 bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
 bun evals/adoption.ts                      # --baseline and --changed-since on a generated git repo (stub Clef)
 bun evals/sarif.ts                         # --sarif validates against the SARIF 2.1.0 schema (stub Clef)
+bun evals/counts.ts                        # limit vs. asking the count rule of the whole file
 ```
 
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
@@ -445,3 +468,14 @@ Purpose: findings can be uploaded to GitHub code scanning, which reads SARIF 2.1
 | rule, level, file, lines, and suppression match each finding (1 without a path, 1 accepted, 2 with lines) | yes |
 
 The purpose holds as far as a schema can show; uploading to GitHub was not tested. A finding without a path (a commit message, say) becomes a result without a location, which a code-scanning view has nowhere to show.
+
+#### Counting with `limit`
+
+Purpose: rules about a count ("at most 3 issue-less TODOs per file") are judged reliably. `evals/counts.ts` generates 64 TypeScript, Python, and Go files with a known number of issue-less TODOs (0 to 7, 24 files at exactly 3 or 4) among TODOs that cite an issue, and judges "more than 3" two ways:
+
+| Approach | Accuracy | Files with exactly 3 or 4 | AUROC | $ / 1k files |
+| --- | --- | --- | --- | --- |
+| Clef asked the count rule about the whole file | 81% (52/64) | 63% (15/24) | 0.985 | $0.096 |
+| each TODO judged against "must reference an issue", counted by `limit: { max: 3 }` | **100%** (64/64) | **100%** (24/24) | 1.000 | $0.188 |
+
+The purpose holds: every file's count was exact, while the whole-file judgment ranked files well but misplaced the boundary in a third of the files at it. It costs about twice as much. In the eval, items are packed per file; the CLI packs a policy's items across files, which varies answers slightly without changing their quality (see Answer cache).

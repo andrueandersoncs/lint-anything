@@ -5,14 +5,27 @@
 // it runs the one-factor sweep below. The first strategy is the baseline for the paired intervals.
 import { makeClient } from "./client.ts"
 import { type Case, categoryOf, loadCorpus } from "./corpus.ts"
-import { brier, auroc, pairedInterval, quality, type Scored } from "./metrics.ts"
+import {
+  auroc,
+  brier,
+  concordance,
+  pairedInterval,
+  productionThresholds,
+  quality,
+  type Scored,
+  type Thresholds,
+  tuneThresholds,
+  verdictF1
+} from "./metrics.ts"
 import {
   assertProductionParity,
   inputTokenPrice,
   parseStrategy,
   planRequests,
   type Strategy,
-  strategyName
+  strategyName,
+  contestedId,
+  views
 } from "./strategy.ts"
 
 // One factor at a time away from production.
@@ -20,11 +33,17 @@ const sweep = [
   "production",
   "model=clef-flash",
   "batch=1",
+  "batch=4",
+  "batch=8",
   "ids=positional",
   "guidance=question",
+  "wording=reviewer",
+  "wording=calibrated",
   "state=object",
   "question=noul",
-  "question=choice"
+  "question=choice",
+  "question=verdict",
+  "question=scale"
 ]
 
 const args = Bun.argv.slice(2)
@@ -40,6 +59,13 @@ const split = flag("--split", "dev")
 const origin = flag("--origin", "all")
 const category = flag("--category", "all")
 const concurrency = Number(flag("--concurrency", "8"))
+const [floor, threshold] = flag("--thresholds", `${productionThresholds.floor},${productionThresholds.threshold}`)
+  .split(",")
+  .map(Number)
+if (floor === undefined || threshold === undefined || !(0 <= floor && floor < threshold && threshold <= 1)) {
+  throw new Error("--thresholds must be floor,threshold with 0 <= floor < threshold <= 1")
+}
+const thresholds: Thresholds = { floor, threshold }
 if (!["dev", "test", "all"].includes(split)) throw new Error("--split must be dev, test, or all")
 const origins = origin === "all" ? ["synthetic", "real", "planted"] : origin.split(",")
 if (origins.some((value) => !["synthetic", "real", "planted"].includes(value))) {
@@ -52,14 +78,12 @@ const scope = [split, origin === "all" ? undefined : origins.join("+"), category
 const strategies = (args.length > 0 ? args : sweep).map(parseStrategy)
 
 const corpus = await loadCorpus({ requireSplits: split !== "all" })
-// Requests always carry every policy matching the file, as production sends them; the filters (and
-// ambiguous labels) only decide which answers are scored.
-const selected = corpus.cases.filter((item) =>
+// Requests always carry every policy matching the file, as production sends them; the filters only
+// decide which answers are scored. Ambiguous cases are scored: the ideal answer for them is `review`.
+const cases = corpus.cases.filter((item) =>
   (split === "all" || item.file.split === split) && origins.includes(item.file.origin) &&
   (category === "all" || categoryOf(item.policy.name) === category)
 )
-const ambiguous = selected.filter((item) => item.gold.label === "ambiguous").length
-const cases = selected.filter((item) => item.gold.label !== "ambiguous")
 if (cases.length === 0) throw new Error(`no cases in split ${split}, origin ${origin}, category ${category}`)
 for (const file of corpus.files) {
   assertProductionParity(file, corpus.cases.filter((item) => item.file === file).map((item) => item.policy))
@@ -77,8 +101,18 @@ interface Run {
   readonly requestMs: ReadonlyArray<number>
 }
 
-const score = (strategy: Strategy, answer: { noul?: number; probabilities?: Record<string, number> } | undefined) => {
-  const value = strategy.question === "choice" ? answer?.probabilities?.violates : answer?.noul
+type Answer = { noul?: number; score?: number; probabilities?: Record<string, number> }
+
+/** The answer's violation probability; for three-way questions, P(violates) + ½·P(borderline). */
+const score = (strategy: Strategy, answer: Answer | undefined) => {
+  const p = answer?.probabilities
+  const value = strategy.question === "choice"
+    ? p?.violates
+    : strategy.question === "verdict"
+    ? p === undefined ? undefined : (p.violates ?? 0) + 0.5 * (p.borderline ?? 0)
+    : strategy.question === "scale"
+    ? answer?.score === undefined ? undefined : answer.score / 2
+    : answer?.noul
   if (typeof value !== "number") throw new Error(`no score in answer ${JSON.stringify(answer)}`)
   return value
 }
@@ -95,14 +129,32 @@ const run = async (strategy: Strategy): Promise<Run> => {
     const file = items[0]!.file
     const matching = corpus.cases.filter((item) => item.file === file).map((item) => item.policy)
     const asked = strategy.pad === "all" ? corpus.policies : matching
-    const planned = planRequests(strategy, file, asked)
-    const scores = new Map<string, number | null>(planned.oversized.map((policy) => [policy.name, null]))
-    await Promise.all(planned.requests.map(async (request) => {
-      const reply = await ask(strategy.model, request.body)
-      requests++
-      inputTokens += reply.inputTokens
-      requestMs.push(reply.ms)
-      for (const { id, policy } of request.questions) scores.set(policy.name, score(strategy, reply.answers[id]))
+    // A policy's score is its highest across the strategy's views of the file; null only if no view
+    // could be sent.
+    const scores = new Map<string, number | null>()
+    const keep = (policy: string, value: number | null) => {
+      const current = scores.get(policy)
+      scores.set(policy, current === undefined || current === null ? value : value === null ? current : Math.max(current, value))
+    }
+    await Promise.all(views(strategy, file).map(async (view) => {
+      const planned = planRequests(strategy, view, asked)
+      for (const policy of planned.oversized) keep(policy.name, null)
+      await Promise.all(planned.requests.map(async (request) => {
+        const reply = await ask(strategy.model, request.body)
+        requests++
+        inputTokens += reply.inputTokens
+        requestMs.push(reply.ms)
+        for (const { id, policy } of request.questions) {
+          const violates = score(strategy, reply.answers[id])
+          if (strategy.contest === "none") {
+            keep(policy.name, violates)
+            continue
+          }
+          const contested = reply.answers[contestedId(id)]?.noul
+          if (typeof contested !== "number") throw new Error(`no contested answer for ${id}`)
+          keep(policy.name, (1 - contested) * violates + 0.5 * contested)
+        }
+      }))
     }))
     if (++filesDone % 20 === 0) console.error(`${name}: ${filesDone}/${byFile.size} files`)
     return items.map((item): Scored => ({ item, score: scores.get(item.policy.name) ?? null }))
@@ -131,17 +183,20 @@ const median = (values: ReadonlyArray<number>) => {
 }
 
 const fileCount = new Set(cases.map((item) => item.file.id)).size
-console.log(`\n${scope}: ${cases.length} cases in ${fileCount} files, ` +
-  `${cases.filter((item) => item.gold.label === "violates").length} violating, ${ambiguous} ambiguous excluded. ` +
-  `Intervals: 95% paired bootstrap vs ${baseline.name}, resampling files. ` +
-  `Cost covers every policy matching each file, as production sends them.\n`)
-console.log("| Strategy | AUROC | Brier | Precision@0.7 | Recall@0.7 | Surfaced >0.55 | False alarms >0.55 | Pairs | Inconclusive | Requests | Input tokens | $ / 1k files | p50 ms |")
-console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+const count = (label: string) => cases.filter((item) => item.gold.label === label).length
+console.log(`\n${scope}: ${cases.length} cases in ${fileCount} files: ${count("violates")} violating, ` +
+  `${count("ambiguous")} ambiguous. Verdicts at floor ${floor}, threshold ${threshold}; "tuned" re-picks both ` +
+  `on these same cases (in-sample: tune on dev, then pass them to test with --thresholds). Intervals: 95% ` +
+  `paired bootstrap vs ${baseline.name}, resampling files. Cost covers every policy matching each file.\n`)
+console.log("| Strategy | AUROC (clear) | Concordance | Brier | Verdict F1 | Caught | Surfaced | Ambiguous→review | False alarms | Tuned (floor/threshold → F1) | Pairs | Inconclusive | Requests | $ / 1k files |")
+console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for (const run of runs) {
-  const q = quality(run.scored)
+  const q = quality(run.scored, thresholds)
+  const tuned = tuneThresholds(run.scored)
   const cost = (run.inputTokens * inputTokenPrice[run.strategy.model] * 1000) / fileCount
-  console.log(`| ${run.name} | ${fixed(q.auroc)}${interval(run, auroc)} | ${fixed(q.brier)}${interval(run, brier)} | ` +
-    `${percent(q.precision)} | ${percent(q.recall)} | ${percent(q.surfaced)} | ${percent(q.falseAlarms)} | ` +
-    `${percent(q.pairs)} | ${q.inconclusive} | ${run.requests} | ${run.inputTokens} | $${cost.toFixed(4)} | ` +
-    `${Math.round(median(run.requestMs))} |`)
+  console.log(`| ${run.name} | ${fixed(q.auroc)}${interval(run, auroc)} | ${fixed(q.concordance)}${interval(run, concordance)} | ` +
+    `${fixed(q.brier)}${interval(run, brier)} | ${fixed(q.f1)} | ${percent(q.caught)} | ${percent(q.surfaced)} | ` +
+    `${percent(q.ambiguousToReview)} | ${percent(q.falseAlarms)} | ` +
+    `${tuned.floor}/${tuned.threshold} → ${fixed(verdictF1(run.scored, tuned))} | ${percent(q.pairs)} | ` +
+    `${q.inconclusive} | ${run.requests} | $${cost.toFixed(4)} |`)
 }

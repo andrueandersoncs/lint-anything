@@ -28,11 +28,47 @@ export const maxRequestBytes: Readonly<Record<Model, number>> = { clef: 64_000, 
 // Clef takes at most 64 questions per request.
 const maxQuestions = 64
 
-// The request shape below won the eval suite's sweep (evals/, see README): the file is sent once with
-// short guidance, and each policy is a yes/no question with explicit criteria.
+// The request shape below won the eval suite's sweeps (evals/, see README): each file is judged as
+// excerpts of at most `excerptBytes`, each excerpt sent once with short guidance and one yes/no question
+// per policy (with explicit criteria); a policy's score is its highest across the excerpts.
 const guidance =
   "Decide whether `file`, read in light of `path`, contains at least one violation of the rule in each question.\n" +
   "Return a calibrated probability that the answer is yes."
+
+/** Largest excerpt Clef judges at once. Semantic violations are local, and long files dilute them. */
+export const excerptBytes = 4000
+
+/**
+ * Cuts a file into consecutive excerpts of at most `maxBytes`, preferring cuts before top-level
+ * declarations, then before any line that follows a blank line. Each excerpt's path names the lines it
+ * holds. A file within `maxBytes` is returned whole.
+ */
+export const excerpts = (file: SourceFile, maxBytes: number): ReadonlyArray<SourceFile> => {
+  if (Buffer.byteLength(file.source) <= maxBytes) return [file]
+  const lines = file.source.split("\n")
+  const afterBlank = (index: number) => index > 0 && lines[index - 1]!.trim() === "" && lines[index]!.trim() !== ""
+  const topLevel = (index: number) => afterBlank(index) && !/^[\s})\]]/.test(lines[index]!)
+  const result: Array<SourceFile> = []
+  for (let start = 0; start < lines.length;) {
+    let end = start
+    let bytes = 0
+    while (end < lines.length && bytes + Buffer.byteLength(lines[end]!) + 1 <= maxBytes) {
+      bytes += Buffer.byteLength(lines[end]!) + 1
+      end++
+    }
+    if (end < lines.length) {
+      const cutAt = (test: (index: number) => boolean) => {
+        for (let index = end; index > start; index--) if (test(index)) return index
+        return -1
+      }
+      const cut = [cutAt(topLevel), cutAt(afterBlank)].find((index) => index > start)
+      end = cut ?? Math.max(end, start + 1)
+    }
+    result.push({ path: `${file.path} (lines ${start + 1}-${end} of ${lines.length})`, source: lines.slice(start, end).join("\n") })
+    start = end
+  }
+  return result
+}
 
 const criteria = {
   true: "The file contains at least one complete violation of the rule.",
@@ -78,9 +114,10 @@ export interface PlannedRequest {
 }
 
 /**
- * Plans the requests that judge `file` against `policies`. Each request carries the file once and one
- * question per policy; policies are packed in order into as few requests as Clef's 64-question limit and
- * the model's byte limit allow. A policy too large to send even alone is returned in `oversized`.
+ * Plans the requests that judge one excerpt (or whole file) against `policies`. Each request carries the
+ * text once and one question per policy; policies are packed in order into as few requests as Clef's
+ * 64-question limit and the model's byte limit allow. A policy too large to send even alone is returned
+ * in `oversized`.
  */
 export const planRequests = (model: Model, file: SourceFile, policies: ReadonlyArray<Policy>) => {
   const state = `${guidance}\n\npath: ${file.path}\n\nfile:\n${file.source}`
@@ -123,7 +160,7 @@ export const planRequests = (model: Model, file: SourceFile, policies: ReadonlyA
 }
 
 export class Clef extends Context.Service<Clef, {
-  /** Judges `file` against every policy in as few requests as fit; results follow `policies` order. */
+  /** Judges `file` against every policy, excerpt by excerpt; results follow `policies` order. */
   judge(
     file: SourceFile,
     policies: ReadonlyArray<Policy>
@@ -151,31 +188,36 @@ export class Clef extends Context.Service<Clef, {
         )
 
         const judge = Effect.fn("Clef.judge")(function*(file: SourceFile, policies: ReadonlyArray<Policy>) {
-          const { requests, oversized } = planRequests(model, file, policies)
-          const judgments = new Map<Policy, Result.Result<Judgment, RequestTooLarge>>(
-            oversized.map(({ policy, bytes }) => [policy, Result.fail(new RequestTooLarge({ bytes }))])
-          )
-          for (const request of requests) {
-            const { result } = yield* HttpClientRequest.post(`/${model}`).pipe(
-              HttpClientRequest.bodyText(request.body, "application/json"),
-              client.execute,
-              Effect.flatMap(HttpClientResponse.schemaBodyJson(ClefResponse)),
-              Effect.mapError((cause) => new ClefError({ cause }))
-            )
-            for (const { id, policy } of request.questions) {
-              const answer = result.answers[id]
-              if (answer === undefined) {
-                return yield* new ClefError({ cause: new Error(`Clef returned no answer for ${id}`) })
+          // Each policy keeps its highest score across excerpts; it is too large only if no excerpt could send it.
+          const scores = new Map<Policy, number>()
+          const tooLarge = new Map<Policy, number>()
+          for (const excerpt of excerpts(file, excerptBytes)) {
+            const { requests, oversized } = planRequests(model, excerpt, policies)
+            for (const { policy, bytes } of oversized) tooLarge.set(policy, Math.max(bytes, tooLarge.get(policy) ?? 0))
+            for (const request of requests) {
+              const { result } = yield* HttpClientRequest.post(`/${model}`).pipe(
+                HttpClientRequest.bodyText(request.body, "application/json"),
+                client.execute,
+                Effect.flatMap(HttpClientResponse.schemaBodyJson(ClefResponse)),
+                Effect.mapError((cause) => new ClefError({ cause }))
+              )
+              for (const { id, policy } of request.questions) {
+                const answer = result.answers[id]
+                if (answer === undefined) {
+                  return yield* new ClefError({ cause: new Error(`Clef returned no answer for ${id}`) })
+                }
+                scores.set(policy, Math.max(answer.noul, scores.get(policy) ?? 0))
               }
-              judgments.set(policy, Result.succeed({ violates: answer.noul }))
             }
           }
           const results: Array<Result.Result<Judgment, RequestTooLarge>> = []
           for (const policy of policies) {
-            const judgment = judgments.get(policy)
-            // planRequests places every policy in a request or in `oversized`.
-            if (judgment === undefined) return yield* Effect.die(new Error(`no judgment for ${policy.name}`))
-            results.push(judgment)
+            const violates = scores.get(policy)
+            const bytes = tooLarge.get(policy)
+            if (violates !== undefined) results.push(Result.succeed({ violates }))
+            else if (bytes !== undefined) results.push(Result.fail(new RequestTooLarge({ bytes })))
+            // planRequests places every policy in a request or in `oversized` for every excerpt.
+            else return yield* Effect.die(new Error(`no judgment for ${policy.name}`))
           }
           return results
         })

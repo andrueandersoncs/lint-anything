@@ -2,7 +2,7 @@ import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Runtime, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { Clef } from "./src/clef.ts"
-import { type Finding, lint, type Verdict } from "./src/lint.ts"
+import { defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
 import { loadPolicies } from "./src/policy.ts"
 import { readSources } from "./src/source.ts"
 
@@ -47,7 +47,7 @@ const command = Command.make(
     threshold: Flag.Finite("threshold").pipe(
       Flag.withDescription("Violation probability that fails the run"),
       Flag.withSchema(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
-      Flag.withDefault(0.7)
+      Flag.withDefault(defaultThreshold)
     ),
     model: Flag.Literals("model", ["clef", "clef-flash"]).pipe(
       Flag.withDescription("Clef model"),

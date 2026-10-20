@@ -13,8 +13,11 @@ export interface Finding {
   readonly reason?: string
 }
 
-// Calibrated in better-typescript's evals: violation scores at or below 0.55 were mostly false.
-const reviewFloor = 0.55
+// Tuned in evals/ on the dev split (semantic and control rules together) for the excerpt request shape,
+// then confirmed on the held-out test split: scores at or below the floor are clean, scores between
+// the floor and the threshold are the band where violations blur into genuinely contested cases.
+export const reviewFloor = 0.3
+export const defaultThreshold = 0.45
 
 export const classify = ({ violates }: Judgment, threshold: number): Verdict => {
   if (violates <= reviewFloor) return "pass"

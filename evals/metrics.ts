@@ -1,3 +1,4 @@
+import { defaultThreshold, reviewFloor } from "../src/lint.ts"
 import type { Case } from "./corpus.ts"
 
 /** A case with the strategy's violation probability; `null` when the request was too large to send. */
@@ -6,38 +7,76 @@ export interface Scored {
   readonly score: number | null
 }
 
-// Production verdict cut-offs (src/lint.ts and the CLI default).
-export const reviewFloor = 0.55
-export const violationThreshold = 0.7
+/** Verdict cut-offs: `pass` at or below `floor`, `violation` at or above `threshold`, `review` between. */
+export interface Thresholds {
+  readonly floor: number
+  readonly threshold: number
+}
 
-const positive = (scored: Scored) => scored.item.gold.label === "violates"
+// Production verdict cut-offs (src/lint.ts and the CLI default).
+export const productionThresholds: Thresholds = { floor: reviewFloor, threshold: defaultThreshold }
+
+export type Verdict = "pass" | "review" | "violation"
+type GoldClass = "clean" | "ambiguous" | "violates"
+
+const goldClass = (scored: Scored): GoldClass =>
+  scored.item.gold.label === "violates" ? "violates" : scored.item.gold.label === "ambiguous" ? "ambiguous" : "clean"
+
+/** The ideal probability for a case: 1 for a clear violation, 0.5 when reviewers split, 0 otherwise. */
+export const target = (scored: Scored): number => ({ clean: 0, ambiguous: 0.5, violates: 1 })[goldClass(scored)]
+
 // An unsent request reports nothing, so it counts as a 0 score: a miss on violations, harmless otherwise.
 const probability = (scored: Scored) => scored.score ?? 0
 
-/** Probability that a random violating case outscores a random non-violating one; ties count half. */
-export const auroc = (cases: ReadonlyArray<Scored>): number => {
-  const sorted = [...cases].sort((a, b) => probability(a) - probability(b))
+export const verdict = (score: number, { floor, threshold }: Thresholds): Verdict =>
+  score <= floor ? "pass" : score >= threshold ? "violation" : "review"
+
+/** Probability that a random score from `high` exceeds one from `low`; ties count half. */
+const separation = (low: ReadonlyArray<number>, high: ReadonlyArray<number>): number => {
+  if (low.length === 0 || high.length === 0) return Number.NaN
+  const all = [...low.map((value) => ({ value, high: false })), ...high.map((value) => ({ value, high: true }))]
+    .sort((a, b) => a.value - b.value)
   let rankSum = 0
-  let positives = 0
-  for (let start = 0; start < sorted.length;) {
+  for (let start = 0; start < all.length;) {
     let end = start
-    while (end < sorted.length && probability(sorted[end]!) === probability(sorted[start]!)) end++
+    while (end < all.length && all[end]!.value === all[start]!.value) end++
     const meanRank = (start + 1 + end) / 2
-    for (let index = start; index < end; index++) {
-      if (positive(sorted[index]!)) {
-        rankSum += meanRank
-        positives++
-      }
-    }
+    for (let index = start; index < end; index++) if (all[index]!.high) rankSum += meanRank
     start = end
   }
-  const negatives = sorted.length - positives
-  return (rankSum - (positives * (positives + 1)) / 2) / (positives * negatives)
+  return (rankSum - (high.length * (high.length + 1)) / 2) / (high.length * low.length)
 }
 
-/** Mean squared error of the probability against the 0/1 label; lower is better. */
+const scoresOf = (cases: ReadonlyArray<Scored>, gold: GoldClass) =>
+  cases.filter((scored) => goldClass(scored) === gold).map(probability)
+
+/** Separation of clear violations from clean cases (ambiguous cases excluded). */
+export const auroc = (cases: ReadonlyArray<Scored>): number =>
+  separation(scoresOf(cases, "clean"), scoresOf(cases, "violates"))
+
+/**
+ * Ordinal concordance: over every pair of cases with different targets (clean < ambiguous < violates),
+ * the share where the higher target gets the higher score. Rewards placing ambiguous cases between.
+ */
+export const concordance = (cases: ReadonlyArray<Scored>): number => {
+  const clean = scoresOf(cases, "clean")
+  const ambiguous = scoresOf(cases, "ambiguous")
+  const violates = scoresOf(cases, "violates")
+  const parts = [[clean, ambiguous], [clean, violates], [ambiguous, violates]] as const
+  let weighted = 0
+  let pairs = 0
+  for (const [low, high] of parts) {
+    const count = low.length * high.length
+    if (count === 0) continue
+    weighted += separation(low, high) * count
+    pairs += count
+  }
+  return pairs === 0 ? Number.NaN : weighted / pairs
+}
+
+/** Mean squared error of the probability against the 0 / 0.5 / 1 target; lower is better. */
 export const brier = (cases: ReadonlyArray<Scored>): number =>
-  cases.reduce((sum, scored) => sum + ((positive(scored) ? 1 : 0) - probability(scored)) ** 2, 0) / cases.length
+  cases.reduce((sum, scored) => sum + (target(scored) - probability(scored)) ** 2, 0) / cases.length
 
 const share = (cases: ReadonlyArray<Scored>, include: (s: Scored) => boolean, hit: (s: Scored) => boolean) => {
   const included = cases.filter(include)
@@ -45,8 +84,41 @@ const share = (cases: ReadonlyArray<Scored>, include: (s: Scored) => boolean, hi
 }
 
 /**
- * Share of contrast pairs ordered correctly: for each policy whose label differs between a file and
- * its fixed twin, the violating twin must score higher. Ties count half.
+ * Macro-averaged F1 of the three verdicts against the three gold classes (pass↔clean,
+ * review↔ambiguous, violation↔violates). Classes absent from both gold and predictions are skipped.
+ */
+export const verdictF1 = (cases: ReadonlyArray<Scored>, thresholds: Thresholds): number => {
+  const pairs: ReadonlyArray<readonly [GoldClass, Verdict]> = [["clean", "pass"], ["ambiguous", "review"], ["violates", "violation"]]
+  const f1s = pairs.flatMap(([gold, predicted]) => {
+    const actual = cases.filter((scored) => goldClass(scored) === gold).length
+    const flagged = cases.filter((scored) => verdict(probability(scored), thresholds) === predicted)
+    if (actual === 0 && flagged.length === 0) return []
+    const hits = flagged.filter((scored) => goldClass(scored) === gold).length
+    return [(2 * hits) / (actual + flagged.length)]
+  })
+  return f1s.reduce((sum, value) => sum + value, 0) / f1s.length
+}
+
+/** The cut-offs on a 0.025 grid that maximize `verdictF1`; meant for the dev split only. */
+export const tuneThresholds = (cases: ReadonlyArray<Scored>): Thresholds => {
+  let best: Thresholds = productionThresholds
+  let bestF1 = -1
+  for (let floor = 0.025; floor < 1; floor += 0.025) {
+    for (let threshold = floor + 0.025; threshold <= 1; threshold += 0.025) {
+      const candidate = { floor: Number(floor.toFixed(3)), threshold: Number(threshold.toFixed(3)) }
+      const f1 = verdictF1(cases, candidate)
+      if (f1 > bestF1) {
+        bestF1 = f1
+        best = candidate
+      }
+    }
+  }
+  return best
+}
+
+/**
+ * Share of contrast pairs ordered correctly: for each policy whose target differs between a file and
+ * its twin, the twin with the higher target must score higher. Ties count half.
  */
 export const pairAccuracy = (cases: ReadonlyArray<Scored>): number => {
   const byCase = new Map(cases.map((scored) => [`${scored.item.file.id}:${scored.item.policy.name}`, scored]))
@@ -54,9 +126,9 @@ export const pairAccuracy = (cases: ReadonlyArray<Scored>): number => {
   let count = 0
   for (const scored of cases) {
     const pair = scored.item.file.pair
-    if (pair === undefined || !positive(scored)) continue
+    if (pair === undefined) continue
     const twin = byCase.get(`${pair}:${scored.item.policy.name}`)
-    if (twin === undefined || positive(twin)) continue
+    if (twin === undefined || target(scored) <= target(twin)) continue
     count++
     const difference = probability(scored) - probability(twin)
     total += difference > 0 ? 1 : difference === 0 ? 0.5 : 0
@@ -66,29 +138,36 @@ export const pairAccuracy = (cases: ReadonlyArray<Scored>): number => {
 
 export interface Quality {
   readonly auroc: number
+  readonly concordance: number
   readonly brier: number
-  /** Of cases scored at or above the violation threshold, the share that truly violate. */
-  readonly precision: number
-  /** Share of violating cases scored at or above the violation threshold. */
-  readonly recall: number
-  /** Share of violating cases surfaced as violation or review (above the review floor). */
+  readonly f1: number
+  /** Share of clear violations given the `violation` verdict. */
+  readonly caught: number
+  /** Share of clear violations given `violation` or `review`. */
   readonly surfaced: number
-  /** Share of non-violating cases surfaced as violation or review. */
+  /** Share of ambiguous cases given `review`. */
+  readonly ambiguousToReview: number
+  /** Share of clean cases given `violation` or `review`. */
   readonly falseAlarms: number
   readonly pairs: number
   readonly inconclusive: number
 }
 
-export const quality = (cases: ReadonlyArray<Scored>): Quality => ({
-  auroc: auroc(cases),
-  brier: brier(cases),
-  precision: share(cases, (s) => probability(s) >= violationThreshold, positive),
-  recall: share(cases, positive, (s) => probability(s) >= violationThreshold),
-  surfaced: share(cases, positive, (s) => probability(s) > reviewFloor),
-  falseAlarms: share(cases, (s) => !positive(s), (s) => probability(s) > reviewFloor),
-  pairs: pairAccuracy(cases),
-  inconclusive: cases.filter((scored) => scored.score === null).length
-})
+export const quality = (cases: ReadonlyArray<Scored>, thresholds: Thresholds): Quality => {
+  const of = (scored: Scored) => verdict(probability(scored), thresholds)
+  return {
+    auroc: auroc(cases),
+    concordance: concordance(cases),
+    brier: brier(cases),
+    f1: verdictF1(cases, thresholds),
+    caught: share(cases, (s) => goldClass(s) === "violates", (s) => of(s) === "violation"),
+    surfaced: share(cases, (s) => goldClass(s) === "violates", (s) => of(s) !== "pass"),
+    ambiguousToReview: share(cases, (s) => goldClass(s) === "ambiguous", (s) => of(s) === "review"),
+    falseAlarms: share(cases, (s) => goldClass(s) === "clean", (s) => of(s) !== "pass"),
+    pairs: pairAccuracy(cases),
+    inconclusive: cases.filter((scored) => scored.score === null).length
+  }
+}
 
 // Deterministic PRNG so bootstrap intervals are reproducible.
 const mulberry32 = (seed: number) => () => {

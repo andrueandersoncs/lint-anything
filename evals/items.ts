@@ -1,8 +1,10 @@
 // Scores how selector items are sent to Clef, against item labels derived from the gold corpus.
-//   bun evals/items.ts [--split dev|test|all] [--thresholds floor,threshold] [--concurrency 8] [shape ...]
+//   bun evals/items.ts [--split dev|test|all] [--thresholds floor,threshold] [--selectors dir] [--concurrency 8] [shape ...]
+// --selectors scores another set of selector policies (default evals/corpus/selectors) against the same labels.
 // Shapes: `production` (what the CLI sends: the rule in the state, one question per item), `single` (one
 // request per item), `list` (the rule and all items in the state, one short question per item). The
 // first shape is the baseline.
+import { resolve } from "node:path"
 import { Effect } from "effect"
 import { itemCriteria as criteria, maxRequestBytes, planItemRequests, renderItem as render } from "../src/clef.ts"
 import { defaultItemThreshold, itemReviewFloor } from "../src/lint.ts"
@@ -27,6 +29,7 @@ const flag = (name: string, fallback: string) => {
 }
 const split = flag("--split", "dev")
 const concurrency = Number(flag("--concurrency", "8"))
+const selectorFlag = flag("--selectors", "")
 if (!["dev", "test", "all"].includes(split)) throw new Error("--split must be dev, test, or all")
 // Verdicts default to the CLI's item cut-offs (src/lint.ts).
 const [floor, threshold] = flag("--thresholds", `${itemReviewFloor},${defaultItemThreshold}`)
@@ -49,7 +52,9 @@ const frontmatter = /^---\r?\n(.*?)\r?\n---(?:\r?\n|$)/s
 const body = (source: string) => source.replace(frontmatter, "")
 const globsOf = (source: string) =>
   JSON.stringify((Bun.YAML.parse(frontmatter.exec(source)?.[1] ?? "") as { readonly globs?: unknown } | null)?.globs)
-const selectorDirectory = `${corpusDirectory}/selectors`
+const selectorDirectory = selectorFlag === "" ? `${corpusDirectory}/selectors` : resolve(selectorFlag)
+// Results of a non-default selector set go to their own directory, named after it.
+const resultScope = `items.${split}${selectorFlag === "" ? "" : `.${selectorDirectory.split("/").pop()}`}`
 const selectorPolicies = await Promise.all(
   (await Array.fromAsync(new Bun.Glob("**/*.md").scan(selectorDirectory))).sort().map(async (file) => {
     const name = file.slice(0, -".md".length)
@@ -208,7 +213,7 @@ const run = async (shape: Shape): Promise<Run> => {
   }))
   const scored = items.map((item) => ({ item, score: scores.get(item) ?? null }))
   await Bun.write(
-    `${import.meta.dir}/results/items.${split}/${shape}.jsonl`,
+    `${import.meta.dir}/results/${resultScope}/${shape}.jsonl`,
     `${scored.map(({ item, score }) => JSON.stringify({ case: item.id, label: item.gold.label, score })).join("\n")}\n`
   )
   return { shape, scored, requests, inputTokens, ms }

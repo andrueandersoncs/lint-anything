@@ -16,7 +16,8 @@ Pass one or more globs. They are expanded relative to the current directory, ded
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--rules-dir` | `.lint-anything/rules` | Policy directory |
-| `--threshold` | `0.45` | Violation probability (0–1) that fails the run |
+| `--threshold` | `0.45` | Violation probability (0–1) that fails the run, for policies judged per file |
+| `--item-threshold` | `0.65` | Violation probability (0–1) that fails the run, for items a selector emits |
 | `--model` | `clef` | `clef` or `clef-flash` |
 | `--json` | off | Print every finding as JSON |
 
@@ -41,38 +42,73 @@ globs: ["src/**/*.ts"]
 Remove debugger statements.
 ```
 
-- Frontmatter must list at least one glob. A policy checks a file only when one of its globs matches the file's path as found by the CLI globs (for example `src/a.ts`).
+- Frontmatter must list at least one glob, a `select` command, or both. A policy checks a file only when one of its globs matches the file's path as found by the CLI globs (for example `src/a.ts`).
 - The body after the frontmatter must not be empty.
 - The policy name is its path relative to the rules directory, without `.md` (for example `sub/no-debugger`).
 - The whole policy file, frontmatter included, is sent to Clef verbatim.
 
 A missing rules directory, one with no `.md` files, or an invalid policy stops the run.
 
+### Selectors
+
+By default a policy is judged against each whole file. A `select` command instead picks out the discrete items to judge: functions, comments, TODOs, commit messages, or anything else a shell pipeline can produce.
+
+````md
+---
+globs: ["src/**/*.ts"]
+select: |
+  rg --json -w 'TODO|FIXME' "$@" |
+    jq -c 'select(.type == "match") | {id: "\(.data.path.text):\(.data.line_number)", path: .data.path.text,
+           lines: [.data.line_number, .data.line_number], text: (.data.lines.text | rtrimstr("\n"))}'
+---
+# TODOs reference an issue
+
+Every `TODO` or `FIXME` comment must reference a tracking issue, written as `#123`, `ABC-123`, or a full issue URL.
+````
+
+- The command runs with `sh -c` from the current directory. With globs, it runs once with every matching file as its arguments (`"$@"`), and not at all when none match. Without globs it always runs once, with no arguments, so it can select things that aren't files (`git log`, an API, a database).
+- It must print JSONL, one item per line:
+
+  | Field | Required | Meaning |
+  | --- | --- | --- |
+  | `id` | yes | Names the item in findings |
+  | `text` | yes | What Clef judges against the rule |
+  | `path` | no | The item's file |
+  | `lines` | no | `[start, end]`, 1-based and inclusive |
+  | `context` | no | Extra text Clef reads alongside the item, such as the enclosing function |
+
+- A non-zero exit or a line that isn't a valid item stops the run (exit 2). `rg` and `grep` exit 1 when nothing matches, so end a bare search with `|| true`, or pipe it on as above.
+- Each item is judged on its own, with only its `context` and location. Pick items that carry what the rule needs: a rule about whole files is better judged per file.
+
 ## How it works
 
-Each file is paired with every policy whose globs match its path, and all of a file's policies are judged together, with up to 8 files in flight. Files over 4,000 bytes are judged as excerpts of at most 4,000 bytes, cut before top-level declarations where possible; each excerpt's path names its lines. One Clef request carries short judging guidance, the excerpt's path and text, plus one yes/no question per policy: does the file violate it? Clef answers each question with a probability, and a policy's score is its highest across the file's excerpts. A policy that doesn't apply to a file scores low and passes. Files with no matching policy send nothing.
+Each file is paired with every policy without a selector whose globs match its path, and all of a file's policies are judged together, with up to 8 files in flight. Files over 4,000 bytes are judged as excerpts of at most 4,000 bytes, cut before top-level declarations where possible; each excerpt's path names its lines. One Clef request carries short judging guidance, the excerpt's path and text, plus one yes/no question per policy: does the file violate it? Clef answers each question with a probability, and a policy's score is its highest across the file's excerpts. A policy that doesn't apply to a file scores low and passes. Files with no matching policy send nothing.
 
-A request holds at most 64 questions (Clef's limit) and 64,000 bytes (24,000 with `clef-flash`, whose context window is smaller). Policies that don't fit in one request are split across several, sent one after another. This request shape and the cut-offs below were chosen with the eval suite.
+Selector policies run after the files, one at a time. Each request carries short guidance and the rule once, plus one yes/no question per item showing its location, context, and text: does the item violate the rule? Each item gets its own finding.
 
-| Result | Verdict |
-| --- | --- |
-| `violates ≤ 0.3` | `pass` |
-| `violates ≥ --threshold` | `violation` |
-| otherwise | `review`: uncertain, including cases where careful reviewers would disagree |
-| excerpt plus that policy alone over the byte limit | `inconclusive` (not sent; Clef would truncate it) |
+A request holds at most 64 questions (Clef's limit) and 64,000 bytes (24,000 with `clef-flash`, whose context window is smaller). Policies or items that don't fit in one request are split across several. This request shape and the cut-offs below were chosen with the eval suite. Items score higher than whole files, so they have their own cut-offs.
+
+| Result | File verdict | Item verdict |
+| --- | --- | --- |
+| `violates ≤ 0.3` (files) or `≤ 0.5` (items) | `pass` | `pass` |
+| `violates ≥ --threshold` (files) or `--item-threshold` (items) | `violation` | `violation` |
+| otherwise | `review`: uncertain, including cases where careful reviewers would disagree | `review` |
+| request with only that policy or item over the byte limit | `inconclusive` (not sent; Clef would truncate it) | `inconclusive` |
 
 Transient HTTP failures are retried up to 3 times with exponential backoff.
 
 ## Output
 
-Text output prints one line per non-passing finding — verdict, violation probability, path, policy, and reason — then a count per verdict:
+Text output prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the file's path; for an item, its `path:start-end`, or its `id` when it has no path and lines:
 
 ```
 violation     0.93   src/a.ts  no-debugger
-1 checks: 1 violation, 0 review, 0 inconclusive, 0 pass
+violation     0.97   src/a.ts:4-4  todo
+violation     0.97   9acebc18  commits
+3 checks: 3 violation, 0 review, 0 inconclusive, 0 pass
 ```
 
-`--json` prints `{ "findings": [...] }` with every finding, passes included. Each finding has `path`, `policy`, `verdict`, and either `violates` or `reason`.
+`--json` prints `{ "findings": [...] }` with every finding, passes included. Each finding has `policy`, `verdict`, and either `violates` or `reason`. A file finding has `path`; an item finding has `item` (its id) and the item's `path` and `lines` when it gave them.
 
 Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`.
 
@@ -80,7 +116,7 @@ Only `violation` fails the run; `review` and `inconclusive` are reported but exi
 | --- | --- |
 | `0` | No violations |
 | `1` | At least one violation, or an input file could not be read |
-| `2` | Policy, configuration, or Clef API error |
+| `2` | Policy, selector, configuration, or Clef API error |
 
 ## Develop
 
@@ -97,6 +133,8 @@ bun evals/validate.ts                      # check the corpus, print label count
 bun evals/validate.ts --verify-upstream    # also check every real file against GitHub, byte for byte
 bun evals/run.ts                           # one-factor sweep around production on the dev split
 bun evals/run.ts --split test --category semantic production production,chunk=0
+bun evals/items.ts                         # selector item request shapes on the dev split
+bun evals/items.ts --split test production
 ```
 
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
@@ -132,6 +170,7 @@ bun evals/run.ts --split test --category semantic production production,chunk=0
 
   Verdicts use `--thresholds floor,threshold`, which defaults to production's. The table also shows the cut-offs that would maximize F1 on the scored cases; pick them on dev and pass them to test. The first strategy is the baseline, and intervals are 95% paired bootstraps that resample files, because cases in one file share requests.
 - **Cache**: replies are cached in `evals/.cache` by model and exact request body, since Clef is deterministic. Reruns and re-scoring are free; only new request shapes are sent. Per-case scores go to `evals/results/<split>[.<origins>][.<category>]/<strategy>.jsonl`.
+- **Selector items** (`evals/items.ts`): `evals/corpus/selectors/` gives six corpus policies a `select` command built from `rg` and `jq`: TODO lines, lines with `any`, Python `except` handlers, comment runs with the line after, test declarations with their bodies, and lines with numeric literals. Globs and rule text must equal the corpus policy's, so the corpus labels still apply. Each item is labeled `violates` when its lines overlap the file's gold violation lines and clean otherwise. Files labeled `ambiguous` for the policy are left out. The runner reports item AUROC, AUROC among items of violating files (whether a violating item lifts its neighbours), Brier, caught and false-alarm rates at the CLI's item cut-offs (`--thresholds` overrides them), and, per file, the highest item score against the CLI's whole-file judgment of the same cases. Shapes: `production` (the CLI's planner), `single` (one request per item), and `list` (rule and items in the state, one short question per item). Per-item scores go to `evals/results/items.<split>/<shape>.jsonl`.
 
 Findings, 2026-10-20. Strategies and cut-offs were chosen on dev; these are held-out test numbers:
 
@@ -146,3 +185,16 @@ Findings, 2026-10-20. Strategies and cut-offs were chosen on dev; these are held
 - Clef sees ambiguity only partly. It ranks ambiguous cases above clean ones (0.80) but barely below clear violations (about 0.6). Asking directly whether reviewers would disagree (`contest=ask`), a three-way `verdict` question, or `calibrated` wording didn't change that. With excerpts, `review` catches about a third of the ambiguous cases.
 - Nothing else helped measurably. Neither wording, question type, question ids, nor smaller batches beat production. Per-rule batches cost more without gaining once excerpts are used. clef-flash still misses most violations.
 - The earlier synthetic-corpus finding that batching was free held only for mechanical rules. On semantic rules it lowers scores, and excerpts recover that loss more cheaply than one question per request.
+
+Selector findings, 2026-10-20 (shape and cut-offs chosen on dev; test: 567 items, 61 violating, in 149 file cases; selectors cover 62 of 71 gold violation ranges):
+
+| Test split | Item AUROC | Brier | Violating items given `violation` / clean items not passed (0.5 / 0.65) | Same file cases: highest item vs. whole file | $ / 1k items |
+| --- | --- | --- | --- | --- | --- |
+| `production`: rule in the state, one question per item | 0.967 | 0.078 | 59% / 7% | 0.966 vs 0.920 [+0.022, +0.073] | $0.050 |
+| `single`: one request per item | 0.953 [−0.036, +0.014] | 0.106 [+0.009, +0.052] | 74% / 10% | 0.955 vs 0.920 [+0.009, +0.062] | $0.124 |
+| `list`: rule and items in the state | 0.959 [−0.025, +0.005] | 0.078 [−0.007, +0.007] | 59% / 5% | 0.975 vs 0.920 [+0.029, +0.084] | $0.053 |
+
+- Packing items as questions loses nothing to one request per item, and is better calibrated: Brier is worse for `single` outside noise. It costs 2.5× less. `list` ties `production` on test and was worse on Brier on dev.
+- A matched selector beats judging the whole file for the same rules. Taking a policy's highest item score as its file score lifts AUROC from 0.920 to 0.966 on test (0.923 to 0.974 on dev), outside noise, and each finding points at its lines.
+- Items score higher than whole files: at the file cut-offs (0.3 / 0.45), 28% of clean items would be flagged. On dev, 0.5 / 0.65 catches 71% of violating items as `violation` with 2% of clean items flagged, and surfaces 88% with 7% flagged; on test, 59% at 2% and 87% at 7%.
+- Mechanical rules are solved (item AUROC 1.0 for TODOs, `any`, and swallowed exceptions). Semantic items: comments 0.944, magic values 0.972, test names 0.767 on 11 items.

@@ -273,7 +273,10 @@ export const assertProductionParity = (file: SourceFile, policies: ReadonlyArray
   const ours = views(production, file).map((view) => planRequests(production, view, policies))
   const cli = excerpts(file, excerptBytes).map((excerpt) => {
     const plan = planProductionRequests(production.model, excerpt, policies)
-    return { requests: plan.requests, oversized: plan.oversized.map(({ policy }) => policy) }
+    return {
+      requests: plan.requests.map(({ body, questions }) => ({ body, questions: questions.map(({ id, value }) => ({ id, policy: value })) })),
+      oversized: plan.oversized.map(({ value }) => value)
+    }
   })
   if (summary(ours) !== summary(cli)) {
     throw new Error(`evals/strategy.ts no longer plans src/clef.ts's production requests (${file.path})`)

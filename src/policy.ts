@@ -1,10 +1,15 @@
 import { Effect, FileSystem, Path, Runtime, Schema } from "effect"
 
-/** A Markdown rule answerable from one file. Its full text is sent to Clef. */
+/**
+ * A Markdown rule. Without `select` it is judged against each whole file its globs match. With
+ * `select`, a shell command emits the items to judge: it receives the matching files as arguments, or
+ * none when the policy has no globs. The full policy text is sent to Clef.
+ */
 export interface Policy {
   readonly name: string
   readonly source: string
   readonly globs: ReadonlyArray<Bun.Glob>
+  readonly select?: string
 }
 
 export class PolicyError extends Schema.TaggedError<PolicyError>()("PolicyError", {
@@ -14,8 +19,9 @@ export class PolicyError extends Schema.TaggedError<PolicyError>()("PolicyError"
 }
 
 const Frontmatter = Schema.Struct({
-  globs: Schema.NonEmptyArray(Schema.NonEmptyString)
-})
+  globs: Schema.optional(Schema.NonEmptyArray(Schema.NonEmptyString)),
+  select: Schema.optional(Schema.NonEmptyString)
+}).check(Schema.makeFilter(({ globs, select }) => globs !== undefined || select !== undefined))
 
 const frontmatterPattern = /^---\r?\n(.*?)\r?\n---(?:\r?\n|$)/s
 
@@ -27,11 +33,16 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
   if (source.slice(match[0].length).trim() === "") {
     return yield* new PolicyError({ message: `${name}: empty policy` })
   }
-  const { globs } = yield* Effect.try(() => Bun.YAML.parse(match[1] ?? "")).pipe(
+  const { globs, select } = yield* Effect.try(() => Bun.YAML.parse(match[1] ?? "")).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Frontmatter)),
-    Effect.mapError(() => new PolicyError({ message: `${name}: frontmatter needs non-empty globs` }))
+    Effect.mapError(() => new PolicyError({ message: `${name}: frontmatter needs non-empty globs, a select command, or both` }))
   )
-  return { name, source, globs: globs.map((glob) => new Bun.Glob(glob)) } satisfies Policy
+  return {
+    name,
+    source,
+    globs: (globs ?? []).map((glob) => new Bun.Glob(glob)),
+    ...(select === undefined ? {} : { select })
+  } satisfies Policy
 })
 
 export const matches = (policy: Policy, path: string): boolean => policy.globs.some((glob) => glob.match(path))

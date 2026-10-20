@@ -2,7 +2,7 @@ import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Runtime, Schema } from "effect"
 import { Argument, Command, Flag } from "effect/cli"
 import { Clef } from "./src/clef.ts"
-import { defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
+import { defaultItemThreshold, defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
 import { loadPolicies } from "./src/policy.ts"
 import { readSources } from "./src/source.ts"
 
@@ -15,6 +15,10 @@ class ViolationsFound extends Schema.TaggedError<ViolationsFound>()("ViolationsF
 
 const verdicts: ReadonlyArray<Verdict> = ["violation", "review", "inconclusive", "pass"]
 
+/** Where a finding is: a file's path, an item's `path:start-end`, or else the item's id. */
+const location = ({ path, item, lines }: Finding) =>
+  path !== undefined && lines !== undefined ? `${path}:${lines[0]}-${lines[1]}` : item ?? path ?? ""
+
 const formatText = (findings: ReadonlyArray<Finding>): string => {
   const lines = findings
     .filter((finding) => finding.verdict !== "pass")
@@ -22,7 +26,7 @@ const formatText = (findings: ReadonlyArray<Finding>): string => {
       [
         finding.verdict.padEnd(12),
         (finding.violates?.toFixed(2) ?? "-").padEnd(5),
-        finding.path,
+        location(finding),
         finding.policy,
         finding.reason ?? ""
       ].join("  ").trimEnd()
@@ -45,9 +49,14 @@ const command = Command.make(
       Flag.withDefault(".lint-anything/rules")
     ),
     threshold: Flag.Finite("threshold").pipe(
-      Flag.withDescription("Violation probability that fails the run"),
+      Flag.withDescription("Violation probability that fails the run, for policies judged per file"),
       Flag.withSchema(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
       Flag.withDefault(defaultThreshold)
+    ),
+    itemThreshold: Flag.Finite("item-threshold").pipe(
+      Flag.withDescription("Violation probability that fails the run, for items from a policy's selector"),
+      Flag.withSchema(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))),
+      Flag.withDefault(defaultItemThreshold)
     ),
     model: Flag.Literals("model", ["clef", "clef-flash"]).pipe(
       Flag.withDescription("Clef model"),
@@ -58,10 +67,10 @@ const command = Command.make(
       Flag.withDefault(false)
     )
   },
-  Effect.fn(function*({ files, rulesDir, threshold, model, json }) {
+  Effect.fn(function*({ files, rulesDir, threshold, itemThreshold, model, json }) {
     const policies = yield* loadPolicies(rulesDir)
     const sources = yield* readSources(files)
-    const findings = yield* lint(sources, policies, threshold).pipe(Effect.provide(Clef.layer(model)))
+    const findings = yield* lint(sources, policies, { threshold, itemThreshold }).pipe(Effect.provide(Clef.layer(model)))
     yield* Console.log(json ? JSON.stringify({ findings }, null, 2) : formatText(findings))
     const count = findings.filter((finding) => finding.verdict === "violation").length
     if (count > 0) {

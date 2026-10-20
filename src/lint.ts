@@ -1,14 +1,18 @@
 import { Array as Arr, Effect, Result } from "effect"
-import { Clef, type Judgment } from "./clef.ts"
+import { Clef, type Judgment, type RequestTooLarge } from "./clef.ts"
 import { matches, type Policy } from "./policy.ts"
+import { type Item, runSelector } from "./select.ts"
 import type { SourceFile } from "./source.ts"
 
 export type Verdict = "pass" | "review" | "violation" | "inconclusive"
 
+/** One judgment: of a whole file, or of one item a policy's selector emitted (`item`, its id). */
 export interface Finding {
-  readonly path: string
   readonly policy: string
   readonly verdict: Verdict
+  readonly path?: string
+  readonly item?: string
+  readonly lines?: readonly [number, number]
   readonly violates?: number
   readonly reason?: string
 }
@@ -19,39 +23,67 @@ export interface Finding {
 export const reviewFloor = 0.3
 export const defaultThreshold = 0.45
 
-export const classify = ({ violates }: Judgment, threshold: number): Verdict => {
-  if (violates <= reviewFloor) return "pass"
-  return violates >= threshold ? "violation" : "review"
-}
+// Selector items score higher than whole files, so they have their own cut-offs, picked on the dev split
+// of evals/items.ts and confirmed on test: about 2% of clean items reach the threshold and 7% the floor.
+export const itemReviewFloor = 0.5
+export const defaultItemThreshold = 0.65
 
-/** Judges every file against every policy whose globs match its path, batching each file's policies. */
+const classify = ({ violates }: Judgment, floor: number, threshold: number): Verdict =>
+  violates <= floor ? "pass" : violates >= threshold ? "violation" : "review"
+
+const toFinding = (
+  judgment: Result.Result<Judgment, RequestTooLarge>,
+  base: Omit<Finding, "verdict" | "violates" | "reason">,
+  floor: number,
+  threshold: number
+): Finding =>
+  Result.match(judgment, {
+    onSuccess: (judgment): Finding => ({ ...base, verdict: classify(judgment, floor, threshold), ...judgment }),
+    onFailure: ({ bytes }): Finding => ({ ...base, verdict: "inconclusive", reason: `request is ${bytes} bytes; Clef would truncate it` })
+  })
+
+const itemLocation = (item: Item) => ({
+  item: item.id,
+  ...(item.path === undefined ? {} : { path: item.path }),
+  ...(item.lines === undefined ? {} : { lines: item.lines })
+})
+
+/**
+ * Judges every file against every policy without a selector whose globs match its path, batching each
+ * file's policies. Then runs each selector policy on the files its globs match (skipping it when none
+ * do; a selector without globs always runs, with no arguments) and judges its items.
+ */
 export const lint = Effect.fn("lint")(function*(
   files: ReadonlyArray<SourceFile>,
   policies: ReadonlyArray<Policy>,
-  threshold: number
+  cutoffs: { readonly threshold: number; readonly itemThreshold: number }
 ) {
   const clef = yield* Clef
-  const findings = yield* Effect.forEach(files, (file) => {
-    const applicable = policies.filter((policy) => matches(policy, file.path))
+  const filePolicies = policies.filter((policy) => policy.select === undefined)
+  const fileFindings = yield* Effect.forEach(files, (file) => {
+    const applicable = filePolicies.filter((policy) => matches(policy, file.path))
     return clef.judge(file, applicable).pipe(
       Effect.map((judgments) =>
         Arr.zipWith(applicable, judgments, (policy, judgment) =>
-          Result.match(judgment, {
-            onSuccess: (judgment): Finding => ({
-              path: file.path,
-              policy: policy.name,
-              verdict: classify(judgment, threshold),
-              ...judgment
-            }),
-            onFailure: ({ bytes }): Finding => ({
-              path: file.path,
-              policy: policy.name,
-              verdict: "inconclusive",
-              reason: `request is ${bytes} bytes; Clef would truncate it`
-            })
-          }))
+          toFinding(judgment, { path: file.path, policy: policy.name }, reviewFloor, cutoffs.threshold))
       )
     )
   }, { concurrency: 8 })
-  return findings.flat()
+  const itemFindings = yield* Effect.forEach(policies, (policy) => {
+    const select = policy.select
+    if (select === undefined) return Effect.succeed([])
+    const paths = files.filter((file) => matches(policy, file.path)).map((file) => file.path)
+    if (policy.globs.length > 0 && paths.length === 0) return Effect.succeed([])
+    return runSelector({ ...policy, select }, paths).pipe(
+      Effect.flatMap((items) =>
+        clef.judgeItems(policy, items).pipe(
+          Effect.map((judgments) =>
+            Arr.zipWith(items, judgments, (item, judgment) =>
+              toFinding(judgment, { policy: policy.name, ...itemLocation(item) }, itemReviewFloor, cutoffs.itemThreshold))
+          )
+        )
+      )
+    )
+  })
+  return [...fileFindings.flat(), ...itemFindings.flat()]
 })

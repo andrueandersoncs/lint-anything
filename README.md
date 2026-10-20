@@ -96,15 +96,18 @@ bunx tsc --noEmit
 bun evals/validate.ts                      # check the corpus, print label counts per policy and origin
 bun evals/validate.ts --verify-upstream    # also check every real file against GitHub, byte for byte
 bun evals/run.ts                           # one-factor sweep around production on the dev split
-bun evals/run.ts --split all --origin real production production,model=clef-flash
+bun evals/run.ts --split all --origin real --category semantic production production,batch=1
 ```
 
-- **Corpus** (`evals/corpus/`): 15 policies across TypeScript, Python, Go, SQL, shell, Dockerfiles, GitHub workflows, and Markdown. Every file is labeled `violates`, `complies`, or `not-applicable` against every policy whose globs match it. Each file has an `origin`:
-  - `synthetic`: 68 files written for the corpus, with targeted near-misses and contrast pairs (293 cases, 120 violating).
-  - `real`: 87 files copied verbatim from 38 permissively licensed GitHub projects with varied styles, among them VS Code, Hono, ky, Deno std, NestJS, Django, Flask, requests, Kubernetes, Prometheus, cobra, gin, the GitHub CLI, Supabase, docker-install, and nvm (374 cases, 84 violating). Each record pins its upstream repo, commit, path, and SPDX license. The license texts are in `evals/corpus/licenses/`.
-  - `planted`: 20 twins of real files, each with one minimal edit that adds a violation real code rarely contains, such as a fake live token or a misplaced `ctx` (95 cases, 33 violating). Each twin is paired with its real file.
+- **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
+  - `semantic/`: 17 rules of the kind lint-anything is for, which static analysis can't practically enforce. They cover naming (intent-revealing names, names that match behavior), readability (one level of abstraction per function, named magic values, comments that explain why), design (no flag parameters, single responsibility, explicit dependencies, preserving error context), architecture (decisions separate from I/O, thin entry points), encapsulation (no leaked mutable state, minimal public surface), organization (cohesive modules), maintainability (no duplicated knowledge), and testing (behavior over implementation, descriptive test names). Most apply to every `.ts`/`.js`/`.py`/`.go` file; the two testing rules apply to test files. Their wording varies the way users' rules do: some are one-liners, some list exceptions, some are in a team's voice.
+  - `control/`: four mechanical rules that existing linters already handle (TODOs need an issue, no `any`, Go errors handled, no swallowed Python exceptions), kept for comparison.
+- **Corpus** (`evals/corpus/`): every file is labeled `violates`, `complies`, `not-applicable`, or `ambiguous` against every policy whose globs match it. Each file has an `origin`:
+  - `real`: 70 files copied verbatim from 31 permissively licensed GitHub projects with varied styles, among them VS Code, Hono, ky, Deno std, NestJS, tRPC, Django, Flask, requests, scikit-learn, Home Assistant, Kubernetes, Prometheus, cobra, gin, the GitHub CLI, caddy, and etcd (1,042 cases, 184 violating). Each record pins its upstream repo, commit, path, and SPDX license. The license texts are in `evals/corpus/licenses/`.
+  - `synthetic`: 15 contrast pairs written for the corpus. Each pair is a realistic file that violates one target semantic rule, and a twin with only that violation fixed (522 cases).
+  - `planted`: 12 twins of real files, each with one minimal edit that introduces a violation of a target semantic rule (204 cases). Each twin is paired with its original.
 
-  Files are split dev/test (a file and its twin stay together). Every case was labeled by the slice's author and again by a blind second labeler, and they agreed on every violates/non-violates call.
+  Every case got two independent labels. Real files were labeled twice blind; synthetic and planted files were labeled by their author and again blind. On real files the labelers agreed 94.5% of the time on violates vs. not (Cohen's κ = 0.80), which is the ceiling for any automated judge. Disagreements were adjudicated against the policy text, and the 2 cases where reasonable reviewers would split are `ambiguous` and excluded from scoring. Files are split dev/test, and pairs stay together.
 - **Strategies** (`evals/strategy.ts`): each strategy is `production` plus `key=value` overrides. `production` plans exactly the CLI's requests; the runner checks this for every corpus file. The keys:
   - `model`: `clef` or `clef-flash`.
   - `batch`: questions per request, packed within Clef's 64-question limit and the model's byte limit.
@@ -113,33 +116,23 @@ bun evals/run.ts --split all --origin real production production,model=clef-flas
   - `ids`: `positional` or `slug`.
   - `question`: `noul`, `criteria`, or `choice`.
   - `pad`: `all` also asks policies that don't match the file, to stress large batches.
-- **Metrics**: AUROC, Brier score, precision and recall at the 0.7 violation threshold, recall and false alarms above the 0.55 review floor, contrast-pair ordering, input tokens, and cost. The first strategy is the baseline. Intervals are 95% paired bootstraps that resample files, because cases in one file share a request.
-- **Cache**: replies are cached in `evals/.cache` by model and exact request body, since Clef is deterministic. Reruns and re-scoring are free; only new request shapes are sent. Per-case scores go to `evals/results/<split>[.<origins>]/<strategy>.jsonl`.
 
-Findings on the synthetic corpus, 2026-10-19 (all 293 cases; test-split numbers agree within their wider intervals):
+  Requests always carry every policy that matches the file, as production sends them. `--origin`, `--category`, and `ambiguous` labels only decide which answers are scored.
+- **Metrics**: AUROC, Brier score, precision and recall at the 0.7 violation threshold, recall and false alarms above the 0.55 review floor, contrast-pair ordering, input tokens, and cost per 1,000 files. The first strategy is the baseline. Intervals are 95% paired bootstraps that resample files, because cases in one file share a request.
+- **Cache**: replies are cached in `evals/.cache` by model and exact request body, since Clef is deterministic. Reruns and re-scoring are free; only new request shapes are sent. Per-case scores go to `evals/results/<split>[.<origins>][.<category>]/<strategy>.jsonl`.
 
-| Strategy | AUROC | Brier | Recall@0.7 | False alarms >0.55 | $ / 1k cases |
-| --- | --- | --- | --- | --- | --- |
-| Previous CLI request: one policy per request, long judging preamble (removed) | 0.933 | 0.109 | 84% | 16% | $0.53 |
-| `production,batch=1` | 0.979 | 0.054 | 85% | 5% | $0.48 |
-| `production` | 0.977 | 0.055 | 82% | 6% | $0.13 |
-| `production,model=clef-flash` | 0.818 | 0.167 | 43% | 8% | $0.01 |
+Findings, 2026-10-20 (all splits):
 
-- Question wording drives quality: short guidance plus explicit yes/no `criteria` beat the previous long preamble on every metric. Besides switching to clef-flash, dropping the criteria (`question=noul`) is the only single change from production that measurably hurts (AUROC −0.020, Brier +0.023).
-- Batching a file's policies into one request barely changes quality once the wording is fixed, and cuts cost about 3.5× because the file is sent once. Putting the guidance in the state and sending the file as text saves another ~8%.
-- No other single change from production is distinguishable from noise, so production sits at a local optimum of this sweep.
-- Larger batches shift scores slightly (padding to 15 questions raised Brier by 0.005–0.008), and capping the batch size does not recover it, so production packs each file's policies without a cap.
-- clef-flash costs about 9× less than production but misses over half of the violations, and 26 cases (files over about 24 KB) cannot be sent to it at all.
-
-Findings on real code, 2026-10-20 (all 374 real cases; production was chosen on synthetic data alone, so none of these cases influenced the choice):
-
-| Strategy | AUROC | Brier | Precision@0.7 | Recall@0.7 | False alarms >0.55 | $ / 1k cases |
+| Cases | Strategy | AUROC | Recall@0.7 | Surfaced >0.55 | False alarms >0.55 | Contrast pairs ordered |
 | --- | --- | --- | --- | --- | --- | --- |
-| `production` | 0.981 | 0.054 | 94% | 61% | 2% | $0.18 |
-| `production,batch=1` | 0.977 | 0.057 | 94% | 61% | 2% | $0.66 |
-| `production,model=clef-flash` | 0.840 | 0.119 | 83% | 18% | 2% | $0.02 |
+| Real code, control rules | `production` | 0.980 | 59% | 72% | 4% | – |
+| Real code, semantic rules | `production` | 0.756 | 1% | 6% | 0% | – |
+| Real code, semantic rules | `production,batch=1` | 0.767 | 13% | 23% | 5% | – |
+| Synthetic + planted, semantic rules | `production` | 0.895 | 22% | 36% | 0% | 100% |
+| Synthetic + planted, semantic rules | `production,batch=1` | 0.927 | 44% | 56% | 3% | 100% |
 
-- The strategy ranking carries over to real code: no single change from production beats it, and dropping the criteria (`question=noul`) or switching to clef-flash still measurably hurts.
-- Calibration does not carry over. Real violations score lower: recall at the 0.7 threshold falls from 82% to 61%, while precision stays at 94%. Since AUROC is still 0.98, a lower threshold recovers most of it. At 0.3, real-code recall is 85% at 86% precision; synthetic recall is 98% at 89% precision.
-- Real-code misses at the 0.7 threshold cluster in four policies: `go/handle-errors` (12 of 15 missed), `hygiene/no-commented-out-code` (9 of 11), `typescript/no-floating-promises` (2 of 2), and `go/context-first` (2 of 2). Most are one-line violations in otherwise clean files, such as an error assigned to `_` or a commented-out `print` call.
-- Real code contained no hardcoded secrets, so that policy's positives come only from planted twins. Production ranked every planted twin above its real original.
+- Production was tuned on mechanical rules, and it works for them: on real code, control rules separate cleanly (AUROC 0.98).
+- On semantic rules, which are the intended use, production surfaces almost nothing: 6% of real violations clear the review floor. Clef notices them, ranking every contrast pair correctly and scoring a violation higher than clean code under each individual rule (per-rule AUROC is mostly 0.8–1.0), but the probabilities are low. Median real violations score 0.1–0.5, depending on the rule.
+- Score scales differ by rule, so pooled AUROC (0.76) is lower than per-rule AUROC, and no single threshold fits every rule.
+- Batching hurts semantic rules. With 15–17 semantic questions per request, scores for violations drop to roughly half of what the same question gets alone. Production's request shape was chosen on mechanical rules, where batching was free.
+- The earlier mechanical-rule findings (batching, short guidance plus criteria) need re-checking on semantic rules before they guide production.

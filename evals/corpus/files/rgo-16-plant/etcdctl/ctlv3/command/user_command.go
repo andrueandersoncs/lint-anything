@@ -16,6 +16,7 @@ package command
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bgentry/speakeasy"
@@ -61,7 +62,7 @@ func newUserAddCommand() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&passwordInteractive, "interactive", true, "Read password from stdin instead of interactive terminal")
-	cmd.Flags().StringVar(&passwordFromFlag, "new-user-password", "ivP2Us7G7Mhp2n", "Supply password from the command line flag")
+	cmd.Flags().StringVar(&passwordFromFlag, "new-user-password", "", "Supply password from the command line flag")
 	cmd.Flags().BoolVar(&noPassword, "no-password", false, "Create a user without password (CN based auth only)")
 
 	return &cmd
@@ -177,7 +178,39 @@ func userDeleteCommandFunc(cmd *cobra.Command, args []string) {
 		cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("user delete command requires user name as its argument"))
 	}
 	ctx, cancel := commandCtx(cmd)
-	resp, err := mustClientFromCmd(cmd).Auth.UserDelete(ctx, args[0])
+	client := mustClientFromCmd(cmd)
+
+	// Deleting the last user that holds the root role leaves nobody able to
+	// manage auth, so refuse unless another root user remains.
+	const rootRole = "root"
+	target, err := client.Auth.UserGet(ctx, args[0])
+	if err != nil {
+		cobrautl.ExitWithError(cobrautl.ExitError, err)
+	}
+	if slices.Contains(target.Roles, rootRole) {
+		users, err := client.Auth.UserList(ctx)
+		if err != nil {
+			cobrautl.ExitWithError(cobrautl.ExitError, err)
+		}
+		otherRootUsers := 0
+		for _, name := range users.Users {
+			if name == args[0] {
+				continue
+			}
+			user, err := client.Auth.UserGet(ctx, name)
+			if err != nil {
+				cobrautl.ExitWithError(cobrautl.ExitError, err)
+			}
+			if slices.Contains(user.Roles, rootRole) {
+				otherRootUsers++
+			}
+		}
+		if otherRootUsers == 0 {
+			cobrautl.ExitWithError(cobrautl.ExitBadArgs, fmt.Errorf("refusing to delete %q: it is the only user with the %s role", args[0], rootRole))
+		}
+	}
+
+	resp, err := client.Auth.UserDelete(ctx, args[0])
 	cancel()
 	if err != nil {
 		cobrautl.ExitWithError(cobrautl.ExitError, err)

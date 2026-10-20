@@ -109,7 +109,7 @@ func ThrottleWithOpts(opts ThrottleOpts) func(http.Handler) http.Handler {
 					http.Error(w, errTimedOut, t.statusCode)
 					return
 				case <-ctx.Done():
-					// timer.Stop()
+					timer.Stop()
 					t.setRetryAfterHeaderIfNeeded(w, true)
 					http.Error(w, errContextCanceled, t.statusCode)
 					return
@@ -123,7 +123,16 @@ func ThrottleWithOpts(opts ThrottleOpts) func(http.Handler) http.Handler {
 				return
 
 			default:
-				t.setRetryAfterHeaderIfNeeded(w, false)
+				if t.retryAfterFn != nil {
+					delay := t.retryAfterFn(false)
+					seconds := delay / time.Second
+					if delay < 0 {
+						seconds = 0
+					} else if delay%time.Second != 0 {
+						seconds++
+					}
+					w.Header().Set("Retry-After", strconv.FormatInt(int64(seconds), 10))
+				}
 				http.Error(w, errCapacityExceeded, t.statusCode)
 				return
 			}

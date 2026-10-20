@@ -144,7 +144,7 @@ def get_individual_sponsors(
     return tiers
 
 
-def update_content(*, content_path: Path, new_content: Any) -> bool:
+def has_content_changed(*, content_path: Path, new_content: Any) -> bool:
     old_content = content_path.read_text(encoding="utf-8")
 
     new_content = yaml.dump(new_content, sort_keys=False, width=200, allow_unicode=True)
@@ -160,7 +160,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = Settings()
     logging.info(f"Using config: {settings.model_dump_json()}")
-    g = Github("ghp_EXAMPLE")
+    g = Github(settings.github_token.get_secret_value())
     repo = g.get_repo(settings.github_repository)
 
     tiers = get_individual_sponsors(settings=settings)
@@ -181,7 +181,7 @@ def main() -> None:
     # For local development
     # github_sponsors_path = Path("../docs/en/data/github_sponsors.yml")
     github_sponsors_path = Path("./docs/en/data/github_sponsors.yml")
-    updated = update_content(
+    updated = has_content_changed(
         content_path=github_sponsors_path, new_content=github_sponsors
     )
 

@@ -3,7 +3,13 @@ import { matches, parsePolicy, type Policy } from "../src/policy.ts"
 
 export const corpusDirectory = `${import.meta.dir}/corpus`
 
-export type Label = "violates" | "complies" | "not-applicable"
+/** `ambiguous`: independent labelers could not agree under the policy text; excluded from scoring. */
+export type Label = "violates" | "complies" | "not-applicable" | "ambiguous"
+/** `semantic` policies are the intended use; `control` policies are mechanical, kept for comparison. */
+export type Category = "semantic" | "control"
+
+/** A policy's category is the first segment of its name (`semantic/naming/…`, `control/…`). */
+export const categoryOf = (policyName: string): Category => (policyName.startsWith("control/") ? "control" : "semantic")
 export type Split = "dev" | "test"
 /** `synthetic`: written for the corpus. `real`: verbatim from an open-source project. `planted`: a real file with one violation added. */
 export type Origin = "synthetic" | "real" | "planted"
@@ -55,7 +61,7 @@ export interface Corpus {
   readonly cases: ReadonlyArray<Case>
 }
 
-const labels = new Set<string>(["violates", "complies", "not-applicable"])
+const labels = new Set<string>(["violates", "complies", "not-applicable", "ambiguous"])
 const origins = new Set<string>(["synthetic", "real", "planted"])
 // Licenses that allow redistributing the files here with attribution.
 const permissiveLicenses = new Set(["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD"])

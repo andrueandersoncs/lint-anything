@@ -1,9 +1,10 @@
 // Scores request strategies against the gold corpus.
-//   bun evals/run.ts [--split dev|test|all] [--origin all|synthetic|real|planted[,…]] [--concurrency 8] [strategy ...]
+//   bun evals/run.ts [--split dev|test|all] [--origin all|synthetic|real|planted[,…]]
+//                    [--category all|semantic|control] [--concurrency 8] [strategy ...]
 // Each strategy is `production` and/or `key=value` overrides of it (see strategy.ts). Without strategies
 // it runs the one-factor sweep below. The first strategy is the baseline for the paired intervals.
 import { makeClient } from "./client.ts"
-import { type Case, loadCorpus } from "./corpus.ts"
+import { type Case, categoryOf, loadCorpus } from "./corpus.ts"
 import { brier, auroc, pairedInterval, quality, type Scored } from "./metrics.ts"
 import {
   assertProductionParity,
@@ -37,20 +38,29 @@ const flag = (name: string, fallback: string) => {
 }
 const split = flag("--split", "dev")
 const origin = flag("--origin", "all")
+const category = flag("--category", "all")
 const concurrency = Number(flag("--concurrency", "8"))
 if (!["dev", "test", "all"].includes(split)) throw new Error("--split must be dev, test, or all")
 const origins = origin === "all" ? ["synthetic", "real", "planted"] : origin.split(",")
 if (origins.some((value) => !["synthetic", "real", "planted"].includes(value))) {
   throw new Error("--origin must be all or a comma list of synthetic, real, planted")
 }
-const scope = origin === "all" ? split : `${split}.${origins.join("+")}`
+if (!["all", "semantic", "control"].includes(category)) throw new Error("--category must be all, semantic, or control")
+const scope = [split, origin === "all" ? undefined : origins.join("+"), category === "all" ? undefined : category]
+  .filter((part) => part !== undefined)
+  .join(".")
 const strategies = (args.length > 0 ? args : sweep).map(parseStrategy)
 
 const corpus = await loadCorpus({ requireSplits: split !== "all" })
-const cases = corpus.cases.filter((item) =>
-  (split === "all" || item.file.split === split) && origins.includes(item.file.origin)
+// Requests always carry every policy matching the file, as production sends them; the filters (and
+// ambiguous labels) only decide which answers are scored.
+const selected = corpus.cases.filter((item) =>
+  (split === "all" || item.file.split === split) && origins.includes(item.file.origin) &&
+  (category === "all" || categoryOf(item.policy.name) === category)
 )
-if (cases.length === 0) throw new Error(`no cases in split ${split} with origin ${origin}`)
+const ambiguous = selected.filter((item) => item.gold.label === "ambiguous").length
+const cases = selected.filter((item) => item.gold.label !== "ambiguous")
+if (cases.length === 0) throw new Error(`no cases in split ${split}, origin ${origin}, category ${category}`)
 for (const file of corpus.files) {
   assertProductionParity(file, corpus.cases.filter((item) => item.file === file).map((item) => item.policy))
   assertProductionParity(file, corpus.policies)
@@ -83,7 +93,8 @@ const run = async (strategy: Strategy): Promise<Run> => {
   let filesDone = 0
   const perFile = await Promise.all([...byFile.values()].map(async (items) => {
     const file = items[0]!.file
-    const asked = strategy.pad === "all" ? corpus.policies : items.map((item) => item.policy)
+    const matching = corpus.cases.filter((item) => item.file === file).map((item) => item.policy)
+    const asked = strategy.pad === "all" ? corpus.policies : matching
     const planned = planRequests(strategy, file, asked)
     const scores = new Map<string, number | null>(planned.oversized.map((policy) => [policy.name, null]))
     await Promise.all(planned.requests.map(async (request) => {
@@ -119,14 +130,16 @@ const median = (values: ReadonlyArray<number>) => {
   return sorted[Math.floor(sorted.length / 2)] ?? Number.NaN
 }
 
-console.log(`\n${scope}: ${cases.length} cases in ${new Set(cases.map((item) => item.file.id)).size} files, ` +
-  `${cases.filter((item) => item.gold.label === "violates").length} violating. ` +
-  `Intervals: 95% paired bootstrap vs ${baseline.name}, resampling files.\n`)
-console.log("| Strategy | AUROC | Brier | Precision@0.7 | Recall@0.7 | Surfaced >0.55 | False alarms >0.55 | Pairs | Inconclusive | Requests | Input tokens | $ / 1k cases | p50 ms |")
+const fileCount = new Set(cases.map((item) => item.file.id)).size
+console.log(`\n${scope}: ${cases.length} cases in ${fileCount} files, ` +
+  `${cases.filter((item) => item.gold.label === "violates").length} violating, ${ambiguous} ambiguous excluded. ` +
+  `Intervals: 95% paired bootstrap vs ${baseline.name}, resampling files. ` +
+  `Cost covers every policy matching each file, as production sends them.\n`)
+console.log("| Strategy | AUROC | Brier | Precision@0.7 | Recall@0.7 | Surfaced >0.55 | False alarms >0.55 | Pairs | Inconclusive | Requests | Input tokens | $ / 1k files | p50 ms |")
 console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for (const run of runs) {
   const q = quality(run.scored)
-  const cost = (run.inputTokens * inputTokenPrice[run.strategy.model] * 1000) / run.scored.length
+  const cost = (run.inputTokens * inputTokenPrice[run.strategy.model] * 1000) / fileCount
   console.log(`| ${run.name} | ${fixed(q.auroc)}${interval(run, auroc)} | ${fixed(q.brier)}${interval(run, brier)} | ` +
     `${percent(q.precision)} | ${percent(q.recall)} | ${percent(q.surfaced)} | ${percent(q.falseAlarms)} | ` +
     `${percent(q.pairs)} | ${q.inconclusive} | ${run.requests} | ${run.inputTokens} | $${cost.toFixed(4)} | ` +

@@ -26,5 +26,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // Corpus files are fixtures judged by Clef, not project code.
+  "exclude": ["node_modules", "evals/corpus"]
 }

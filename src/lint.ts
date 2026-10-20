@@ -1,4 +1,4 @@
-import { Effect } from "effect"
+import { Array as Arr, Effect, Result } from "effect"
 import { Clef, type Judgment } from "./clef.ts"
 import { matches, type Policy } from "./policy.ts"
 import type { SourceFile } from "./source.ts"
@@ -21,30 +21,34 @@ export const classify = ({ violates }: Judgment, threshold: number): Verdict => 
   return violates >= threshold ? "violation" : "review"
 }
 
-/** Judges every file against every policy whose globs match its path. */
+/** Judges every file against every policy whose globs match its path, batching each file's policies. */
 export const lint = Effect.fn("lint")(function*(
   files: ReadonlyArray<SourceFile>,
   policies: ReadonlyArray<Policy>,
   threshold: number
 ) {
   const clef = yield* Clef
-  const checks = files.flatMap((file) =>
-    policies.filter((policy) => matches(policy, file.path)).map((policy) => ({ file, policy }))
-  )
-  return yield* Effect.forEach(checks, ({ file, policy }) =>
-    clef.judge(file, policy).pipe(
-      Effect.map((judgment): Finding => ({
-        path: file.path,
-        policy: policy.name,
-        verdict: classify(judgment, threshold),
-        ...judgment
-      })),
-      Effect.catchTag("RequestTooLarge", ({ bytes }) =>
-        Effect.succeed<Finding>({
-          path: file.path,
-          policy: policy.name,
-          verdict: "inconclusive",
-          reason: `request is ${bytes} bytes; Clef would truncate it`
-        }))
-    ), { concurrency: 8 })
+  const findings = yield* Effect.forEach(files, (file) => {
+    const applicable = policies.filter((policy) => matches(policy, file.path))
+    return clef.judge(file, applicable).pipe(
+      Effect.map((judgments) =>
+        Arr.zipWith(applicable, judgments, (policy, judgment) =>
+          Result.match(judgment, {
+            onSuccess: (judgment): Finding => ({
+              path: file.path,
+              policy: policy.name,
+              verdict: classify(judgment, threshold),
+              ...judgment
+            }),
+            onFailure: ({ bytes }): Finding => ({
+              path: file.path,
+              policy: policy.name,
+              verdict: "inconclusive",
+              reason: `request is ${bytes} bytes; Clef would truncate it`
+            })
+          }))
+      )
+    )
+  }, { concurrency: 8 })
+  return findings.flat()
 })

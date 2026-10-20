@@ -1,5 +1,5 @@
 // Scores request strategies against the gold corpus.
-//   bun evals/run.ts [--split dev|test|all] [--concurrency 8] [strategy ...]
+//   bun evals/run.ts [--split dev|test|all] [--origin all|synthetic|real|planted[,…]] [--concurrency 8] [strategy ...]
 // Each strategy is `production` and/or `key=value` overrides of it (see strategy.ts). Without strategies
 // it runs the one-factor sweep below. The first strategy is the baseline for the paired intervals.
 import { makeClient } from "./client.ts"
@@ -36,13 +36,21 @@ const flag = (name: string, fallback: string) => {
   return value
 }
 const split = flag("--split", "dev")
+const origin = flag("--origin", "all")
 const concurrency = Number(flag("--concurrency", "8"))
 if (!["dev", "test", "all"].includes(split)) throw new Error("--split must be dev, test, or all")
+const origins = origin === "all" ? ["synthetic", "real", "planted"] : origin.split(",")
+if (origins.some((value) => !["synthetic", "real", "planted"].includes(value))) {
+  throw new Error("--origin must be all or a comma list of synthetic, real, planted")
+}
+const scope = origin === "all" ? split : `${split}.${origins.join("+")}`
 const strategies = (args.length > 0 ? args : sweep).map(parseStrategy)
 
 const corpus = await loadCorpus({ requireSplits: split !== "all" })
-const cases = corpus.cases.filter((item) => split === "all" || item.file.split === split)
-if (cases.length === 0) throw new Error(`no cases in split ${split}`)
+const cases = corpus.cases.filter((item) =>
+  (split === "all" || item.file.split === split) && origins.includes(item.file.origin)
+)
+if (cases.length === 0) throw new Error(`no cases in split ${split} with origin ${origin}`)
 for (const file of corpus.files) {
   assertProductionParity(file, corpus.cases.filter((item) => item.file === file).map((item) => item.policy))
   assertProductionParity(file, corpus.policies)
@@ -92,7 +100,7 @@ const run = async (strategy: Strategy): Promise<Run> => {
   const output = scored.map(({ item, score }) =>
     JSON.stringify({ case: item.id, label: item.gold.label, score })
   ).join("\n")
-  await Bun.write(`${import.meta.dir}/results/${split}/${name}.jsonl`, `${output}\n`)
+  await Bun.write(`${import.meta.dir}/results/${scope}/${name}.jsonl`, `${output}\n`)
   return { strategy, name, scored, requests, inputTokens, requestMs }
 }
 
@@ -111,7 +119,7 @@ const median = (values: ReadonlyArray<number>) => {
   return sorted[Math.floor(sorted.length / 2)] ?? Number.NaN
 }
 
-console.log(`\n${split}: ${cases.length} cases in ${new Set(cases.map((item) => item.file.id)).size} files, ` +
+console.log(`\n${scope}: ${cases.length} cases in ${new Set(cases.map((item) => item.file.id)).size} files, ` +
   `${cases.filter((item) => item.gold.label === "violates").length} violating. ` +
   `Intervals: 95% paired bootstrap vs ${baseline.name}, resampling files.\n`)
 console.log("| Strategy | AUROC | Brier | Precision@0.7 | Recall@0.7 | Surfaced >0.55 | False alarms >0.55 | Pairs | Inconclusive | Requests | Input tokens | $ / 1k cases | p50 ms |")

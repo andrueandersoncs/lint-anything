@@ -1,0 +1,403 @@
+import test from 'ava';
+import ky, {isHTTPError} from '../source/index.js';
+import {createHttpTestServer} from './helpers/create-http-test-server.js';
+
+test('context is available in all hooks', async t => {
+	t.plan(4);
+
+	const server = await createHttpTestServer(t);
+	let requestCount = 0;
+	server.get('/', (_request, response) => {
+		requestCount++;
+		if (requestCount === 1) {
+			response.sendStatus(500);
+		} else {
+			response.json({success: true});
+		}
+	});
+
+	const context = {id: '123'};
+
+	await t.throwsAsync(
+		ky.get(server.url, {
+			context,
+			retry: {limit: 0},
+			hooks: {
+				beforeRequest: [
+					({options}) => {
+						t.deepEqual(options.context, context);
+					},
+				],
+				afterResponse: [
+					async ({options}) => {
+						t.deepEqual(options.context, context);
+					},
+				],
+				beforeError: [
+					({error}) => {
+						if (isHTTPError(error)) {
+							t.deepEqual(error.options.context, context);
+						}
+
+						return error;
+					},
+				],
+			},
+		}).json(),
+	);
+
+	// Test beforeRetry hook
+	await ky.get(server.url, {
+		context,
+		retry: {limit: 1},
+		hooks: {
+			beforeRetry: [
+				async ({options}) => {
+					t.deepEqual(options.context, context);
+				},
+			],
+		},
+	}).json();
+});
+
+test('context works with ky.create and ky.extend', async t => {
+	const server = await createHttpTestServer(t);
+	server.get('/', (_request, response) => {
+		response.json({success: true});
+	});
+
+	const baseApi = ky.create({
+		baseUrl: server.url,
+		context: {base: 'value'},
+	});
+
+	await baseApi.get('', {
+		hooks: {
+			beforeRequest: [
+				({options}) => {
+					t.deepEqual(options.context, {base: 'value'});
+				},
+			],
+		},
+	}).json();
+
+	const extendedApi = baseApi.extend({context: {extended: 'value'}});
+	await extendedApi.get('', {
+		context: {request: 'value'},
+		hooks: {
+			beforeRequest: [
+				({options}) => {
+					t.deepEqual(options.context, {base: 'value', extended: 'value', request: 'value'});
+				},
+			],
+		},
+	}).json();
+});
+
+test('context is preserved across retries', async t => {
+	const server = await createHttpTestServer(t);
+	let requestCount = 0;
+	server.get('/', (_request, response) => {
+		requestCount++;
+		if (requestCount <= 2) {
+			response.sendStatus(500);
+		} else {
+			response.json({success: true});
+		}
+	});
+
+	const context = {id: 'session'};
+	let beforeRequestCallCount = 0;
+	let beforeRetryCallCount = 0;
+
+	await ky.get(server.url, {
+		context,
+		retry: {limit: 2},
+		hooks: {
+			beforeRequest: [
+				({options}) => {
+					t.deepEqual(options.context, context);
+					beforeRequestCallCount++;
+				},
+			],
+			beforeRetry: [
+				({options}) => {
+					t.deepEqual(options.context, context);
+					beforeRetryCallCount++;
+				},
+			],
+		},
+	}).json();
+
+	t.is(beforeRequestCallCount, 1);
+	t.is(beforeRetryCallCount, 2);
+});
+
+test('context defaults to empty object when not provided', async t => {
+	const server = await createHttpTestServer(t);
+	server.get('/', (_request, response) => {
+		response.json({success: true});
+	});
+
+	await ky.get(server.url, {
+		hooks: {
+			beforeRequest: [({options}) => t.deepEqual(options.context, {})],
+		},
+	}).json();
+});
+
+test('context defaults to empty object in init hooks', async t => {
+	const seenContexts: unknown[] = [];
+	const options = {
+		fetch: async () => new Response('ok'),
+	};
+
+	await ky('https://example.com', {
+		...options,
+		hooks: {
+			init: [
+				options => {
+					seenContexts.push(options.context);
+					// The readme promises an object, so hooks can add to it without checks.
+					options.context!['fromInit'] = true;
+				},
+			],
+			beforeRequest: [
+				({options}) => {
+					seenContexts.push(options.context);
+				},
+			],
+		},
+	});
+
+	t.deepEqual(seenContexts, [{fromInit: true}, {fromInit: true}]);
+
+	// Also when the init hook comes from an extended instance and the request passes no context.
+	seenContexts.length = 0;
+	await ky.extend({
+		hooks: {
+			init: [
+				options => {
+					seenContexts.push(options.context);
+				},
+			],
+		},
+	})('https://example.com', options);
+	t.deepEqual(seenContexts, [{}]);
+
+	// A provided context is passed through unchanged.
+	seenContexts.length = 0;
+	await ky('https://example.com', {
+		...options,
+		context: {id: 1},
+		hooks: {
+			init: [
+				options => {
+					seenContexts.push(options.context);
+				},
+			],
+		},
+	});
+	t.deepEqual(seenContexts, [{id: 1}]);
+});
+
+test('context is shallow merged', async t => {
+	const server = await createHttpTestServer(t);
+	server.get('/', (_request, response) => {
+		response.json({success: true});
+	});
+
+	const baseApi = ky.create({
+		baseUrl: server.url,
+		context: {
+			auth: {apiKey: 'base', userId: 'user-123'},
+			settings: {timeout: 5000},
+		},
+	});
+
+	const extendedApi = baseApi.extend({
+		context: {
+			auth: {apiKey: 'extended'},
+			settings: {retries: 3},
+			newField: 'added',
+		},
+	});
+
+	await extendedApi.get('', {
+		hooks: {
+			beforeRequest: [
+				({options}) => {
+					const context = options.context as any;
+					t.is(context.auth.apiKey, 'extended');
+					t.is(context.auth.userId, undefined);
+					t.is(context.settings.timeout, undefined);
+					t.is(context.settings.retries, 3);
+					t.is(context.newField, 'added');
+				},
+			],
+		},
+	}).json();
+});
+
+for (const withInitHook of [false, true]) {
+	test(`context preserves symbol-keyed metadata with init hook ${withInitHook}`, async t => {
+		const metadataKey = Symbol('metadata');
+		const context = {label: 'request', [metadataKey]: {traceId: 'trace-123'}};
+		let beforeRequestCalls = 0;
+		let initCalls = 0;
+		const response = await ky('https://example.com', {
+			context,
+			hooks: {
+				init: withInitHook
+					? [options => {
+						initCalls++;
+						t.deepEqual(options.context, context);
+					}]
+					: [],
+				beforeRequest: [({options}) => {
+					beforeRequestCalls++;
+					t.deepEqual(options.context, context);
+				}],
+			},
+			fetch: async () => new Response('ok'),
+		}).text();
+
+		t.is(response, 'ok');
+		t.is(initCalls, withInitHook ? 1 : 0);
+		t.is(beforeRequestCalls, 1);
+	});
+}
+
+// The `init` hook copy is shallow, so it must still copy symbol keys, and replacing one only affects the current request.
+test('init hook symbol-keyed context assignments stay isolated between requests', async t => {
+	const metadataKey = Symbol('metadata');
+	const metadata = {attempt: 0};
+	const context = {[metadataKey]: metadata};
+	let initCalls = 0;
+	let beforeRequestCalls = 0;
+	const api = ky.create({
+		context,
+		hooks: {
+			init: [options => {
+				initCalls++;
+				t.is(Reflect.get(options.context, metadataKey), metadata);
+				Reflect.set(options.context, metadataKey, {attempt: 1});
+			}],
+			beforeRequest: [({options}) => {
+				beforeRequestCalls++;
+				t.deepEqual(options.context, {[metadataKey]: {attempt: 1}});
+			}],
+		},
+		fetch: async () => new Response('ok'),
+	});
+
+	t.is(await api('https://example.com').text(), 'ok');
+	t.is(await api('https://example.com').text(), 'ok');
+	t.deepEqual(metadata, {attempt: 0});
+	t.is(initCalls, 2);
+	t.is(beforeRequestCalls, 2);
+});
+
+// Context is merged shallowly, so a nested object is shared by every request from the instance, which lets hooks keep state such as a cache in it. An `init` hook gets a shallow copy too, so having one does not change this.
+test('a nested context object is shared across requests', async t => {
+	const context = {cache: {count: 0}};
+	const api = ky.create({
+		context,
+		hooks: {
+			init: [() => undefined],
+			beforeRequest: [({options}) => {
+				(options.context.cache as typeof context.cache).count++;
+			}],
+		},
+		fetch: async () => new Response('ok'),
+	});
+
+	await api('https://example.com/1').text();
+	await api('https://example.com/2').text();
+
+	t.is(context.cache.count, 2);
+});
+
+test('hooks in one request still share a single context object', async t => {
+	const seen: unknown[] = [];
+	const api = ky.create({
+		retry: {limit: 0},
+		hooks: {
+			beforeRequest: [
+				({options}) => {
+					options.context.shared = 'set-in-beforeRequest';
+					seen.push(options.context);
+				},
+				// Replacing the request resets the normalized options cache, so the shared context must survive it.
+				({request}) => new Request(request),
+			],
+			afterResponse: [({options}) => {
+				seen.push(options.context);
+			}],
+		},
+		fetch: async () => new Response('ok'),
+	});
+
+	await api('https://example.com').text();
+
+	t.is(seen.length, 2);
+	t.is(seen[0], seen[1]);
+	t.deepEqual(seen[1], {shared: 'set-in-beforeRequest'});
+});
+
+// `init` hooks get a deep copy of `json`, which must keep a null prototype.
+test('a nested null-prototype json value keeps its prototype in an `init` hook', async t => {
+	const bag = Object.create(null) as Record<string, unknown>;
+	bag.count = 1;
+
+	let seen: Record<string, unknown> | undefined;
+	const api = ky.create({
+		json: {bag},
+		hooks: {
+			init: [options => {
+				seen = (options.json as {bag: Record<string, unknown>}).bag;
+			}],
+		},
+		fetch: async () => new Response('ok'),
+	});
+
+	await api.post('https://example.com').text();
+
+	t.is(Object.getPrototypeOf(seen!), null);
+	// A null-prototype object has no inherited members.
+	t.is(seen!.toString, undefined);
+	t.is(seen!.count, 1);
+	// The clone is a copy, so mutating it does not touch the caller's object.
+	seen!['count'] = 99;
+	t.is(bag.count, 1);
+});
+
+// `extend(fn)` is documented as passing a copy so mutations inside the callback cannot leak into the parent instance's defaults. The copy was shallow, so a nested value still pointed at the parent's object.
+test('mutating nested context inside an `extend` callback does not change the parent instance', async t => {
+	const contexts: Array<Record<string, unknown>> = [];
+	const record = async (instance: typeof parent) => {
+		await instance('https://example.com', {
+			fetch: async () => new Response('ok'),
+			hooks: {
+				beforeRequest: [({options}) => {
+					contexts.push(options.context);
+				}],
+			},
+		}).text();
+	};
+
+	const parent = ky.create({context: {session: {token: 'parent'}, top: 'parent'}});
+	await record(parent);
+
+	parent.extend((options: any) => {
+		options.context.session.token = 'child';
+		return {};
+	});
+
+	await record(parent);
+
+	t.deepEqual(contexts, [
+		{session: {token: 'parent'}, top: 'parent'},
+		{session: {token: 'parent'}, top: 'parent'},
+	]);
+});

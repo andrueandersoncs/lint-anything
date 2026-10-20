@@ -5,6 +5,17 @@ export const corpusDirectory = `${import.meta.dir}/corpus`
 
 export type Label = "violates" | "complies" | "not-applicable"
 export type Split = "dev" | "test"
+/** `synthetic`: written for the corpus. `real`: verbatim from an open-source project. `planted`: a real file with one violation added. */
+export type Origin = "synthetic" | "real" | "planted"
+
+/** Where a real (or planted) file came from: `path` in GitHub repo `repo` (`owner/name`) at `commit`. */
+export interface Upstream {
+  readonly repo: string
+  readonly commit: string
+  readonly path: string
+  /** SPDX id; its text is stored at `corpus/licenses/<owner>__<name>.txt`. */
+  readonly license: string
+}
 
 /** A gold judgment of one file against one policy. `lines` are 1-based inclusive ranges of the violation. */
 export interface Gold {
@@ -18,7 +29,9 @@ export interface FileRecord {
   readonly id: string
   readonly path: string
   readonly split?: Split
-  /** The other half of a contrast pair: the same file with one policy's violations fixed. */
+  readonly origin: Origin
+  readonly upstream?: Upstream
+  /** The other half of a contrast pair: the same file with one policy's violations fixed or planted. */
   readonly pair?: string
   readonly labels: Readonly<Record<string, Gold>>
 }
@@ -43,6 +56,40 @@ export interface Corpus {
 }
 
 const labels = new Set<string>(["violates", "complies", "not-applicable"])
+const origins = new Set<string>(["synthetic", "real", "planted"])
+// Licenses that allow redistributing the files here with attribution.
+const permissiveLicenses = new Set(["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD"])
+
+export const licensePath = (repo: string) => `${corpusDirectory}/licenses/${repo.replace("/", "__")}.txt`
+
+/**
+ * Checks that every real file is byte-identical to its upstream at the pinned commit (needs network).
+ * Fetches a few files at a time and retries dropped connections. Returns one problem per mismatch.
+ */
+export const verifyUpstream = async (files: ReadonlyArray<CorpusFile>): Promise<Array<string>> => {
+  const fetchText = async (url: string): Promise<string | number> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const response = await fetch(url)
+        return response.ok ? await response.text() : response.status
+      } catch (error) {
+        if (attempt === 4) throw error
+        await Bun.sleep(500 * attempt)
+      }
+    }
+  }
+  const real = files.filter((file) => file.origin === "real" && file.upstream !== undefined)
+  const problems: Array<string> = []
+  for (let start = 0; start < real.length; start += 8) {
+    await Promise.all(real.slice(start, start + 8).map(async (file) => {
+      const { repo, commit, path } = file.upstream!
+      const upstream = await fetchText(`https://raw.githubusercontent.com/${repo}/${commit}/${path}`)
+      if (typeof upstream === "number") problems.push(`${file.id}: upstream fetch ${upstream}`)
+      else if (upstream !== file.source) problems.push(`${file.id}: differs from ${repo}@${commit}:${path}`)
+    }))
+  }
+  return problems
+}
 
 /** Policies in `corpus/policies`, parsed exactly as the CLI parses them. */
 export const loadPolicies = async (): Promise<Array<Policy>> => {
@@ -108,6 +155,32 @@ export const loadCorpus = async (options: { readonly requireSplits?: boolean } =
       else if (partner.pair !== file.id) problems.push(`${file.id}: pair ${file.pair} does not point back`)
       else if (partner.path !== file.path) problems.push(`${file.id}: pair ${file.pair} has a different path`)
       else if (partner.split !== file.split) problems.push(`${file.id}: pair ${file.pair} is in a different split`)
+    }
+    if (!origins.has(file.origin)) problems.push(`${file.id}: origin must be synthetic, real, or planted`)
+    if (file.origin === "synthetic") {
+      if (file.upstream !== undefined) problems.push(`${file.id}: synthetic files have no upstream`)
+    } else {
+      const upstream = file.upstream
+      if (upstream === undefined) {
+        problems.push(`${file.id}: ${file.origin} files need upstream`)
+      } else {
+        if (!/^[\w.-]+\/[\w.-]+$/.test(upstream.repo)) problems.push(`${file.id}: upstream repo must be owner/name`)
+        if (!/^[0-9a-f]{40}$/.test(upstream.commit)) problems.push(`${file.id}: upstream commit must be a full SHA`)
+        if (upstream.path !== file.path) problems.push(`${file.id}: path must equal upstream.path`)
+        if (!permissiveLicenses.has(upstream.license)) {
+          problems.push(`${file.id}: license ${upstream.license} is not one of ${[...permissiveLicenses].join(", ")}`)
+        }
+        if (!(await Bun.file(licensePath(upstream.repo)).exists())) {
+          problems.push(`${file.id}: missing license text ${licensePath(upstream.repo)}`)
+        }
+      }
+      const partner = file.pair === undefined ? undefined : byId.get(file.pair)
+      if (file.origin === "planted") {
+        if (partner?.origin !== "real") problems.push(`${file.id}: planted files must pair with a real file`)
+        else if (JSON.stringify(partner.upstream) !== JSON.stringify(upstream)) {
+          problems.push(`${file.id}: upstream differs from its real pair ${partner.id}`)
+        } else if (partner.source === file.source) problems.push(`${file.id}: identical to its real pair`)
+      }
     }
     const lineCount = file.source.split("\n").length
     for (const name of expected) {

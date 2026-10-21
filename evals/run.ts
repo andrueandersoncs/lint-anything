@@ -16,7 +16,8 @@ import {
   type Scored,
   type Thresholds,
   tuneThresholds,
-  verdictF1
+  verdictF1,
+  bootstrapInterval
 } from "./metrics.ts"
 import { scoreCases } from "./scoring.ts"
 import {
@@ -145,3 +146,29 @@ for (const run of runs) {
     `${tuned.floor}/${tuned.threshold} → ${fixed(verdictF1(run.scored, tuned))} | ${percent(q.pairs)} | ` +
     `${q.inconclusive} | ${run.requests} | $${cost.toFixed(4)} |`)
 }
+
+// Breakdowns of the baseline, with n: per origin (synthetic and planted files run easier than real ones,
+// so headline numbers should be read on real), and on real files per size bin and per policy.
+const breakdown = (title: string, groups: ReadonlyArray<readonly [string, ReadonlyArray<Scored>]>) => {
+  console.log(`\n| ${title} | Clear violations | Clean | Ambiguous | AUROC (clear) [95% bootstrap] | Caught | False alarms |`)
+  console.log("|---|---|---|---|---|---|---|")
+  for (const [name, group] of groups) {
+    if (group.length === 0) continue
+    const q = quality(group, thresholds)
+    const [low, high] = bootstrapInterval(group, auroc)
+    const n = (label: (gold: string) => boolean) => group.filter((scored) => label(scored.item.gold.label)).length
+    console.log(`| ${name} | ${n((label) => label === "violates")} | ${n((label) => label === "complies" || label === "not-applicable")} | ` +
+      `${n((label) => label === "ambiguous")} | ${fixed(q.auroc)} [${fixed(low)}, ${fixed(high)}] | ${percent(q.caught)} | ${percent(q.falseAlarms)} |`)
+  }
+}
+const sizeBin = (scored: Scored) => {
+  const bytes = Buffer.byteLength(scored.item.file.source)
+  return bytes < 4_000 ? "< 4 KB" : bytes < 9_000 ? "4–9 KB" : "> 9 KB"
+}
+console.log(`\nBreakdowns of ${baseline.name}:`)
+breakdown("Origin", ["real", "planted", "synthetic"].map((value) =>
+  [value, baseline.scored.filter((scored) => scored.item.file.origin === value)] as const))
+const realScored = baseline.scored.filter((scored) => scored.item.file.origin === "real")
+breakdown("Size (real)", ["< 4 KB", "4–9 KB", "> 9 KB"].map((bin) => [bin, realScored.filter((scored) => sizeBin(scored) === bin)] as const))
+breakdown("Policy (real)", [...new Set(realScored.map((scored) => scored.item.policy.name))].sort().map((name) =>
+  [name, realScored.filter((scored) => scored.item.policy.name === name)] as const))

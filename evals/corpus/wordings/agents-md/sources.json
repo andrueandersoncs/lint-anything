@@ -1,0 +1,101 @@
+{
+  "semantic/architecture/separate-decisions-from-effects": {
+    "source": "wtfzambo/speak-like-you-eat AGENTS.md",
+    "url": "https://github.com/wtfzambo/speak-like-you-eat/blob/a22ee27edc5bd8319909fa8a7bd6f6d9c59bc00f/AGENTS.md?plain=1#L44-L48",
+    "license": "MIT",
+    "note": "Rule: keep business logic pure and push I/O to the edges; business-rule code must not hide I/O. Same rule, framed as functional core / imperative shell."
+  },
+  "semantic/architecture/thin-entry-points": {
+    "source": "mem9-ai/mem9 server/internal/handler/AGENTS.md",
+    "url": "https://github.com/mem9-ai/mem9/blob/c1ffe9c1b3c18b7a1b1621763662d9cf9bb31dda/server/internal/handler/AGENTS.md?plain=1#L56-L58",
+    "license": "Apache-2.0",
+    "note": "Directory-scoped rule for HTTP handlers: parse/validate request shape, call services, respond. Same shape the policy describes."
+  },
+  "semantic/design/explicit-dependencies": {
+    "source": "vllm-project/vllm-ascend AGENTS.md",
+    "url": "https://github.com/vllm-project/vllm-ascend/blob/1c29071a167af050270d50f5344c484b642fe570/AGENTS.md?plain=1#L77-L83",
+    "license": "Apache-2.0",
+    "note": "Avoid globals and pass dependencies through function parameters, with exemptions for constants and immutable config. Covers the global/singleton half of the policy; says nothing about constructing collaborators internally or reading env vars."
+  },
+  "semantic/design/no-flag-parameters": {
+    "source": "pnpm/pnpm pnpm/AGENTS.md",
+    "url": "https://github.com/pnpm/pnpm/blob/cbe5accc7ace6812e1770f6301d2742c91381c85/pnpm/AGENTS.md?plain=1#L328-L334",
+    "license": "MIT",
+    "note": "A bool that is a behavior switch or a bare true/false argument becomes an enum or named-field struct; a bool that reads as a predicate stays. Rust-flavored wording of the same rule."
+  },
+  "semantic/design/preserve-error-context": {
+    "source": "fastlmm/FaST-LMM AGENTS.md",
+    "url": "https://github.com/fastlmm/FaST-LMM/blob/e3db420f2df1b6f67bec65b125efa37e205b893b/AGENTS.md?plain=1#L47-L54",
+    "license": "Apache-2.0",
+    "note": "Preserve the original exception when translating errors (exception chaining) and do not replace a useful exception with a generic message. Does not say to name the failed operation beyond \"adding context\"."
+  },
+  "semantic/design/single-responsibility": {
+    "source": "FoundatioFx/Foundatio AGENTS.md",
+    "url": "https://github.com/FoundatioFx/Foundatio/blob/be10785cfed4e1850350dfaa024e1c3f25b7fac7/AGENTS.md?plain=1#L107-L112",
+    "license": "Apache-2.0",
+    "note": "One reason to change per class, methods do one thing, do not mix I/O, business logic, and presentation. Trimmed: the bullets on one type per file and on comment-driven extraction were dropped as separate rules."
+  },
+  "semantic/encapsulation/minimal-public-surface": {
+    "source": "microsoft/vscode .github/copilot-instructions.md",
+    "url": "https://github.com/microsoft/vscode/blob/3fa345dbdaf8a324c04794c26ad10a4a681b9857/.github/copilot-instructions.md?plain=1#L87-L89",
+    "license": "MIT",
+    "note": "Do not export types or functions unless they need to be shared across components."
+  },
+  "semantic/encapsulation/protect-internal-state": {
+    "source": "aws/aws-durable-execution-sdk-java AGENTS.md",
+    "url": "https://github.com/aws/aws-durable-execution-sdk-java/blob/953c3771d4374a8bfeaa8653b133a8fa83d624dd/AGENTS.md?plain=1#L130-L135",
+    "license": "Apache-2.0",
+    "note": "One bullet from the repo's \"Do Not\" list: do not expose mutable state via getters. Covers returning internal mutable state; says nothing about storing callers' mutable objects."
+  },
+  "semantic/maintainability/no-duplicated-knowledge": {
+    "source": "DataDog/integrations-core AGENTS.md",
+    "url": "https://github.com/DataDog/integrations-core/blob/f3aa720c3704df4f32b61ce4b2c321b8f2bef8d7/AGENTS.md?plain=1#L81-L83",
+    "license": "BSD-3-Clause",
+    "note": "Extract duplicated logic that represents the same concept, but not look-alike code. Same rule and the same exemption as the policy."
+  },
+  "semantic/naming/intent-revealing-names": {
+    "source": "anthropics/anthropic-sdk-python CLAUDE.md",
+    "url": "https://github.com/anthropics/anthropic-sdk-python/blob/ecfee6cd504cfbf634919bdbd058fb74afdbd533/CLAUDE.md?plain=1#L276-L278",
+    "license": "Apache-2.0",
+    "note": "Name things for what they mean, not how they are built. Same rule; one example and no list of generic placeholder names."
+  },
+  "semantic/organization/cohesive-modules": {
+    "source": "awaitstep/awaitstep CLAUDE.md",
+    "url": "https://github.com/awaitstep/awaitstep/blob/819254e4f6792baaf7288b5c35a615862cd23394/CLAUDE.md?plain=1#L77-L80",
+    "license": "Apache-2.0",
+    "note": "No utils/helpers grab-bag files; one concern per file. Also includes a ~300-line size heuristic from the same bullet."
+  },
+  "semantic/readability/comments-explain-why": {
+    "source": "apache/airflow AGENTS.md",
+    "url": "https://github.com/apache/airflow/blob/27b075b9488793c5e70987b97e12ab8acdd35de9/AGENTS.md?plain=1#L138-L145",
+    "license": "Apache-2.0",
+    "note": "Comment only for context the code cannot show (constraint, invariant, quirk, tradeoff); do not narrate or repeat code. Says nothing about comments that contradict the code."
+  },
+  "semantic/readability/consistent-abstraction-level": {
+    "source": "tcheeric/nostr-java AGENTS.md",
+    "url": "https://github.com/tcheeric/nostr-java/blob/9afdd3aedfba4594cb8a14f32fd5a70610e5173c/AGENTS.md?plain=1#L112-L115",
+    "license": "MIT",
+    "note": "One bullet from a Clean Code checklist: one level of abstraction per function, do not mix high-level policy with low-level details."
+  },
+  "semantic/readability/explain-magic-values": {
+    "source": "carenalgas/popochiu AGENTS.md",
+    "url": "https://github.com/carenalgas/popochiu/blob/9d02f4b3bd5c9ceac646133e66e6b37209b17479/AGENTS.md?plain=1#L49-L51",
+    "license": "MIT",
+    "note": "Extract meaningful or recurring values into named const/enum, keep self-explanatory one-off values inline, use constants for spec values such as HTTP statuses."
+  },
+  "semantic/testing/descriptive-test-names": {
+    "source": "denoland/std AGENTS.md",
+    "url": "https://github.com/denoland/std/blob/f834d0223364361169314833e3c7a8f62ce11d58/AGENTS.md?plain=1#L73-L78",
+    "license": "MIT",
+    "note": "Test names should be descriptive and include the symbol and the criteria, with two examples."
+  },
+  "semantic/testing/test-behavior-not-implementation": {
+    "source": "haraka/Haraka AGENTS.md",
+    "url": "https://github.com/haraka/Haraka/blob/dc8d154d1b4ec96d6dfd22a67d87c22b48527651/AGENTS.md?plain=1#L86-L88",
+    "license": "MIT",
+    "note": "Test observable outcomes, not how a function was called; asserting call shape and call counts is called out. The next bullet (mocks are a smell) was not included because it is a separate, stricter rule."
+  },
+  "_omitted": {
+    "semantic/naming/names-match-behavior": "No permissively licensed AGENTS.md/CLAUDE.md/copilot-instructions/.cursorrules rule found that says a function name must not understate or misdescribe its side effects. Searched for name/side-effect/misleading-name/getter/\"name suggests\"/\"name promises\"/command-query-separation phrasings; the matches were either in unlicensed or copyleft repos (varianter/tid: no license; lincolnq/avalanche: AGPL-3.0; Habitat-Thinking/ai-literacy-superpowers: NOASSERTION; morfidon/ai-agents: no license), or were about something else (CQS rules that never mention names; librick/ic1101 asks for the opposite direction, names that promise more than the body does)."
+  }
+}

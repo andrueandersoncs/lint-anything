@@ -215,3 +215,24 @@ export const pairedInterval = (
   deltas.sort((a, b) => a - b)
   return [deltas[Math.floor(deltas.length * 0.025)]!, deltas[Math.floor(deltas.length * 0.975)]!]
 }
+
+/** 95% bootstrap interval of `metric(cases)`, resampling files; NaN resamples (e.g. no violation drawn) are dropped. */
+export const bootstrapInterval = (
+  cases: ReadonlyArray<Scored>,
+  metric: (cases: ReadonlyArray<Scored>) => number,
+  samples = 2000
+): readonly [number, number] => {
+  const groups = new Map<string, Array<Scored>>()
+  for (const scored of cases) groups.set(scored.item.file.id, [...(groups.get(scored.item.file.id) ?? []), scored])
+  const files = [...groups.keys()].sort()
+  const random = mulberry32(0x5eed)
+  const values: Array<number> = []
+  for (let sample = 0; sample < samples; sample++) {
+    const drawn: Array<Scored> = []
+    for (let draw = 0; draw < files.length; draw++) drawn.push(...groups.get(files[Math.floor(random() * files.length)]!)!)
+    const value = metric(drawn)
+    if (!Number.isNaN(value)) values.push(value)
+  }
+  values.sort((a, b) => a - b)
+  return values.length === 0 ? [Number.NaN, Number.NaN] : [values[Math.floor(values.length * 0.025)]!, values[Math.floor(values.length * 0.975)]!]
+}

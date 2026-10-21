@@ -208,17 +208,21 @@ bun evals/cutoffs.ts items                 # per-policy cut-offs tuned on dev vs
 bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
 bun evals/packing.ts                       # repeatability of fresh runs (real requests) and batch independence
 bun evals/counts.ts                        # limit vs. asking the count rule of the whole file
+bun evals/mine.ts prometheus/prometheus    # candidate real violations from PR review comments (GitHub API, cached)
 ```
 
+`evals/RESEARCH.md` is the research notebook for growing the semantic corpus. It lists each hypothesis with its prediction, method, result, and conclusion, plus the resulting plan: LLM-planted twins for the thin policies, review-mined real files, a labeling protocol, rule-wording variants, and reporting on `real` only.
+
 - **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`:
-  - `semantic/`: 17 rules of the kind lint-anything is for, which static analysis can't practically enforce. They cover naming (intent-revealing names, names that match behavior), readability (one level of abstraction per function, named magic values, comments that explain why), design (no flag parameters, single responsibility, explicit dependencies, preserving error context), architecture (decisions separate from I/O, thin entry points), encapsulation (no leaked mutable state, minimal public surface), organization (cohesive modules), maintainability (no duplicated knowledge), and testing (behavior over implementation, descriptive test names). Most apply to every `.ts`/`.js`/`.py`/`.go` file; the two testing rules apply to test files. Their wording varies the way users' rules do: some are one-liners, some list exceptions, some are in a team's voice.
+  - `semantic/`: 17 rules of the kind lint-anything is for, which static analysis can't practically enforce. They cover naming (intent-revealing names, names that match behavior), readability (one level of abstraction per function, named magic values, comments that explain why), design (no flag parameters, single responsibility, explicit dependencies, preserving error context), architecture (decisions separate from I/O, thin entry points), encapsulation (no leaked mutable state, minimal public surface), organization (cohesive modules), maintainability (no duplicated knowledge), and testing (behavior over implementation, descriptive test names). Most apply to every `.ts`/`.js`/`.py`/`.go` file; the two testing rules apply to test files. Their voice varies and some list exceptions, but each is a paragraph of 56–124 words. One-line versions of the same rules score worse (`evals/RESEARCH.md`, H6).
   - `control/`: four mechanical rules that existing linters already handle (TODOs need an issue, no `any`, Go errors handled, no swallowed Python exceptions), kept for comparison.
 - **Corpus** (`evals/corpus/`): every file is labeled `violates`, `complies`, `not-applicable`, or `ambiguous` against every policy whose globs match it. Each file has an `origin`:
-  - `real`: 70 files copied verbatim from 31 permissively licensed GitHub projects with varied styles, among them VS Code, Hono, ky, Deno std, NestJS, tRPC, Django, Flask, requests, scikit-learn, Home Assistant, Kubernetes, Prometheus, cobra, gin, the GitHub CLI, caddy, and etcd (1,042 cases: 165 violating, 59 ambiguous). Each record pins its upstream repo, commit, path, and SPDX license. The license texts are in `evals/corpus/licenses/`.
+  - `real`: 70 files copied verbatim from 31 permissively licensed GitHub projects with varied styles, among them VS Code, Hono, ky, Deno std, NestJS, tRPC, Django, Flask, requests, scikit-learn, Home Assistant, Kubernetes, Prometheus, cobra, gin, the GitHub CLI, caddy, and etcd (1,042 cases: 183 violating, 119 ambiguous). Each record pins its upstream repo, commit, path, and SPDX license. The license texts are in `evals/corpus/licenses/`.
   - `synthetic`: 15 contrast pairs written for the corpus. Each pair is a realistic file that violates one target semantic rule, and a twin with only that violation fixed (522 cases).
   - `planted`: 12 twins of real files, each with one minimal edit that introduces a violation of a target semantic rule (204 cases). Each twin is paired with its original.
 
   Labels model reality, ambiguity included. Every case has three independent labels. Of 1,768 cases, 1,661 were unanimous on violates vs. not. Adjudicators reviewed the 107 split cases and 164 unanimous ones both new labelers flagged as contested. A split became a clear label when the dissent rested on an error (misread code, an ignored exception), and `ambiguous` when the rule's wording genuinely supports both conclusions. Twin files whose identical content was adjudicated differently are `ambiguous` too. That leaves 76 ambiguous semantic cases (5%) and none among the mechanical control rules. Files are split dev/test, and pairs stay together.
+  Every labeler and adjudicator was a `claude-opus-5-5` subagent, so the gold is single-family. A cross-family pass with gpt-6.1-sol, adjudicated by Claude, changed 119 labels where the two models agreed against gold (`evals/RESEARCH.md`, H2): 39 complies → violates, 76 complies → ambiguous, 2 violates → ambiguous, 2 violates → complies. Semantic ambiguous cases are now 154 (10%). The corpus findings below are re-scored against the relabeled gold.
 - **Strategies** (`evals/strategy.ts`): each strategy is `production` plus `key=value` overrides. `production` cuts the same excerpts and plans exactly the same requests as the CLI; the runner checks this for every corpus file. The keys:
   - `model`: `clef` or `clef-flash`.
   - `batch`: questions per request, packed within Clef's 64-question limit and the model's byte limit.
@@ -245,32 +249,32 @@ bun evals/counts.ts                        # limit vs. asking the count rule of 
 - **Cache**: replies are cached in `evals/.cache` by model and exact request body, since Clef is deterministic. Reruns and re-scoring are free; only new request shapes are sent. Per-case scores go to `evals/results/<split>[.<origins>][.<category>]/<strategy>.jsonl`.
 - **Selector items** (`evals/items.ts`): `evals/corpus/selectors/` gives six corpus policies a `select` command built from `rg` and `jq`: TODO lines, lines with `any`, Python `except` handlers, comment runs with the line after, test declarations with their bodies, and lines with numeric literals. Globs and rule text must equal the corpus policy's, so the corpus labels still apply. Each item is labeled `violates` when its lines overlap the file's gold violation lines and clean otherwise. Files labeled `ambiguous` for the policy are left out. The runner reports item AUROC, AUROC among items of violating files (whether a violating item lifts its neighbours), Brier, caught and false-alarm rates at the CLI's item cut-offs (`--thresholds` overrides them), and, per file, the highest item score against the CLI's whole-file judgment of the same cases. Shapes: `production` (the CLI's planner), `single` (one request per item), and `list` (rule and items in the state, one short question per item). `--selectors <dir>` scores another set of selector policies against the same labels, such as selectors that add context. Per-item scores go to `evals/results/items.<split>[.<dir>]/<shape>.jsonl`.
 
-Findings, 2026-10-20. Strategies and cut-offs were chosen on dev; these are held-out test numbers:
+Findings, re-scored 2026-10-21 against the relabeled gold (cached answers). Strategies and cut-offs were chosen on dev; these are held-out test numbers:
 
 | Test split | Semantic AUROC | Semantic concordance | Semantic verdict F1 | Ambiguous → `review` | False alarms | Control AUROC | $ / 1k files |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Previous production: whole file, cut-offs 0.55 / 0.7 | 0.804 | 0.778 | 0.375 | 6% | 0% | 0.981 | $1.44 |
-| Previous request shape, cut-offs re-tuned on dev | 0.804 | 0.778 | 0.500 | 24% | 10% | 0.981 | $1.44 |
-| `production`: 4,000-byte excerpts, cut-offs 0.3 / 0.45 | 0.835 | 0.819 | 0.517 | 32% | 9% | 0.980 | $3.06 |
+| Previous production: whole file, cut-offs 0.55 / 0.7 | 0.798 | 0.780 | 0.341 | 3% | 0% | 0.981 | $1.44 |
+| Previous request shape, cut-offs re-tuned on dev (0.25 / 0.4) | 0.798 | 0.780 | 0.501 | 31% | 8% | 0.981 | $1.44 |
+| `production`: 4,000-byte excerpts, cut-offs 0.3 / 0.45 | 0.834 | 0.817 | 0.506 | 28% | 7% | 0.980 | $3.06 |
 
-- Clef can separate semantic violations from clean code, but long files dilute them. AUROC falls from 0.90 for files under 4 KB to 0.74 above 9 KB. Judging excerpts restores much of it: on dev, clear-case AUROC rose from 0.822 to 0.871 and concordance from 0.798 to 0.843, both outside noise. On test, concordance improved by +0.041 (interval +0.006 to +0.076); the AUROC gain (+0.031) is within noise on test's smaller sample. Control rules are unchanged.
-- The old cut-offs were the biggest problem. Semantic violations mostly score 0.2–0.5, so 0.55 / 0.7 passed nearly all of them. Re-tuned cut-offs lift semantic verdict F1 from 0.375 to about 0.5 on their own.
-- Clef sees ambiguity only partly. It ranks ambiguous cases above clean ones (0.80) but barely below clear violations (about 0.6). Asking directly whether reviewers would disagree (`contest=ask`), a three-way `verdict` question, or `calibrated` wording didn't change that. With excerpts, `review` catches about a third of the ambiguous cases.
-- Nothing else helped measurably. Neither wording, question type, question ids, nor smaller batches beat production. Per-rule batches cost more without gaining once excerpts are used. clef-flash still misses most violations (and Workers AI no longer serves it; its eval answers come from `evals/.cache`).
+- Clef can separate semantic violations from clean code, but long files dilute them. Judged whole, AUROC falls from 0.87 for files under 4 KB to 0.76 above 9 KB (with excerpts: 0.87 vs. 0.80, a gap no longer clearly outside noise; `evals/RESEARCH.md`, H9). Judging excerpts restores much of it: on dev, clear-case AUROC rose from 0.808 to 0.849 (+0.022 to +0.061) and concordance from 0.776 to 0.815 (+0.023 to +0.056). On test, concordance improved by +0.037 (interval +0.014 to +0.064); the AUROC gain (+0.036, interval −0.004 to +0.076) is within noise on test's smaller sample. Control rules are unchanged.
+- The old cut-offs were the biggest problem. Semantic violations mostly score 0.2–0.5, so 0.55 / 0.7 passed nearly all of them. Re-tuned cut-offs lift semantic verdict F1 from 0.341 to about 0.5 on their own.
+- Clef sees ambiguity only partly. It ranks ambiguous cases above clean ones (0.81 dev, 0.84 test) but barely below clear violations (about 0.55). Asking directly whether reviewers would disagree (`contest=ask`), a three-way `verdict` question, or `calibrated` wording didn't change that. With excerpts, `review` catches 28% of the ambiguous cases on test.
+- Nothing else helped on both splits. Neither wording, question type, question ids, nor smaller batches beat production on dev; `guidance=question` is ahead on test only (AUROC +0.002 to +0.034; dev −0.015 to +0.019), so it isn't confirmed. Per-rule batches cost about 4× more without gaining once excerpts are used. clef-flash still misses most violations (and Workers AI no longer serves it; its eval answers come from `evals/.cache`).
 - The earlier synthetic-corpus finding that batching was free held only for mechanical rules. On semantic rules it lowers scores, and excerpts recover that loss more cheaply than one question per request.
 
-Selector findings, 2026-10-20 (shape and cut-offs chosen on dev; test: 567 items, 61 violating, in 149 file cases; selectors cover 62 of 71 gold violation ranges):
+Selector findings, re-scored 2026-10-21 (shape and cut-offs chosen on dev; test: 527 items, 61 violating, in 143 file cases; selectors cover 61 of 70 gold violation ranges):
 
 | Test split | Item AUROC | Brier | Violating items given `violation` / clean items not passed (0.5 / 0.65) | Same file cases: highest item vs. whole file | $ / 1k items |
 | --- | --- | --- | --- | --- | --- |
-| `production`: rule in the state, one question per item | 0.967 | 0.078 | 59% / 7% | 0.966 vs 0.920 [+0.022, +0.073] | $0.050 |
-| `single`: one request per item | 0.953 [−0.036, +0.014] | 0.106 [+0.009, +0.052] | 74% / 10% | 0.955 vs 0.920 [+0.009, +0.062] | $0.124 |
-| `list`: rule and items in the state | 0.959 [−0.025, +0.005] | 0.078 [−0.007, +0.007] | 59% / 5% | 0.975 vs 0.920 [+0.029, +0.084] | $0.053 |
+| `production`: rule in the state, one question per item | 0.966 | 0.078 | 59% / 7% | 0.973 vs 0.912 [+0.027, +0.106] | $0.051 |
+| `single`: one request per item | 0.962 [−0.024, +0.018] | 0.092 [+0.003, +0.026] | 72% / 8% | 0.965 vs 0.912 [+0.019, +0.090] | $0.123 |
+| `list`: rule and items in the state | 0.959 [−0.024, +0.007] | 0.078 [−0.008, +0.006] | 59% / 5% | 0.984 vs 0.912 [+0.033, +0.120] | $0.053 |
 
-- Packing items as questions loses nothing to one request per item, and is better calibrated: Brier is worse for `single` outside noise. It costs 2.5× less. `list` ties `production` on test and was worse on Brier on dev.
-- A matched selector beats judging the whole file for the same rules. Taking a policy's highest item score as its file score lifts AUROC from 0.920 to 0.966 on test (0.923 to 0.974 on dev), outside noise, and each finding points at its lines.
-- Items score higher than whole files: at the file cut-offs (0.3 / 0.45), 28% of clean items would be flagged. On dev, 0.5 / 0.65 catches 71% of violating items as `violation` with 2% of clean items flagged, and surfaces 88% with 7% flagged; on test, 59% at 2% and 87% at 7%.
-- Mechanical rules are solved (item AUROC 1.0 for TODOs, `any`, and swallowed exceptions). Semantic items: comments 0.944, magic values 0.972, test names 0.767 on 11 items.
+- Packing items as questions loses nothing to one request per item, and is better calibrated: Brier is worse for `single` outside noise on test (within noise on dev). It costs 2.4× less. `list` ties `production` on both splits.
+- A matched selector beats judging the whole file for the same rules. Taking a policy's highest item score as its file score lifts AUROC from 0.912 to 0.973 on test (0.905 to 0.965 on dev), outside noise, and each finding points at its lines.
+- Items score higher than whole files: at the file cut-offs (0.3 / 0.45), 27–29% of clean items would be flagged. On dev, 0.5 / 0.65 catches 63% of violating items as `violation` with 2% of clean items flagged, and surfaces 78% with 7% flagged; on test, 59% at 2% and 85% at 7%.
+- Mechanical rules are solved (item AUROC 1.0 for TODOs, `any`, and swallowed exceptions). Semantic items: comments 0.940, magic values 0.971, test names 0.700 on 11 items.
 
 ### Evidence findings
 
@@ -282,11 +286,11 @@ Each feature that adds evidence or changes how items are judged has an intended 
 | `evidence` steps, `{{name}}` | Rules about time and history become judgeable | `history.ts` | Holds: accuracy 63% → 99% with a computed age; Clef can't derive it from dates | yes |
 | Steps refining earlier evidence | Better judgments from narrowed evidence | `compare.ts` + `selectors-evidence-constants` | Unconfirmed: test Brier better, dev not | yes (mechanism) |
 | Shared steps | Policies sharing a step don't repeat it | `shared.ts` | Holds: 6 → 1 runs, identical findings, ~5× faster | yes |
-| `examples` (few-shot) | Examples improve judgments | `examples.ts` | Small: test AUROC +0.001 to +0.020, dev unchanged | yes |
+| `examples` (few-shot) | Examples improve judgments | `examples.ts` | Small: test AUROC +0.001 to +0.019, dev +0.000 to +0.020 (edge of noise) | yes |
 | Sorted items | The same files get the same verdicts | `packing.ts` | Holds: two fresh runs went from 40 differing verdicts to 0 | yes |
 | Answer cache (always on) | Re-runs pay only for changes; stable verdicts | `cache.ts` | Holds: 0 requests unchanged, 18 of 81 after an edit, 0 vs 25 verdict changes in untouched files | yes |
 | `limit` | Count rules judged reliably | `counts.ts` | Holds: 100% vs 81% (63% at the boundary) | yes |
-| Per-policy cut-offs | Better verdicts than global cut-offs | `cutoffs.ts` | Fails: overfits dev | no |
+| Per-policy cut-offs | Better verdicts than global cut-offs | `cutoffs.ts` | Fails: no gain on items, worse on files | no |
 | `ask` routing step | Drop items a rule doesn't govern, cutting false alarms | (commit `c825cff`) | Fails: dev false alarms rose, violations dropped | no |
 | `check` subcommand, `--baseline` / `--changed-since`, `--sarif` | Example checks; adoption on existing code; code scanning | (commits `d4d5052` to `1eddf4d`) | Each measured; see below | no: removed, because the CLI takes no flags or subcommands |
 
@@ -300,13 +304,13 @@ Purpose: Clef judges an item better when it sees the code around it. Measured on
 
 | Policy, split | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items |
 | --- | --- | --- | --- | --- | --- |
-| comments, dev | 584 (36) | 0.865 → 0.892 [−0.031, +0.085] | 0.102 → 0.091 [−0.026, +0.011] | 33 / 72 / 8.2% → 33 / 75 / 9.5% | $0.043 → $0.149 |
-| comments, test | 290 (15) | 0.944 → 0.967 [−0.005, +0.056] | 0.083 → **0.065** [−0.025, −0.010] | 20 / 67 / 5.5% → 40 / 67 / 5.8% | $0.045 → $0.115 |
-| magic values, dev | 374 (6) | 0.974 → 0.985 [−0.003, +0.037] | 0.071 → **0.042** [−0.038, −0.018] | 83 / 83 / 5.7% → 83 / 83 / 4.3% | $0.044 → $0.128 |
-| magic values, test | 225 (16) | 0.972 → 0.981 [−0.004, +0.034] | 0.077 → **0.050** [−0.041, −0.015] | 44 / 100 / 8.6% → 75 / 81 / 3.8% | $0.044 → $0.108 |
+| comments, dev | 576 (47) | 0.820 → 0.864 [−0.014, +0.100] | 0.109 → 0.097 [−0.028, +0.009] | 26 / 57 / 8.1% → 26 / 64 / 9.3% | $0.043 → $0.149 |
+| comments, test | 290 (16) | 0.940 → 0.967 [−0.001, +0.061] | 0.083 → **0.065** [−0.026, −0.011] | 19 / 63 / 5.5% → 38 / 69 / 5.5% | $0.045 → $0.115 |
+| magic values, dev | 317 (7) | 0.953 → 0.963 [−0.012, +0.034] | 0.071 → **0.045** [−0.036, −0.014] | 71 / 71 / 5.5% → 71 / 71 / 4.2% | $0.044 → $0.126 |
+| magic values, test | 185 (16) | 0.971 → 0.980 [−0.008, +0.036] | 0.076 → **0.053** [−0.037, −0.010] | 44 / 100 / 8.3% → 75 / 81 / 4.1% | $0.044 → $0.095 |
 
-- The purpose holds for calibration: Brier improves on test for both rules and on dev for magic values; for comments on dev it is within noise. AUROC gains are within noise. Clean magic-value items flagged fall from 8.6% to 3.8% on test.
-- It costs 2.4–3.4× more per item, because the block is repeated in each item's question.
+- The purpose holds for calibration: Brier improves on test for both rules and on dev for magic values; for comments on dev it is within noise. AUROC gains are within noise. Clean magic-value items flagged fall from 8.3% to 4.1% on test.
+- It costs 2.2–3.5× more per item, because the block is repeated in each item's question.
 - Relevance matters, not volume: in a prototype, the 10 lines after each comment instead of its enclosing block lowered comment AUROC on test (interval −0.053 to −0.002).
 
 #### Shared evidence steps and `{{name}}`
@@ -328,10 +332,10 @@ Purpose 2: later steps can refine earlier evidence. `evals/corpus/selectors-evid
 
 | Split | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms |
 | --- | --- | --- | --- | --- |
-| dev | 374 (6) | 0.985 → 0.984 [−0.019, +0.015] | 0.042 → 0.044 [−0.006, +0.012] | 83 / 83 / 4.3% → 83 / 100 / 3.8% |
-| test | 225 (16) | 0.981 → 0.989 [−0.008, +0.020] | 0.050 → **0.039** [−0.021, −0.003] | 75 / 81 / 3.8% → 75 / 88 / 2.9% |
+| dev | 317 (7) | 0.963 → 0.965 [−0.018, +0.023] | 0.045 → 0.048 [−0.005, +0.015] | 71 / 71 / 4.2% → 71 / 86 / 4.2% |
+| test | 185 (16) | 0.980 → 0.989 [−0.002, +0.024] | 0.053 → **0.039** [−0.026, −0.004] | 75 / 81 / 4.1% → 75 / 88 / 3.0% |
 
-- The chaining works, but its value is unconfirmed: calibration improves on test and not on dev, which has only 6 violating items. Cost rises about 10%.
+- The chaining works, but its value is unconfirmed: calibration improves on test and not on dev, which has only 7 violating items. Cost rises 10–14%.
 - In a prototype, the same constants placed once in the rule text (the state) instead of on each item did not help (test Brier interval −0.026 to +0.004), while on each item they did (−0.040 to −0.009). Item evidence is the stronger placement; `{{name}}` suits facts that really are global, like today's date.
 
 #### Shared steps
@@ -351,10 +355,10 @@ Purpose: examples in a policy improve its judgments (few-shot). `evals/examples.
 
 | Split | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items |
 | --- | --- | --- | --- | --- | --- |
-| dev | 1,076 (97) | 0.951 → 0.953 [−0.005, +0.011] | 0.084 → 0.083 [−0.006, +0.005] | 71 / 88 / 7.2% → 74 / 89 / 8.0% | $0.047 → $0.052 |
-| test | 567 (61) | 0.967 → **0.976** [+0.001, +0.020] | 0.078 → **0.069** [−0.016, −0.004] | 59 / 87 / 6.7% → 62 / 85 / 5.5% | $0.050 → $0.056 |
+| dev | 1,011 (110) | 0.921 → 0.930 [+0.000, +0.020] | 0.089 → 0.087 [−0.007, +0.004] | 63 / 78 / 7.1% → 66 / 80 / 7.9% | $0.047 → $0.052 |
+| test | 527 (61) | 0.966 → **0.975** [+0.001, +0.019] | 0.078 → **0.070** [−0.014, −0.003] | 59 / 85 / 6.7% → 62 / 85 / 5.8% | $0.051 → $0.057 |
 
-A small gain, confirmed on test and not on dev; magic values improves most on test (Brier 0.077 → 0.055, interval −0.035 to −0.012; false alarms 8.6% → 2.9%). Cost rises about 11%.
+A small gain, confirmed on test and at the edge of noise on dev; magic values improves most on test (Brier 0.076 → 0.055, interval −0.035 to −0.011; false alarms 8.3% → 3.0%). Cost rises about 11%.
 
 #### Per-policy cut-offs (not shipped)
 
@@ -362,14 +366,14 @@ Purpose: cut-offs fitted to each policy beat the global ones. `evals/cutoffs.ts`
 
 | Test split | Verdict F1, global → per policy | Violations → `violation` | Violations surfaced | Clean not passed | Ambiguous → `review` |
 | --- | --- | --- | --- | --- | --- |
-| items | 0.539 → 0.551 | 59.0% → 65.6% | 86.9% → 67.2% | 6.7% → 3.4% | – |
-| files | 0.559 → 0.510 | 43.2% → 71.6% | 62.2% → 78.4% | 8.3% → 11.6% | 32.4% → 2.9% |
+| items | 0.541 → 0.541 | 59.0% → 55.7% | 85.2% → 57.4% | 6.7% → 1.7% | – |
+| files | 0.552 → 0.542 | 36.5% → 67.1% | 55.3% → 72.9% | 6.9% → 10.7% | 27.9% → 11.8% |
 
-The purpose fails: per-policy cut-offs overfit dev. Policies keep the global cut-offs.
+The purpose fails: per-policy cut-offs gain nothing on items and lose on files, because they overfit dev. Policies keep the global cut-offs.
 
 #### Packing and repeatability
 
-Clef's answer to a question depends on the other questions packed with it. `evals/packing.ts` judges the same 1,076 dev items in the CLI's full batches and in two half-size batches (odd and even items): only 2.8% of answers are identical (mean change 0.068, largest 0.718, 81 verdicts different), but quality is unchanged (AUROC 0.951 → 0.944 [−0.021, +0.006], Brier 0.084 → 0.083 [−0.007, +0.006]). In a probe on one 40-item request, reversing the question order changed answers by 0.107 on average.
+Clef's answer to a question depends on the other questions packed with it. `evals/packing.ts` judges the same 1,011 dev items in the CLI's full batches and in two half-size batches (odd and even items): only 3.0% of answers are identical (mean change 0.068, largest 0.718, 75 verdicts different), but quality is unchanged (AUROC 0.921 → 0.918 [−0.020, +0.016], Brier 0.089 → 0.089 [−0.007, +0.007]). In a probe on one 40-item request, reversing the question order changed answers by 0.107 on average.
 
 Purpose of sorting items: the same files get the same verdicts. Before items were sorted, two fresh runs on the same files disagreed on 40 verdicts, because `rg` emits matches across files in varying order. `evals/packing.ts` runs the CLI's lint twice on 24 dev files without the cache (367 checks, real requests): 0 verdicts differ and every score is identical.
 
@@ -395,13 +399,13 @@ The purpose holds: an unchanged run sends nothing, an edit sends only its questi
 
 #### Defaults of the removed flags
 
-Each flag the CLI used to take is now fixed at one value. Whether that value is the best default, measured where an eval can measure it (2026-10-20):
+Each flag the CLI used to take is now fixed at one value. Whether that value is the best default, measured where an eval can measure it (2026-10-20; corpus-based rows re-scored 2026-10-21 against the relabeled gold):
 
 | Flag | Fixed at | Evidence | Best default? |
 | --- | --- | --- | --- |
-| `--threshold` (files) | floor 0.3, threshold 0.45 | `run.ts`, dev, 1,081 cases: the F1-maximizing cut-offs are exactly 0.3 / 0.45 (F1 0.558). Test at 0.3 / 0.45: F1 0.559 | yes |
-| `--item-threshold` | floor 0.5, threshold 0.65 | `items.ts`, dev, 1,076 items: F1 0.564 at 0.5 / 0.65; the F1 maximum, 0.65 / 0.675, gains 0.006 by nearly closing the `review` band. On test it gives F1 0.537 vs. 0.539 and catches 56% vs. 59% | yes: equal F1, and the band keeps uncertain items visible |
-| `--model` | `clef` | `run.ts` (cached answers): clef-flash AUROC 0.896 → 0.758 [−0.175, −0.102] on dev, 0.871 → 0.743 [−0.172, −0.083] on test; false alarms 6% → 35% (dev). Workers AI now rejects `clef-flash` ("Unsupported model 'clef-flash'. Use 'clef'") | yes; the only model that runs |
+| `--threshold` (files) | floor 0.3, threshold 0.45 | `run.ts`, dev, 1,081 cases, relabeled gold: F1 0.550 at 0.3 / 0.45; the F1 maximum is now 0.275 / 0.55 (F1 0.568, +0.018 [−0.011, +0.049]). Test: 0.552 vs. 0.561 (+0.009 [−0.023, +0.042]) | yes: the dev optimum's gain is within noise on both splits |
+| `--item-threshold` | floor 0.5, threshold 0.65 | `items.ts`, dev, 1,011 items: F1 0.548 at 0.5 / 0.65; the F1 maximum, 0.6 / 0.625, gains 0.006 by nearly closing the `review` band. On test it gives F1 0.548 vs. 0.541 and catches 62% vs. 59% | yes: within 0.01 F1, and the band keeps uncertain items visible |
+| `--model` | `clef` | `run.ts` (cached answers): clef-flash AUROC 0.879 → 0.764 [−0.150, −0.081] on dev, 0.869 → 0.771 [−0.146, −0.051] on test; false alarms 4% → 32% (dev). Workers AI now rejects `clef-flash` ("Unsupported model 'clef-flash'. Use 'clef'") | yes; the only model that runs |
 | `--no-cache` | cache on | `cache.ts` above | yes (on) |
 | `--changed-since` | off | Throwaway script on `adoption.ts`'s repository and stub (below) | yes (off) |
 | `--baseline` / `--write-baseline` | off | Same script | yes (off) |

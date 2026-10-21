@@ -14,6 +14,10 @@ lint-anything is a CLI; its interface is its user experience. You are FORBIDDEN 
 - **Eval needs stay in `evals/`.** If an eval needs a helper, a switch, or a measurement hook, build it in `evals/` (scripts, stub layers, programmatic calls to `src/`), never as CLI surface.
 - Approval of an idea is not approval of a new flag or command to expose it. If an idea needs new CLI surface, ask first.
 
+## Do the work
+
+Never say "I haven't done ...", "I didn't ...", or anything indicating laziness. Any time you'd feel the urge to write that is an indicator that you still have work to do. Do NOT be lazy. DO THE WORK. I don't want to hear any excuses about "oh I didn't look it up but here's what I think". Just do it.
+
 Default to using Bun instead of Node.js.
 
 - Use `bun <file>` instead of `node <file>` or `ts-node <file>`

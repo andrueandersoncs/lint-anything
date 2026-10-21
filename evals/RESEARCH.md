@@ -64,12 +64,12 @@ Clear semantic violations per policy:
 | H7 | correctness | Operator-planted violations overstate Clef's quality vs. real violations | supported for LLM plants (+0.12, relabeled gold); synthetic +0.24 |
 | H8 | correctness | Clef does better on famous repos' files (memorization) | null not rejected; test too weak |
 | H9 | completeness | With excerpts, file size no longer predicts Clef's quality | refuted on the original gold; **inconclusive** after relabel (−0.07, interval reaches 0) |
-| H10 | completeness | Randomly sampled real files carry semantic violations at about the curated files' rate | pending |
-| H11 | correctness | The two-model labeling protocol behaves on new files as it did on the corpus in H2 | pending |
-| H12 | correctness | LLM-planted violations remain easier than real ones at scale | pending |
-| H13 | correctness | With gold labeled against each wording, real-world wording still costs quality | pending |
-| H14 | correctness | Memorization, retested with recent commits and small repos | pending |
-| H15 | completeness | Size effect under production, retested on the grown corpus | pending |
+| H10 | completeness | Randomly sampled real files carry semantic violations at about the curated files' rate | supported: 0.88× overall, 1.14× thin policies |
+| H11 | correctness | The two-model labeling protocol behaves on new files as it did on the corpus in H2 | mostly: κ 0.50 / 0.44 as predicted; adjudication upholds more gpt-only flags than predicted (63–75%) |
+| H12 | correctness | LLM-planted violations remain easier than real ones at scale | partly: +0.10 pooled, but +0.03 (within noise) with policies matched |
+| H13 | correctness | With gold labeled against each wording, real-world wording still costs quality | refuted for ranking under terse (±0.03); borrowed wordings −0.03 at the edge of noise; false alarms ×2–4 |
+| H14 | correctness | Memorization, retested with recent commits and small repos | null not rejected; intervals ±0.04 |
+| H15 | completeness | Size effect under production, retested on the grown corpus | supported: −0.061 [−0.095, −0.023] |
 
 Order of work: H1 (sizes every later sample), H2 (gates any labeling at scale), then H3/H4, H5, H7, H6,
 H9, H8. Corpus growth (2026-10-21): H10, H11 while labeling new files, H12 while planting, then H13, H14, H15
@@ -106,9 +106,24 @@ Ranked by the goal order. Every step stays in `evals/`.
 7. **Report methods**: per-policy intervals that don't collapse at small n, with n shown (H1); results
    broken out by size bin (H9) and origin (H7).
 
-Product follow-ups the evals surfaced (not eval changes; each needs its own experiment): taking the
-highest score across many excerpts may inflate clean scores in large files (H9, weaker after the
-relabel); terse user-written rules raise false alarms on exemptions (H6).
+**Status (2026-10-21, corpus growth):** steps 1–7 are done. The corpus has 623 files: 462 real (70
+curated, 288 sampled, 104 mined), 131 planted (119 LLM plants), and 30 synthetic. Every semantic policy
+has ≥ 20 clear violations per split, counting plants. Every file records its provenance (source, stratum,
+committed date). Three wording sets carry their own gold. `run.ts` breaks results out by origin, size,
+and policy, with n. What H10–H15 changed in the plan:
+- Sampled real files carry violations at the curated rate (H10), so random and mined files filled most
+  policies; plants were needed for 10 of 34 policy–split cells.
+- With policies matched, LLM plants are not clearly easier than real violations (H12). Keep them separate
+  anyway.
+- Terse wording costs no ranking quality once gold matches the wording. It costs false alarms (H13).
+- Curated files are harder than sampled ones (0.804 vs. 0.882), and the labeling protocol doesn't explain
+  it. Pooled real numbers depend on the source mix, so report by source too.
+
+Product follow-ups the evals surfaced (not eval changes; each needs its own experiment or a decision):
+taking the highest score across many excerpts may inflate clean scores in large files (H9, H15: clean
+cases score 0.11 under 4 KB vs. 0.18 above 9 KB); user-written rules raise false alarms (H6, H13); on the
+grown corpus the dev-tuned file cut-offs 0.275 / 0.375 beat the CLI's 0.3 / 0.45 on test outside noise
+(README), and changing them changes the CLI's verdicts.
 
 ---
 
@@ -487,6 +502,25 @@ relabel); terse user-written rules raise false alarms on exemptions (H6).
   file. Sampled files skew toward newer and smaller projects, so the rate leans higher, not lower.
 - **Method**: label every new file with the H11 protocol; compare per-file rates with a bootstrap
   over files.
+- **Result** (2026-10-21). 291 files sampled from 99 repos; 2 skipped (CRLF line endings), 1 dropped
+  because the Claude labeler refused it (a trading bot's bridge module, usage-policy refusal), 288
+  ingested (146 dev, 142 test, split by repo within language × star tier). 249 of 291 were last changed
+  in 2026. Clear semantic violations per file, 95% bootstrap over files of the ratio:
+
+  | Source | Files | Per file | vs. curated | Thin 9 policies per file | vs. curated |
+  |---|---|---|---|---|---|
+  | Curated | 59 | 2.32 | – | 0.71 | – |
+  | Sampled | 288 | 2.05 | 0.88× [0.68, 1.17] | 0.81 | 1.14× [0.74, 1.91] |
+  | Mined (H3 source, high-confidence comments) | 104 | 4.04 | 1.74× [1.34, 2.31] | 1.69 | 2.4× [1.55, 4.04] |
+
+  - Sampled rate by size: 0.74 per file under 4 KB, 1.74 at 4–9 KB, 3.95 above 9 KB.
+  - Mined: 130 high-confidence top-level comments from 2,229 top-level candidates across 45 repos
+    (12 from H3 plus 33 of 36 new; 3 skipped for license NOASSERTION); 104 distinct files after dropping
+    repeats, non-Go/Python/TypeScript files and files above 100 KB. The file breaks the comment's policy
+    in 68 of 104 (65%).
+- **Conclusion**: supported. Random files carry violations at the curated rate, including the thin
+  policies, so random sampling is a usable source for every policy but cohesive-modules (5 violations in
+  288 files). Mined files carry about 1.7× as many per file because they are large.
 
 ## H11: the two-model protocol on new files
 
@@ -498,6 +532,30 @@ relabel); terse user-written rules raise false alarms on exemptions (H6).
   matching policy of every new real file (one request per file); disagreements on violates vs. clean
   go to a blinded Claude adjudicator (H2 prompt, arguments in random order). Agreement of two of the
   three is gold; an adjudicated `ambiguous` is `ambiguous`. Prompts: `evals/.cache/research/pipeline.py`.
+- **Result** (2026-10-21; 0 label failures after retries, 1 refusal):
+
+  | Files | Semantic cases | κ (Claude vs. gpt-6.1-sol) | Violations flagged: Claude / gpt-6.1-sol | gpt-only flags → violates / ambiguous / clean | Claude-only flags → violates / ambiguous / clean |
+  |---|---|---|---|---|---|
+  | Sampled, 288 | 4,446 | 0.501 | 451 / 986 | 576 → 177 / 183 / 216 (62.5% upheld or ambiguous) | 41 → 4 / 14 / 23 |
+  | Mined, 104 | 1,590 | 0.444 | 282 / 622 | 360 → 151 / 120 / 89 (75.3%) | 20 → 7 / 5 / 8 |
+  | Wording sets, 101 files × 3 | – | – | – | 991 disagreements adjudicated | – |
+
+  - Source of the semantic gold on sampled and mined files: 5,039 cases where the two labelers agree,
+    339 adjudicated violates, 336 adjudicated clean, 322 adjudicated ambiguous.
+  - Spot check of 3 random adjudicated-violates cases: `data` holding a parsed shortcut file (graphify),
+    a 50-line function's `param: RestartFromStep` (workers-sdk), and a photo-URL rule repeated word for word
+    in three GAM methods. All three fit the rule as written.
+  - Post-hoc check (not predicted; prompted by sampled files scoring much higher than curated ones, see
+    H15 and README): the protocol was applied to the 59 curated real files using the H2 Claude and
+    gpt-6.1-sol labels plus 236 new adjudications. Its gold agrees with the existing gold on 128 of 137
+    violations (9 → ambiguous), contradicts one clear label (clean → violates), and turns 40 ambiguous
+    cases into violations. Clef's AUROC on curated files is 0.804 against existing gold and 0.809
+    against protocol gold (paired difference −0.014 to +0.025). So the protocol doesn't make Clef
+    look better; the sampled-vs-curated gap is in the files.
+- **Conclusion**: mostly as predicted. κ sits at the top of the predicted range (0.50 sampled, 0.44
+  mined). The adjudicator upholds or calls ambiguous more gpt-only flags than predicted (63–75% vs.
+  35–60%), so on new files Claude alone would miss more violations than H2 suggested. Keep gpt-6.1-sol
+  as the second labeler. Claude-only flags mostly fail (4 of 41 upheld on sampled files).
 
 ## H12: LLM plants at scale
 
@@ -510,6 +568,29 @@ relabel); terse user-written rules raise false alarms on exemptions (H6).
   size bins, as many per policy and split as needed to reach 20 clear violations; the H7 plant prompt;
   verified by a full Claude labeling pass on the twin and gpt-6.1-sol on the target policy plus any policy
   the edit touched; the twin's other labels are its host's, shifted past the edit.
+- **Result** (2026-10-21). Gap after adding sampled and mined files: 89 violations in 10 policy–split cells.
+  142 plant attempts (1.4× the gap plus one per cell, 3 more for protect-internal-state test); 119
+  confirmed by both models on the edited lines (**84%**). Of the 23 rejected, both models missed the
+  violation in 9, only Claude in 10, only gpt-6.1-sol in 4. 55 of the 119 kept edits touched other
+  policies' lines (112 cases); those went through the protocol (93 agree, 4 adjudicated violates, 7
+  adjudicated clean, 8 ambiguous). Plants:
+  cohesive-modules 45, thin-entry-points 25, test-behavior 24, names-match-behavior 11,
+  protect-internal-state 7, descriptive-test-names 6, separate-decisions 1.
+
+  | Production scores, same 7 policies | n | Mean | Surfaced (> 0.3) | Caught (≥ 0.45) |
+  |---|---|---|---|---|
+  | LLM plants | 119 | 0.501 | 85% | 58% |
+  | Real violations | 192 | 0.400 | 64% | 39% |
+
+  - Pooled plants − real: **+0.059 to +0.142**. Weighted by the plants' policy mix (per-policy
+    differences): **+0.033 (−0.020, +0.085)**. Per policy: thin-entry-points 0.552 vs. 0.517,
+    cohesive-modules 0.427 vs. 0.438, test-behavior 0.615 vs. 0.579, names-match 0.580 vs. 0.451,
+    protect-internal-state 0.452 vs. 0.247, descriptive-test-names 0.274 vs. 0.348.
+  - Twins scored above their host on the target policy: 116 of 119 (97.5%).
+- **Conclusion**: confirmation rate as predicted (84%). The pooled score gap is as predicted and
+  outside noise. With policies matched it is +0.03 and within noise, so most of H7's +0.1 was which
+  policies got planted, not how. Keep plants as `planted`: the matched gap is not ruled out, and pair
+  ordering at 97.5% is far easier than ranking across files.
 
 ## H13: wording with wording-matched gold
 
@@ -520,6 +601,28 @@ relabel); terse user-written rules raise false alarms on exemptions (H6).
 - **Method**: wording sets in `evals/corpus/wordings/` (terse; style-guide text; rules from OSS projects'
   AGENTS.md and contributor docs), gold labeled against each set with the H11 protocol, production
   scores per set, paired bootstrap against polished on the same cases.
+- **Result** (2026-10-21; `bun evals/wordings.ts --split all|dev|test`; style-guide and agents-md sets
+  collected by a subagent with verbatim quotes, pinned permalinks and licenses in `sources.json`;
+  agents-md omits names-match-behavior: the only matching rules found were in unlicensed or copyleft repos). False alarms here are clean
+  cases given `review` or `violation` (`quality().falseAlarms`), not H6's ≥ 0.45:
+
+  | Set | Split | Clear violations (polished → set) | AUROC polished → set [paired] | False alarms | Caught |
+  |---|---|---|---|---|---|
+  | terse | dev | 135 → 187 | 0.849 → 0.853 [−0.037, +0.050] | 4.1% → 13.8% | 22% → 37% |
+  | terse | test | 66 → 106 | 0.834 → 0.833 [−0.055, +0.048] | 7.2% → 13.9% | 24% → 34% |
+  | style-guide | dev | 135 → 180 | 0.849 → 0.819 [−0.066, +0.009] | 4.1% → 11.6% | 22% → 29% |
+  | style-guide | test | 66 → 104 | 0.834 → 0.805 [−0.080, +0.021] | 7.2% → 12.7% | 24% → 29% |
+  | agents-md | dev | 129 → 198 | 0.847 → 0.801 [**−0.089, −0.002**] | 3.9% → 19.4% | 22% → 26% |
+  | agents-md | test | 65 → 124 | 0.832 → 0.827 [−0.055, +0.046] | 7.1% → 18.1% | 25% → 27% |
+
+  - Each wording's gold has 41–66% more violations than polished gold: rules without our exemptions
+    forbid more. Per-policy n is small here (101 files), so per-policy rows are in `wordings.ts` output
+    only. The largest per-policy drops follow vague wording: terse minimal-public-surface (8 → 2
+    violations, AUROC 0.912 → 0.495), agents-md intent-revealing-names (0.821 → 0.463, 7 violations).
+- **Conclusion**: refuted for terse ranking: once gold follows the terse text, AUROC is unchanged, so H6's
+  0.045 loss was a change in what the rule means. Borrowed wordings lose about 0.03 (one split's interval
+  excludes 0). The false-alarm half of the prediction holds for every set (2.3–3.7×). For users, wording
+  mostly moves the cut-offs (more `review` on clean code), not Clef's ranking.
 
 ## H14: memorization, retested
 
@@ -528,6 +631,14 @@ relabel); terse user-written rules raise false alarms on exemptions (H6).
   above 20k, and between files last changed before and after 2026-07-01, with intervals narrower than
   H8's ±0.09.
 - **Method**: real files only, production scores, bootstrap over files; strata from provenance.
+- **Result** (2026-10-21, all splits, semantic, real files): sampled files from repos ≥ 20k stars
+  (97 files) 0.876 vs. < 1k stars (92 files) 0.908: famous − small **−0.032 [−0.069, +0.006]**. Real files
+  last changed before 2026-07-01 (152 files, 350 violations) 0.876 vs. after (299 files, 798
+  violations) 0.861: before − after +0.015 [−0.012, +0.043]. Within sampled files only: +0.034
+  [−0.001, +0.066].
+- **Conclusion**: null not rejected, with intervals of about ±0.04 (H8: ±0.09). If famous code helps,
+  the effect is below about 0.01 AUROC; older code may score a little better (within sampled files the
+  interval just reaches 0), which is the direction memorization predicts but is confounded with project.
 
 ## H15: size effect, retested
 
@@ -535,6 +646,14 @@ relabel); terse user-written rules raise false alarms on exemptions (H6).
 - **Prediction**: large − small AUROC between −0.10 and −0.03, with an interval that excludes 0 now that
   the real corpus is several times larger.
 - **Method**: H9's bins on real files only, production scores, bootstrap over files.
+- **Result** (2026-10-21, all splits, semantic, real files, production): < 4 KB 133 files, 108 violations,
+  AUROC 0.897 [0.862, 0.926]; 4–9 KB 146 files, 293 violations, 0.811 [0.782, 0.838]; > 9 KB 172 files,
+  747 violations, 0.836 [0.817, 0.853]. Large − small **−0.061 [−0.095, −0.023]**. Within policy, large −
+  small is negative for 14 of 17 policies (mean −0.033). Clean cases score 0.111 / 0.157 / 0.183 by bin,
+  violations 0.319 / 0.326 / 0.359.
+- **Conclusion**: supported, and H9's "inconclusive" resolves to a real but modest effect. The mechanism
+  is the one H9 found: clean cases in large files score higher (more excerpts, highest score kept). The
+  middle bin is lowest, so the effect is not monotonic in size.
 
 ---
 
@@ -559,5 +678,16 @@ relabel); terse user-written rules raise false alarms on exemptions (H6).
   `packing.ts` also sends real requests by design. The file cut-off gap (0.275 / 0.55 vs. 0.3 / 0.45) is
   +0.018 [−0.011, +0.049] F1 on dev and +0.009 [−0.023, +0.042] on test: within noise, so the default
   stays. Outputs: `evals/.cache/research/rescore/`.
+- 2026-10-21: corpus growth (H10–H15). Provenance backfilled on the 112 files (commit dates from `gh
+  api`). `evals/sample.ts` written and run on 99 repos (291 files). `evals/mine.ts` run on 36 more repos;
+  it crashed once on a TLS timeout, so `gh api` calls now retry and the run resumed from cache. Model
+  calls, all through `completion()` with `modelRoles.slow` set to `openai-codex/gpt-6.1-sol` for the
+  session only (approved; restored to `{}` afterward): 837 Claude and 838 gpt-6.1-sol labeling requests
+  (new files, twins, three wording sets), 2,254 Claude adjudications, 142 plant edits, and 1,596 comment
+  classifications. Clef: 2,836 new cache entries, 14.9M input tokens, about $3.58 (whole corpus under
+  production, `chunk=0` on semantic dev and test, and the style-guide and agents-md wording sets).
+  `run.ts` scoring moved to `evals/scoring.ts`; the 1,555 cases scored before reproduce exactly.
+  Kernel code: `evals/.cache/research/pipeline.py` and `pipeline-session.py` (every cell in run order);
+  outputs in `evals/.cache/research/{new-labels,new-adjudications,plants-new,growth}/`.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

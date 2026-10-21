@@ -8,7 +8,7 @@ import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Result } from "effect"
 import { Clef } from "../src/clef.ts"
-import { lint } from "../src/lint.ts"
+import { defaultItemThreshold, defaultThreshold, lint } from "../src/lint.ts"
 import { parsePolicy } from "../src/policy.ts"
 import { readSources } from "../src/source.ts"
 
@@ -44,7 +44,7 @@ const stub = Layer.succeed(Clef, Clef.of({
 const started = performance.now()
 const findings = await Effect.runPromise(
   readSources(["src/**/*.ts"]).pipe(
-    Effect.flatMap((files) => lint(files, policies, { threshold: 0.45, itemThreshold: 0.65 })),
+    Effect.flatMap((files) => lint(files, policies, { threshold: defaultThreshold, itemThreshold: defaultItemThreshold })),
     Effect.provide(Layer.mergeAll(stub, BunServices.layer))
   )
 )

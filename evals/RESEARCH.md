@@ -121,9 +121,9 @@ and policy, with n. What H10–H15 changed in the plan:
 
 Product follow-ups the evals surfaced (not eval changes; each needs its own experiment or a decision):
 taking the highest score across many excerpts may inflate clean scores in large files (H9, H15: clean
-cases score 0.11 under 4 KB vs. 0.18 above 9 KB); user-written rules raise false alarms (H6, H13); on the
-grown corpus the dev-tuned file cut-offs 0.275 / 0.375 beat the CLI's 0.3 / 0.45 on test outside noise
-(README), and changing them changes the CLI's verdicts.
+cases score 0.11 under 4 KB vs. 0.18 above 9 KB); user-written rules raise false alarms (H6, H13). The
+grown corpus's dev-tuned file cut-offs, 0.275 / 0.375, beat 0.3 / 0.45 on test outside noise (README) and
+are now the CLI's.
 
 ---
 
@@ -699,5 +699,8 @@ grown corpus the dev-tuned file cut-offs 0.275 / 0.375 beat the CLI's 0.3 / 0.45
 - 2026-10-21: wording gold extended to the 511 sampled, mined and LLM-planted semantic files (same
   protocol, `modelRoles.slow` mapped for the session and restored). `wordings.ts` gained `--origin`.
   Clef: 4,647 new cache entries, 19.0M input tokens, about $4.57.
+- 2026-10-21: file cut-offs changed to 0.275 / 0.375 (`src/lint.ts`). Re-scored from cache, real semantic:
+  verdict F1 0.541 dev / 0.533 test, caught 38% / 42%, false alarms 10% / 10%; wording tables re-scored
+  with `wordings.ts --origin real`. No new requests.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

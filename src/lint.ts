@@ -48,11 +48,12 @@ export const aggregate = (
   })
 }
 
-// Tuned in evals/ on the dev split (semantic and control rules together) for the excerpt request shape,
-// then confirmed on the held-out test split: scores at or below the floor are clean, scores between
-// the floor and the threshold are the band where violations blur into genuinely contested cases.
-export const reviewFloor = 0.3
-export const defaultThreshold = 0.45
+// Tuned in evals/ on the dev split of the grown corpus (623 files, semantic and control rules together) for
+// the excerpt request shape, then confirmed on the held-out test split: scores at or below the floor are
+// clean, scores between the floor and the threshold are the band where violations blur into genuinely
+// contested cases.
+export const reviewFloor = 0.275
+export const defaultThreshold = 0.375
 
 // Selector items score higher than whole files, so they have their own cut-offs, picked on the dev split
 // of evals/items.ts and confirmed on test: about 2% of clean items reach the threshold and 7% the floor.

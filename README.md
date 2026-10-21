@@ -153,8 +153,8 @@ A request holds at most 64 questions (Clef's limit) and 64,000 bytes. Policies o
 
 | Result | File verdict | Item verdict |
 | --- | --- | --- |
-| `violates ≤ 0.3` (files) or `≤ 0.5` (items) | `pass` | `pass` |
-| `violates ≥ 0.45` (files) or `≥ 0.65` (items) | `violation` | `violation` |
+| `violates ≤ 0.275` (files) or `≤ 0.5` (items) | `pass` | `pass` |
+| `violates ≥ 0.375` (files) or `≥ 0.65` (items) | `violation` | `violation` |
 | otherwise | `review`: uncertain, including cases where careful reviewers would disagree | `review` |
 | request with only that policy or item over the byte limit | `inconclusive` (not sent; Clef would truncate it) | `inconclusive` |
 
@@ -258,15 +258,15 @@ bun evals/wordings.ts --split test         # each rule-wording set vs. the polis
 
 Findings on the grown corpus (2026-10-21; `run.ts --origin real --category semantic production production,chunk=0`). Real files, semantic policies; whole file is `chunk=0` at the same cut-offs:
 
-| Real files, semantic | Cases | Clear violations | AUROC: production | AUROC: whole file | Verdict F1 at 0.3 / 0.45 | F1 at dev-tuned 0.275 / 0.375 | Caught | False alarms | $ / 1k files |
+| Real files, semantic | Cases | Clear violations | AUROC: production | AUROC: whole file | Verdict F1 at 0.275 / 0.375 | F1 at the earlier 0.3 / 0.45 | Caught | False alarms | $ / 1k files |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| dev | 3,691 | 611 | 0.863 | 0.790 [−0.122, −0.035] | 0.502 | 0.541 [+0.020, +0.058] | 24% | 7% | $4.56 |
-| test | 3,258 | 537 | 0.870 | 0.824 [−0.090, −0.011] | 0.503 | 0.533 [+0.011, +0.048] | 28% | 8% | $4.33 |
+| dev | 3,691 | 611 | 0.863 | 0.790 [−0.122, −0.035] | 0.541 [+0.020, +0.058] | 0.502 | 38% | 10% | $4.56 |
+| test | 3,258 | 537 | 0.870 | 0.824 [−0.090, −0.011] | 0.533 [+0.011, +0.048] | 0.503 | 42% | 10% | $4.33 |
 
 - Excerpts now beat whole files outside noise on both splits. On the 112-file corpus the test gain was within noise.
 - File size still matters, though less than the whole-file gap. Real files: AUROC 0.897 under 4 KB, 0.811 at 4–9 KB, 0.836 above 9 KB. Large minus small is −0.061 [−0.095, −0.023] (`evals/RESEARCH.md`, H15).
-- Per policy on test (n = clear violations), the weakest are comments-explain-why (0.788, n 65, none caught at 0.45), protect-internal-state (0.864, n 14, none caught), and minimal-public-surface (0.873, n 23, 9% caught). Most semantic violations score between the floor and the threshold, so `review` holds them.
-- The file cut-offs tuned on dev (0.275 / 0.375) beat the CLI's 0.3 / 0.45 on held-out test, outside noise: F1 +0.011 to +0.048 on real semantic cases, +0.009 to +0.036 on all test cases. Caught rises from 28% to 42%, and false alarms from 8% to 10%. Changing the default changes the CLI's verdicts, so the user has to decide it; the default is unchanged.
+- Per policy on test (n = clear violations), the weakest are comments-explain-why (0.788, n 65, none caught at 0.375), protect-internal-state (0.864, n 14, 7% caught), and minimal-public-surface (0.873, n 23, 22% caught). Most semantic violations score between the floor and the threshold, so `review` holds them.
+- The file cut-offs are 0.275 / 0.375, the F1 maximum on dev. On held-out test they beat the earlier 0.3 / 0.45 outside noise: F1 +0.011 to +0.048 on real semantic cases, +0.009 to +0.036 on all test cases. Caught rises from 28% to 42%, and false alarms from 8% to 10%.
 - Hand-picked files are harder than random ones. Semantic AUROC is 0.804 on curated real files, 0.882 on sampled ones, and 0.845 on mined ones, and the gap holds within each size bin. Labeling doesn't explain it: relabeling the curated files with the two-model protocol gives 0.809 (−0.014 to +0.025 vs. their gold). Pooled real numbers depend on this mix.
 - Clef doesn't score famous or older code better. Among sampled files, projects over 20k stars minus projects under 1k is −0.032 [−0.069, +0.006]. For files last changed before 2026-07-01 minus after, it is +0.015 [−0.012, +0.043] (H14).
 - LLM plants run slightly easier than real violations of the same policies, but the gap is within noise: +0.033 [−0.020, +0.085] in mean score. Pooled across policies the gap is +0.10, and that comes mostly from which policies were planted (H12). Twins score above their originals 116 times out of 119.
@@ -275,12 +275,12 @@ Rule wording, each set scored against gold labeled for its own text (`wordings.t
 
 | Wording | Split | Clear violations (polished → set) | AUROC | False alarms | Caught |
 | --- | --- | --- | --- | --- | --- |
-| terse (one line per rule) | dev | 611 → 809 | 0.863 → 0.866 [−0.014, +0.019] | 7.0% → 14.3% | 24% → 43% |
-| | test | 537 → 677 | 0.870 → 0.864 [−0.024, +0.013] | 7.9% → 15.2% | 28% → 42% |
-| style-guide passages | dev | 611 → 755 | 0.863 → 0.835 [−0.045, −0.012] | 7.0% → 13.6% | 24% → 31% |
-| | test | 537 → 658 | 0.870 → 0.835 [−0.052, −0.017] | 7.9% → 11.9% | 28% → 31% |
-| AGENTS.md rules (16 policies) | dev | 591 → 834 | 0.867 → 0.845 [−0.038, −0.005] | 6.6% → 17.5% | 23% → 31% |
-| | test | 524 → 735 | 0.874 → 0.851 [−0.040, −0.006] | 7.2% → 16.5% | 28% → 34% |
+| terse (one line per rule) | dev | 611 → 809 | 0.863 → 0.866 [−0.014, +0.019] | 9.8% → 19.0% | 38% → 55% |
+| | test | 537 → 677 | 0.870 → 0.864 [−0.024, +0.013] | 10.4% → 19.9% | 42% → 54% |
+| style-guide passages | dev | 611 → 755 | 0.863 → 0.835 [−0.045, −0.012] | 9.8% → 17.3% | 38% → 42% |
+| | test | 537 → 658 | 0.870 → 0.835 [−0.052, −0.017] | 10.4% → 16.6% | 42% → 43% |
+| AGENTS.md rules (16 policies) | dev | 591 → 834 | 0.867 → 0.845 [−0.038, −0.005] | 9.1% → 22.7% | 37% → 46% |
+| | test | 524 → 735 | 0.874 → 0.851 [−0.040, −0.006] | 9.7% → 20.7% | 42% → 47% |
 
 - Real-world rules mean more violations: their gold has 23–41% more of them than the polished rules' gold. Judged against its own gold, terse wording ranks as well as the polished text; the earlier loss (H6) came from scoring terse rules against polished gold. Borrowed wordings lose 0.02–0.035 AUROC, outside noise on both splits. Every set roughly doubles false alarms (H13).
 
@@ -290,7 +290,7 @@ Findings on the 112-file corpus, re-scored 2026-10-21 against the relabeled gold
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Previous production: whole file, cut-offs 0.55 / 0.7 | 0.798 | 0.780 | 0.341 | 3% | 0% | 0.981 | $1.44 |
 | Previous request shape, cut-offs re-tuned on dev (0.25 / 0.4) | 0.798 | 0.780 | 0.501 | 31% | 8% | 0.981 | $1.44 |
-| `production`: 4,000-byte excerpts, cut-offs 0.3 / 0.45 | 0.834 | 0.817 | 0.506 | 28% | 7% | 0.980 | $3.06 |
+| 4,000-byte excerpts (`production`'s request shape), cut-offs 0.3 / 0.45 | 0.834 | 0.817 | 0.506 | 28% | 7% | 0.980 | $3.06 |
 
 - Clef can separate semantic violations from clean code, but long files dilute them. Judged whole, AUROC falls from 0.87 for files under 4 KB to 0.76 above 9 KB (with excerpts: 0.87 vs. 0.80, a gap no longer clearly outside noise; `evals/RESEARCH.md`, H9). Judging excerpts restores much of it: on dev, clear-case AUROC rose from 0.808 to 0.849 (+0.022 to +0.061) and concordance from 0.776 to 0.815 (+0.023 to +0.056). On test, concordance improved by +0.037 (interval +0.014 to +0.064); the AUROC gain (+0.036, interval −0.004 to +0.076) is within noise on test's smaller sample. Control rules are unchanged.
 - The old cut-offs were the biggest problem. Semantic violations mostly score 0.2–0.5, so 0.55 / 0.7 passed nearly all of them. Re-tuned cut-offs lift semantic verdict F1 from 0.341 to about 0.5 on their own.
@@ -308,7 +308,7 @@ Selector findings, re-scored 2026-10-21 (shape and cut-offs chosen on dev; test:
 
 - Packing items as questions loses nothing to one request per item, and is better calibrated: Brier is worse for `single` outside noise on test (within noise on dev). It costs 2.4× less. `list` ties `production` on both splits.
 - A matched selector beats judging the whole file for the same rules. Taking a policy's highest item score as its file score lifts AUROC from 0.912 to 0.973 on test (0.905 to 0.965 on dev), outside noise, and each finding points at its lines.
-- Items score higher than whole files: at the file cut-offs (0.3 / 0.45), 27–29% of clean items would be flagged. On dev, 0.5 / 0.65 catches 63% of violating items as `violation` with 2% of clean items flagged, and surfaces 78% with 7% flagged; on test, 59% at 2% and 85% at 7%.
+- Items score higher than whole files: at the earlier file cut-offs (0.3 / 0.45), 27–29% of clean items would be flagged. On dev, 0.5 / 0.65 catches 63% of violating items as `violation` with 2% of clean items flagged, and surfaces 78% with 7% flagged; on test, 59% at 2% and 85% at 7%.
 - Mechanical rules are solved (item AUROC 1.0 for TODOs, `any`, and swallowed exceptions). Semantic items: comments 0.940, magic values 0.971, test names 0.700 on 11 items.
 
 ### Evidence findings
@@ -438,7 +438,7 @@ Each flag the CLI used to take is now fixed at one value. Whether that value is 
 
 | Flag | Fixed at | Evidence | Best default? |
 | --- | --- | --- | --- |
-| `--threshold` (files) | floor 0.3, threshold 0.45 | `run.ts`, 112-file corpus, dev, 1,081 cases, relabeled gold: F1 0.550 at 0.3 / 0.45; the F1 maximum was 0.275 / 0.55 (F1 0.568, +0.018 [−0.011, +0.049]). Test: 0.552 vs. 0.561 (+0.009 [−0.023, +0.042]). Grown corpus: the dev maximum is 0.275 / 0.375, and on test it gives F1 0.558 vs. 0.536 (+0.022 [+0.009, +0.036]; real semantic cases +0.011 to +0.048) | no longer: the grown corpus favors 0.275 / 0.375 outside noise. Changing it changes CLI verdicts, so it awaits the user's decision |
+| `--threshold` (files) | floor 0.275, threshold 0.375 | `run.ts`, 112-file corpus, dev, 1,081 cases, relabeled gold: F1 0.550 at 0.3 / 0.45; the F1 maximum was 0.275 / 0.55 (F1 0.568, +0.018 [−0.011, +0.049]). Test: 0.552 vs. 0.561 (+0.009 [−0.023, +0.042]). Grown corpus: the dev maximum is 0.275 / 0.375, and on test it gives F1 0.558 vs. 0.536 (+0.022 [+0.009, +0.036]; real semantic cases +0.011 to +0.048) | yes: the grown corpus's dev maximum, ahead of 0.3 / 0.45 on test outside noise |
 | `--item-threshold` | floor 0.5, threshold 0.65 | `items.ts`, dev, 1,011 items: F1 0.548 at 0.5 / 0.65; the F1 maximum, 0.6 / 0.625, gains 0.006 by nearly closing the `review` band. On test it gives F1 0.548 vs. 0.541 and catches 62% vs. 59% | yes: within 0.01 F1, and the band keeps uncertain items visible |
 | `--model` | `clef` | `run.ts` (cached answers): clef-flash AUROC 0.879 → 0.764 [−0.150, −0.081] on dev, 0.869 → 0.771 [−0.146, −0.051] on test; false alarms 4% → 32% (dev). Workers AI now rejects `clef-flash` ("Unsupported model 'clef-flash'. Use 'clef'") | yes; the only model that runs |
 | `--no-cache` | cache on | `cache.ts` above | yes (on) |

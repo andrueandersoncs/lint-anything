@@ -10,7 +10,7 @@ import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { Clef } from "../src/clef.ts"
-import { type Finding, lint } from "../src/lint.ts"
+import { defaultItemThreshold, defaultThreshold, type Finding, lint } from "../src/lint.ts"
 import type { Policy } from "../src/policy.ts"
 import { readSources } from "../src/source.ts"
 import { makeClient } from "./client.ts"
@@ -33,7 +33,7 @@ const policies: Array<Policy> = [
 const cwd = process.cwd()
 process.chdir(workspace)
 const run = () => Effect.runPromise(readSources(["**/*.{ts,tsx,js,jsx,py,go}"]).pipe(
-  Effect.flatMap((sources) => lint(sources, policies, { threshold: 0.45, itemThreshold: 0.65 })),
+  Effect.flatMap((sources) => lint(sources, policies, { threshold: defaultThreshold, itemThreshold: defaultItemThreshold })),
   Effect.provide(Layer.mergeAll(Clef.layer("clef"), BunServices.layer))
 ))
 try {

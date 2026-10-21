@@ -84,15 +84,21 @@ type RepoSummary = {
 
 let remaining = (await $`gh api rate_limit --jq .resources.core.remaining`.json()) as number
 
-// Cached `gh api` call, or undefined when the rate budget is spent and nothing is cached.
+// Cached `gh api` call, or undefined when the rate budget is spent, or the call still fails after three
+// tries, and nothing is cached.
 const cached = async <A>(file: string, path: string, jq?: string): Promise<A | undefined> => {
   const cache = Bun.file(file)
   if (await cache.exists()) return (await cache.json()) as A
-  if (remaining <= rateReserve) return undefined
-  remaining -= 1
-  const value = (await (jq === undefined ? $`gh api ${path}` : $`gh api ${path} --jq ${jq}`).json()) as A
-  await Bun.write(file, JSON.stringify(value))
-  return value
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (remaining <= rateReserve) return undefined
+    remaining -= 1
+    const result = await (jq === undefined ? $`gh api ${path}` : $`gh api ${path} --jq ${jq}`).nothrow().quiet()
+    if (result.exitCode !== 0) continue
+    const value = result.json() as A
+    await Bun.write(file, JSON.stringify(value))
+    return value
+  }
+  return undefined
 }
 
 const isBot = (user: User) => user !== null && (user.type === "Bot" || user.login.endsWith("[bot]"))

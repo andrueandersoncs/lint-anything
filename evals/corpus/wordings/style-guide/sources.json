@@ -1,0 +1,105 @@
+{
+  "semantic/architecture/separate-decisions-from-effects": {
+    "source": "Microsoft .NET docs, \"Architect Modern Web Applications with ASP.NET Core and Azure\", Architectural principles: Separation of concerns",
+    "url": "https://github.com/dotnet/docs/blob/f0021fde66c59559fa1ba3c9a044148738f12faf/docs/architecture/modern-web-apps-azure/architectural-principles.md#separation-of-concerns",
+    "license": "CC-BY-4.0",
+    "note": "States the same principle (keep business decisions separate from infrastructure/I-O so the business logic is easy to test), but at the layer/project level rather than per function."
+  },
+  "semantic/architecture/thin-entry-points": {
+    "source": "Microsoft .NET docs, \"Architect Modern Web Applications with ASP.NET Core and Azure\", Develop ASP.NET Core MVC apps: Cross-cutting concerns",
+    "url": "https://github.com/dotnet/docs/blob/f0021fde66c59559fa1ba3c9a044148738f12faf/docs/architecture/modern-web-apps-azure/develop-asp-net-core-mvc-apps.md#cross-cutting-concerns",
+    "license": "CC-BY-4.0",
+    "note": "Says controller action methods (HTTP entry points) should be extremely thin once infrastructure and business logic are separated from the UI; the code example shows the intended shape. Framed for ASP.NET MVC actions only."
+  },
+  "semantic/design/explicit-dependencies": {
+    "source": "Microsoft .NET docs, \"Architect Modern Web Applications with ASP.NET Core and Azure\", Architectural principles: Explicit dependencies",
+    "url": "https://github.com/dotnet/docs/blob/f0021fde66c59559fa1ba3c9a044148738f12faf/docs/architecture/modern-web-apps-azure/architectural-principles.md#explicit-dependencies",
+    "license": "CC-BY-4.0",
+    "note": "The Explicit Dependencies Principle: methods and classes should require their collaborators through parameters/constructors instead of silently relying on global or infrastructure components. Direct equivalent."
+  },
+  "semantic/design/no-flag-parameters": {
+    "source": "clean-code-javascript (Ryan McDermott), Functions: \"Don't use flags as function parameters\"",
+    "url": "https://github.com/ryanmcdermott/clean-code-javascript/blob/5311f64b03fc0c2450ab17a45ee9818669c8b9b5/README.md#dont-use-flags-as-function-parameters",
+    "license": "MIT",
+    "note": "Direct equivalent: a boolean parameter that switches code paths means the function does two things; split it. Includes the source's own bad/good example."
+  },
+  "semantic/design/preserve-error-context": {
+    "source": "Uber Go Style Guide, Errors: Error Wrapping",
+    "url": "https://github.com/uber-go/guide/blob/1d60a91aa5e87d443002e23c21903c49489dbde5/style.md#error-wrapping",
+    "license": "Apache-2.0",
+    "note": "Reused from the prior research session. Propagate the original error or add context naming the failed operation instead of a vague error."
+  },
+  "semantic/design/single-responsibility": {
+    "source": "Microsoft .NET docs, \"Architect Modern Web Applications with ASP.NET Core and Azure\", Architectural principles: Single responsibility",
+    "url": "https://github.com/dotnet/docs/blob/f0021fde66c59559fa1ba3c9a044148738f12faf/docs/architecture/modern-web-apps-azure/architectural-principles.md#single-responsibility",
+    "license": "CC-BY-4.0",
+    "note": "Objects should have one responsibility and one reason to change. Trimmed to the first paragraph; the following paragraphs apply the principle to layers and microservices. Speaks of objects/classes, not functions."
+  },
+  "semantic/encapsulation/minimal-public-surface": {
+    "source": "Google TypeScript Style Guide, Source file structure > Exports: Export visibility",
+    "url": "https://github.com/google/styleguide/blob/591fedaf0eb82e0b14c1163ab03b1518ff6dbe60/tsguide.html#L422-L426",
+    "license": "CC-BY-3.0",
+    "note": "Direct equivalent: only export what is used outside the module; minimize the exported API surface. HTML converted to Markdown (tags removed), text unchanged."
+  },
+  "semantic/encapsulation/protect-internal-state": {
+    "source": "Uber Go Style Guide, Guidelines: Copy Slices and Maps at Boundaries",
+    "url": "https://github.com/uber-go/guide/blob/1d60a91aa5e87d443002e23c21903c49489dbde5/style.md#copy-slices-and-maps-at-boundaries",
+    "license": "Apache-2.0",
+    "note": "Covers both halves of the rule: storing a caller's mutable slice/map without copying, and returning internal slices/maps that expose internal state. Prose only; the bad/good HTML tables were trimmed. Go-specific (slices and maps)."
+  },
+  "semantic/maintainability/no-duplicated-knowledge": {
+    "source": "Microsoft .NET docs, \"Architect Modern Web Applications with ASP.NET Core and Azure\", Architectural principles: Don't repeat yourself (DRY)",
+    "url": "https://github.com/dotnet/docs/blob/f0021fde66c59559fa1ba3c9a044148738f12faf/docs/architecture/modern-web-apps-azure/architectural-principles.md#dont-repeat-yourself-dry",
+    "license": "CC-BY-4.0",
+    "note": "Direct equivalent: behavior for one concept specified in several places must all be updated when requirements change. The source's own note on coincidental duplication is kept verbatim."
+  },
+  "semantic/naming/intent-revealing-names": {
+    "source": "Google TypeScript Style Guide, Naming: Descriptive names",
+    "url": "https://github.com/google/styleguide/blob/591fedaf0eb82e0b14c1163ab03b1518ff6dbe60/tsguide.html#L2682-L2691",
+    "license": "CC-BY-3.0",
+    "note": "Reused from the prior research session. Names must be descriptive and clear to a new reader, with the guide's own short-scope exception. Emphasis is more about clarity/abbreviation than about domain meaning. HTML converted to Markdown, text unchanged."
+  },
+  "semantic/naming/names-match-behavior": {
+    "source": "Google TypeScript Style Guide, Language features > Classes: Getters and setters",
+    "url": "https://github.com/google/styleguide/blob/591fedaf0eb82e0b14c1163ab03b1518ff6dbe60/tsguide.html#L1259-L1266",
+    "license": "CC-BY-3.0",
+    "note": "Partial equivalent: covers the \"reads as a query but changes state\" half of the rule, for TypeScript accessors only; nothing about names that understate a larger job. No redistributable guide states the general \"names must not lie\" rule in prose. HTML converted to Markdown, text unchanged."
+  },
+  "semantic/organization/cohesive-modules": {
+    "source": "Google Go Style Guide, Best Practices: Package size",
+    "url": "https://github.com/google/styleguide/blob/591fedaf0eb82e0b14c1163ab03b1518ff6dbe60/go/best-practices.md#package-size",
+    "license": "CC-BY-3.0",
+    "note": "Conceptually distinct things get their own package, and files should be focused enough that a maintainer can tell which file contains something, grouping related code by file. Trimmed to one sentence plus the file-size paragraph (cut before the doc.go remark). Partly about size, not only topic."
+  },
+  "semantic/readability/comments-explain-why": {
+    "source": "PEP 8 – Style Guide for Python Code, Comments and Inline Comments",
+    "url": "https://github.com/python/peps/blob/3b0eaa2021d57747ab83b9356eefe597c5745dde/peps/pep-0008.rst#comments",
+    "license": "LicenseRef-public-domain",
+    "note": "Reused from the prior research session. Comments that contradict the code, and inline comments that state the obvious. reStructuredText code-block directives rendered as fenced code; text unchanged."
+  },
+  "semantic/readability/consistent-abstraction-level": {
+    "source": "clean-code-javascript (Ryan McDermott), Functions: \"Functions should only be one level of abstraction\"",
+    "url": "https://github.com/ryanmcdermott/clean-code-javascript/blob/5311f64b03fc0c2450ab17a45ee9818669c8b9b5/README.md#functions-should-only-be-one-level-of-abstraction",
+    "license": "MIT",
+    "note": "Direct equivalent of the rule name; the prose is short (the source relies on a long bad/good example, trimmed here)."
+  },
+  "semantic/readability/explain-magic-values": {
+    "source": "clean-code-typescript (labs42io), Variables: \"Use searchable names\"",
+    "url": "https://github.com/labs42io/clean-code-typescript/blob/05a25e8fb8f4cdca4e6cfbddd60323c6ddc5aa54/README.md#use-searchable-names",
+    "license": "MIT",
+    "note": "Unnamed constants (\"magic strings and magic numbers\") should be declared as named constants; includes the source's own example."
+  },
+  "semantic/testing/descriptive-test-names": {
+    "source": "Microsoft .NET docs, Unit testing best practices for .NET: Follow test naming standards",
+    "url": "https://github.com/dotnet/docs/blob/f0021fde66c59559fa1ba3c9a044148738f12faf/docs/core/testing/unit-testing-best-practices.md#follow-test-naming-standards",
+    "license": "CC-BY-4.0",
+    "note": "Test names should state the method, the scenario, and the expected behavior. The before/after code-include directives were trimmed."
+  },
+  "semantic/testing/test-behavior-not-implementation": {
+    "source": "Microsoft .NET docs, Unit testing best practices for .NET: Validate private methods with public methods",
+    "url": "https://github.com/dotnet/docs/blob/f0021fde66c59559fa1ba3c9a044148738f12faf/docs/core/testing/unit-testing-best-practices.md#validate-private-methods-with-public-methods",
+    "license": "CC-BY-4.0",
+    "note": "Test through the public method rather than private implementation details. Trimmed to the opening and closing paragraphs (the example in between dropped). Does not mention mocks or call-count assertions."
+  },
+  "_omitted": {}
+}

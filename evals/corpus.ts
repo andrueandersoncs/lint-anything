@@ -23,6 +23,26 @@ export interface Upstream {
   readonly license: string
 }
 
+/**
+ * How a file entered the corpus. `curated`: picked by hand. `sampled`: drawn at random by `evals/sample.ts`.
+ * `mined`: a PR review comment flagged it (`evals/mine.ts`). `hand-planted` / `llm-planted`: a real file
+ * with one violation added by hand or by a model. `written`: synthetic.
+ */
+export type Source = "curated" | "sampled" | "mined" | "hand-planted" | "llm-planted" | "written"
+
+/** What later tests need to know about a file's sampling (H5), origin (H7) and date (H8). */
+export interface Provenance {
+  readonly source: Source
+  /** Sampled files: `<language>/<test|source>/<size bin>`, the stratum it was drawn from. */
+  readonly stratum?: string
+  /** Real and planted files: ISO date of the last upstream commit that touched the file at `upstream.commit`. */
+  readonly committed?: string
+  /** Mined files: URL of the review comment that flagged the file. */
+  readonly comment?: string
+  /** LLM-planted files: the policy whose violation was planted. */
+  readonly policy?: string
+}
+
 /** A gold judgment of one file against one policy. `lines` are 1-based inclusive ranges of the violation. */
 export interface Gold {
   readonly label: Label
@@ -37,9 +57,15 @@ export interface FileRecord {
   readonly split?: Split
   readonly origin: Origin
   readonly upstream?: Upstream
+  readonly provenance: Provenance
   /** The other half of a contrast pair: the same file with one policy's violations fixed or planted. */
   readonly pair?: string
   readonly labels: Readonly<Record<string, Gold>>
+  /**
+   * Gold for the same semantic policies worded differently: `wordings[set][policy]` is labeled against
+   * `corpus/wordings/<set>/<policy>.md`. A file carries a set for every policy of that set its path matches.
+   */
+  readonly wordings?: Readonly<Record<string, Readonly<Record<string, Gold>>>>
 }
 
 export interface CorpusFile extends FileRecord {
@@ -63,6 +89,11 @@ export interface Corpus {
 
 const labels = new Set<string>(["violates", "complies", "not-applicable", "ambiguous"])
 const origins = new Set<string>(["synthetic", "real", "planted"])
+const sourcesByOrigin: Readonly<Record<Origin, ReadonlyArray<Source>>> = {
+  synthetic: ["written"],
+  real: ["curated", "sampled", "mined"],
+  planted: ["hand-planted", "llm-planted"]
+}
 // Licenses that allow redistributing the files here with attribution.
 const permissiveLicenses = new Set(["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD"])
 
@@ -97,23 +128,69 @@ export const verifyUpstream = async (files: ReadonlyArray<CorpusFile>): Promise<
   return problems
 }
 
-/** Policies in `corpus/policies`, parsed exactly as the CLI parses them. */
-export const loadPolicies = async (): Promise<Array<Policy>> => {
-  const directory = `${corpusDirectory}/policies`
+const parseDirectory = async (directory: string): Promise<Array<Policy>> => {
   const names = (await Array.fromAsync(new Bun.Glob("**/*.md").scan(directory))).sort()
   return Promise.all(names.map(async (name) =>
     Effect.runSync(parsePolicy(name.slice(0, -".md".length), await Bun.file(`${directory}/${name}`).text()))
   ))
 }
 
+const frontmatterOf = (policy: Policy) => /^---\r?\n(.*?)\r?\n---/s.exec(policy.source)?.[1]
+
+/** Rule-wording sets: one directory per set under `corpus/wordings`. */
+export const loadWordings = async (): Promise<Map<string, Array<Policy>>> => {
+  const directory = `${corpusDirectory}/wordings`
+  const sets = new Set((await Array.fromAsync(new Bun.Glob("*/**/*.md").scan(directory))).map((name) => name.split("/")[0]!))
+  const wordings = new Map<string, Array<Policy>>()
+  for (const set of [...sets].sort()) wordings.set(set, await parseDirectory(`${directory}/${set}`))
+  return wordings
+}
+
+/**
+ * Policies in `corpus/policies`, parsed exactly as the CLI parses them. With `wording`, each policy that
+ * set rewords is replaced by its `corpus/wordings/<wording>` text (same name and globs).
+ */
+export const loadPolicies = async (wording?: string): Promise<Array<Policy>> => {
+  const policies = await parseDirectory(`${corpusDirectory}/policies`)
+  if (wording === undefined) return policies
+  const reworded = (await loadWordings()).get(wording)
+  if (reworded === undefined) throw new Error(`no wording set ${wording} in ${corpusDirectory}/wordings`)
+  const byName = new Map(reworded.map((policy) => [policy.name, policy]))
+  return policies.map((policy) => byName.get(policy.name) ?? policy)
+}
+
+const checkGold = (where: string, gold: Gold, lineCount: number, problems: Array<string>) => {
+  if (!labels.has(gold.label)) problems.push(`${where}: unknown label ${gold.label}`)
+  if (typeof gold.note !== "string" || gold.note.trim() === "") problems.push(`${where}: missing note`)
+  if (gold.label === "violates" && (gold.lines === undefined || gold.lines.length === 0)) {
+    problems.push(`${where}: violates needs lines`)
+  }
+  for (const [start, end] of gold.lines ?? []) {
+    if (!(1 <= start && start <= end && end <= lineCount)) problems.push(`${where}: lines ${start}-${end} outside 1-${lineCount}`)
+  }
+}
+
 /**
  * Loads every slice and checks it: each file exists, carries exactly one label per policy whose globs
- * match its path, and pairs are reciprocal with the same path. Throws one error listing every problem.
+ * match its path (and per reworded policy, for each wording set it carries), pairs are reciprocal with the
+ * same path, and provenance fits the origin. Throws one error listing every problem. With `wording`, cases
+ * are judged against that set's text and gold, and only files labeled for that set are loaded.
  */
-export const loadCorpus = async (options: { readonly requireSplits?: boolean } = {}): Promise<Corpus> => {
-  const policies = await loadPolicies()
+export const loadCorpus = async (
+  options: { readonly requireSplits?: boolean; readonly wording?: string } = {}
+): Promise<Corpus> => {
+  const defaults = await loadPolicies()
+  const policies = await loadPolicies(options.wording)
   const byName = new Map(policies.map((policy) => [policy.name, policy]))
+  const wordings = await loadWordings()
   const problems: Array<string> = []
+  for (const [set, reworded] of wordings) {
+    for (const policy of reworded) {
+      const original = defaults.find((candidate) => candidate.name === policy.name)
+      if (original === undefined) problems.push(`wording ${set}: ${policy.name} is not a corpus policy`)
+      else if (frontmatterOf(original) !== frontmatterOf(policy)) problems.push(`wording ${set}: ${policy.name} frontmatter differs`)
+    }
+  }
   const files: Array<CorpusFile> = []
   for (const name of (await Array.fromAsync(new Bun.Glob("*.jsonl").scan(corpusDirectory))).sort()) {
     const slice = name.slice(0, -".jsonl".length)
@@ -143,8 +220,9 @@ export const loadCorpus = async (options: { readonly requireSplits?: boolean } =
     byId.set(file.id, file)
   }
   const cases: Array<Case> = []
+  const loaded: Array<CorpusFile> = []
   for (const file of files) {
-    const expected = policies.filter((policy) => matches(policy, file.path)).map((policy) => policy.name)
+    const expected = defaults.filter((policy) => matches(policy, file.path)).map((policy) => policy.name)
     const labelled = Object.keys(file.labels)
     for (const name of expected.filter((name) => !labelled.includes(name))) {
       problems.push(`${file.id}: no label for matching policy ${name}`)
@@ -163,6 +241,22 @@ export const loadCorpus = async (options: { readonly requireSplits?: boolean } =
       else if (partner.split !== file.split) problems.push(`${file.id}: pair ${file.pair} is in a different split`)
     }
     if (!origins.has(file.origin)) problems.push(`${file.id}: origin must be synthetic, real, or planted`)
+    const provenance = file.provenance
+    if (provenance === undefined) {
+      problems.push(`${file.id}: missing provenance`)
+    } else {
+      if (!sourcesByOrigin[file.origin]?.includes(provenance.source)) {
+        problems.push(`${file.id}: provenance source ${provenance.source} does not fit origin ${file.origin}`)
+      }
+      if (file.origin !== "synthetic" && !(typeof provenance.committed === "string" && !Number.isNaN(Date.parse(provenance.committed)))) {
+        problems.push(`${file.id}: provenance needs the committed date`)
+      }
+      if (provenance.source === "sampled" && provenance.stratum === undefined) problems.push(`${file.id}: sampled files need a stratum`)
+      if (provenance.source === "mined" && provenance.comment === undefined) problems.push(`${file.id}: mined files need the comment URL`)
+      if (provenance.source === "llm-planted" && file.labels[provenance.policy ?? ""]?.label !== "violates") {
+        problems.push(`${file.id}: llm-planted files name a planted policy they violate`)
+      }
+    }
     if (file.origin === "synthetic") {
       if (file.upstream !== undefined) problems.push(`${file.id}: synthetic files have no upstream`)
     } else {
@@ -191,23 +285,32 @@ export const loadCorpus = async (options: { readonly requireSplits?: boolean } =
     const lineCount = file.source.split("\n").length
     for (const name of expected) {
       const gold = file.labels[name]
+      if (gold !== undefined) checkGold(`${file.id} ${name}`, gold, lineCount, problems)
+    }
+    for (const [set, gold] of Object.entries(file.wordings ?? {})) {
+      const reworded = wordings.get(set)
+      if (reworded === undefined) {
+        problems.push(`${file.id}: labels for unknown wording set ${set}`)
+        continue
+      }
+      const wanted = reworded.filter((policy) => matches(policy, file.path)).map((policy) => policy.name)
+      for (const name of wanted.filter((name) => gold[name] === undefined)) problems.push(`${file.id}: no ${set} label for ${name}`)
+      for (const name of Object.keys(gold).filter((name) => !wanted.includes(name))) {
+        problems.push(`${file.id}: ${set} label for ${name}, which that set does not reword for ${file.path}`)
+      }
+      for (const [name, value] of Object.entries(gold)) checkGold(`${file.id} ${set} ${name}`, value, lineCount, problems)
+    }
+    if (options.wording !== undefined && file.wordings?.[options.wording] === undefined) continue
+    loaded.push(file)
+    for (const name of expected) {
+      const gold = file.wordings?.[options.wording ?? ""]?.[name] ?? file.labels[name]
       const policy = byName.get(name)
       if (gold === undefined || policy === undefined) continue
-      if (!labels.has(gold.label)) problems.push(`${file.id} ${name}: unknown label ${gold.label}`)
-      if (typeof gold.note !== "string" || gold.note.trim() === "") problems.push(`${file.id} ${name}: missing note`)
-      if (gold.label === "violates" && (gold.lines === undefined || gold.lines.length === 0)) {
-        problems.push(`${file.id} ${name}: violates needs lines`)
-      }
-      for (const [start, end] of gold.lines ?? []) {
-        if (!(1 <= start && start <= end && end <= lineCount)) {
-          problems.push(`${file.id} ${name}: lines ${start}-${end} outside 1-${lineCount}`)
-        }
-      }
       cases.push({ id: `${file.id}:${name}`, file, policy, gold })
     }
   }
   if (problems.length > 0) {
     throw new Error(`corpus has ${problems.length} problem(s):\n${problems.join("\n")}`)
   }
-  return { policies, files, cases }
+  return { policies, files: loaded, cases }
 }

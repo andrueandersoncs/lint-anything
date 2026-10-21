@@ -1,0 +1,285 @@
+package orbital
+
+import (
+	"math"
+
+	"github.com/jasonfen/terminal-space-program/internal/bodies"
+)
+
+// Vec3 is a 3-element inertial-frame vector (meters or m/s).
+type Vec3 struct{ X, Y, Z float64 }
+
+// Add returns a + b.
+func (a Vec3) Add(b Vec3) Vec3 { return Vec3{a.X + b.X, a.Y + b.Y, a.Z + b.Z} }
+
+// Sub returns a − b.
+func (a Vec3) Sub(b Vec3) Vec3 { return Vec3{a.X - b.X, a.Y - b.Y, a.Z - b.Z} }
+
+// Scale returns a * s.
+func (a Vec3) Scale(s float64) Vec3 { return Vec3{a.X * s, a.Y * s, a.Z * s} }
+
+// Norm returns |a|.
+func (a Vec3) Norm() float64 { return math.Sqrt(a.X*a.X + a.Y*a.Y + a.Z*a.Z) }
+
+// Cross returns a × b.
+func (a Vec3) Cross(b Vec3) Vec3 {
+	return Vec3{
+		X: a.Y*b.Z - a.Z*b.Y,
+		Y: a.Z*b.X - a.X*b.Z,
+		Z: a.X*b.Y - a.Y*b.X,
+	}
+}
+
+// Dot returns a · b.
+func (a Vec3) Dot(b Vec3) float64 { return a.X*b.X + a.Y*b.Y + a.Z*b.Z }
+
+// Unit returns a / |a|. A zero vector returns the zero vector (callers
+// already interpret a zero direction as "undefined" — see BurnDirection).
+func (a Vec3) Unit() Vec3 {
+	n := a.Norm()
+	if n == 0 {
+		return Vec3{}
+	}
+	return a.Scale(1 / n)
+}
+
+// PlaneNormalOK reports whether n (an orbital-plane normal, r × v) is
+// far enough from a pole passage to trust as a plane direction, given
+// the primary it was computed against: its spin rate omega (rad/s) and
+// radius R (m). ADR 0050 decision 8: every guard on this quantity used
+// to be an exact `n.Norm() == 0` test, which a real pole never trips:
+// floating-point residue leaves a vessel at the shipped North Pole
+// preset with |n| ~= 3.2e-7, not zero, so an unguarded Δincl wandered
+// 63.20°..88.47° with no period and the planner planned 8127..13099
+// m/s out of that noise. The threshold scales with the primary's own
+// dynamics rather than testing against an absolute epsilon: it trips
+// within 6e-8 degrees of the pole (about 6mm on Earth) and does not
+// trip at 89.99999 degrees or a vessel one metre from the pole, which
+// keeps an honest, real, sweeping figure there.
+func PlaneNormalOK(n Vec3, omega, radiusMeters float64) bool {
+	threshold := 1e-9 * omega * radiusMeters * radiusMeters
+	// review r1 F5: `>`, not `>=`: at omega == 0 the threshold is itself
+	// exactly 0, and `>=` let an exact-zero normal through as "trustworthy"
+	// (PlanVesselPlaneMatch then calls .Unit() on it). Latent today: no
+	// shipped body has zero spin.
+	return n.Norm() > threshold
+}
+
+// Rotate rotates v about axis by theta radians (right-hand rule),
+// via Rodrigues' formula:
+//
+//	v·cosθ + (axis×v)·sinθ + axis·(axis·v)·(1−cosθ)
+//
+// axis is assumed to be a unit vector; the caller is responsible for
+// normalizing it (the v0.10.0 slew integrator picks a unit perpendicular
+// before calling). This is the only general axis-angle rotation in the
+// tree — PerifocalToInertial is a fixed Euler matrix and ApplyPitchTrim
+// is a 2-D local-frame rotation, neither reusable here.
+//
+// v0.10.0+ (rate-limited attitude).
+func Rotate(v, axis Vec3, theta float64) Vec3 {
+	c, s := math.Cos(theta), math.Sin(theta)
+	return v.Scale(c).
+		Add(axis.Cross(v).Scale(s)).
+		Add(axis.Scale(axis.Dot(v) * (1 - c)))
+}
+
+// PerifocalToInertial converts perifocal (p, q, w) → inertial (X, Y, Z) via
+// the standard 3-1-3 Euler sequence (Ω, i, ω). Perifocal frame: p along
+// periapsis, q 90° ahead in the orbital plane, w = p × q.
+func PerifocalToInertial(p, q float64, el Elements) Vec3 {
+	cO, sO := math.Cos(el.Omega), math.Sin(el.Omega)
+	cw, sw := math.Cos(el.Arg), math.Sin(el.Arg)
+	ci, si := math.Cos(el.I), math.Sin(el.I)
+
+	// Rotation matrix columns (perifocal basis in inertial coords).
+	// See Vallado §2.6 or Curtis §4.4.
+	px := cO*cw - sO*sw*ci
+	py := sO*cw + cO*sw*ci
+	pz := sw * si
+	qx := -cO*sw - sO*cw*ci
+	qy := -sO*sw + cO*cw*ci
+	qz := cw * si
+
+	return Vec3{
+		X: p*px + q*qx,
+		Y: p*py + q*qy,
+		Z: p*pz + q*qz,
+	}
+}
+
+// PositionAtTrueAnomaly computes the inertial position for a body with
+// given orbital elements and true anomaly ν. r = a(1-e²)/(1+e·cos ν).
+func PositionAtTrueAnomaly(el Elements, nu float64) Vec3 {
+	if el.A == 0 {
+		return Vec3{}
+	}
+	p := el.A * (1 - el.E*el.E)
+	// p = a(1−e²) is 0 for parabolic (e=1) and negative for hyperbolic
+	// (e>1); both are degenerate for this elliptic-only position formula
+	// and would otherwise yield a singular or negative radius. Guard
+	// `p <= 0`, matching VelocityAtTrueAnomaly below. (#90)
+	if p <= 0 {
+		return Vec3{}
+	}
+	r := p / (1 + el.E*math.Cos(nu))
+	pf := r * math.Cos(nu)
+	qf := r * math.Sin(nu)
+	return PerifocalToInertial(pf, qf, el)
+}
+
+// VelocityAtTrueAnomaly computes the inertial velocity vector at true anomaly
+// ν, given the central body's gravitational parameter mu (m³/s²). Returns
+// zero vector for degenerate (a=0) orbits (e.g. the system primary itself).
+func VelocityAtTrueAnomaly(el Elements, nu, mu float64) Vec3 {
+	if el.A == 0 || mu == 0 {
+		return Vec3{}
+	}
+	p := el.A * (1 - el.E*el.E)
+	if p <= 0 {
+		return Vec3{}
+	}
+	h := math.Sqrt(mu * p) // specific angular momentum
+	vp := -mu / h * math.Sin(nu)
+	vq := mu / h * (el.E + math.Cos(nu))
+	return PerifocalToInertial(vp, vq, el)
+}
+
+// BodyFrame is an orthonormal basis (Ex, Ey, Ez) expressed in world
+// inertial coordinates. Ez is the body's spin axis; (Ex, Ey) span the
+// equatorial plane. ToWorld rotates a vector from the body-equatorial
+// basis into the world basis; FromWorld is the inverse.
+//
+// v0.8.6+: lets the orbital, sim, and planner layers express elements
+// (i, Ω, ω) relative to the primary body's equator — the convention
+// used by every operational mission planner. A 0° inclination Earth
+// orbit lies in Earth's equatorial plane (passes over the equator).
+// Heliocentric orbits use the ecliptic-aligned IdentityFrame instead;
+// see ReferenceFrameForPrimary.
+type BodyFrame struct {
+	Ex, Ey, Ez Vec3
+}
+
+// IdentityFrame is the world inertial frame: Ex=+X, Ey=+Y, Ez=+Z.
+// Used as the orbital reference frame for heliocentric orbits, where
+// the ecliptic plane and the world XY plane coincide by construction.
+func IdentityFrame() BodyFrame {
+	return BodyFrame{
+		Ex: Vec3{X: 1},
+		Ey: Vec3{Y: 1},
+		Ez: Vec3{Z: 1},
+	}
+}
+
+// BodyEquatorialFrame returns the inertial frame whose Z-axis is
+// b's spin axis. Mirrors render.BodyRotationAxisWorld /
+// BodyRingBasisWorld so renderer and orbital math agree on which
+// way the body is tilted.
+//
+// Construction:
+//   - Ez = (sin t·cos a, sin t·sin a, cos t) — body spin axis,
+//     where t = AxialTilt, a = AxialAzimuth (both in degrees).
+//   - Ex = projection of world +X onto the equatorial plane,
+//     normalised. Falls back to projection of world +Y when +X is
+//     near-parallel to Ez (high-tilt + azimuth-0 body).
+//   - Ey = Ez × Ex, completing a right-handed orthonormal basis.
+//
+// At AxialTilt = 0 this collapses to IdentityFrame.
+func BodyEquatorialFrame(b bodies.CelestialBody) BodyFrame {
+	tiltRad := b.AxialTilt * math.Pi / 180.0
+	azRad := b.AxialAzimuth * math.Pi / 180.0
+	sinT := math.Sin(tiltRad)
+	cosT := math.Cos(tiltRad)
+	ez := Vec3{X: sinT * math.Cos(azRad), Y: sinT * math.Sin(azRad), Z: cosT}
+
+	ref := Vec3{X: 1}
+	if math.Abs(ez.X*ref.X+ez.Y*ref.Y+ez.Z*ref.Z) > 0.999 {
+		ref = Vec3{Y: 1}
+	}
+	exRaw := ref.Sub(ez.Scale(ez.X*ref.X + ez.Y*ref.Y + ez.Z*ref.Z))
+	exNorm := exRaw.Norm()
+	if exNorm < 1e-12 {
+		return IdentityFrame()
+	}
+	ex := exRaw.Scale(1 / exNorm)
+	ey := ez.Cross(ex)
+	return BodyFrame{Ex: ex, Ey: ey, Ez: ez}
+}
+
+// ReferenceFrameForPrimary returns the orbital reference frame for
+// orbits about the given primary. Heliocentric orbits (primary is the
+// Sun) use the ecliptic = IdentityFrame, matching the astronomical
+// convention that planet inclinations are quoted relative to the
+// ecliptic. Body-bound orbits use the primary's equatorial frame,
+// matching the operational mission-planning convention (ECI for Earth,
+// MCI for Mars, etc.).
+func ReferenceFrameForPrimary(primary bodies.CelestialBody) BodyFrame {
+	if primary.ID == "sun" {
+		return IdentityFrame()
+	}
+	return BodyEquatorialFrame(primary)
+}
+
+// ToWorld rotates v from the body-equatorial basis to the world
+// inertial basis: v_world = vx·Ex + vy·Ey + vz·Ez.
+func (f BodyFrame) ToWorld(v Vec3) Vec3 {
+	return Vec3{
+		X: v.X*f.Ex.X + v.Y*f.Ey.X + v.Z*f.Ez.X,
+		Y: v.X*f.Ex.Y + v.Y*f.Ey.Y + v.Z*f.Ez.Y,
+		Z: v.X*f.Ex.Z + v.Y*f.Ey.Z + v.Z*f.Ez.Z,
+	}
+}
+
+// FromWorld rotates v from the world basis into this frame: it's the
+// transpose of ToWorld (v_frame = (Ex·v, Ey·v, Ez·v)).
+func (f BodyFrame) FromWorld(v Vec3) Vec3 {
+	return Vec3{
+		X: f.Ex.X*v.X + f.Ex.Y*v.Y + f.Ex.Z*v.Z,
+		Y: f.Ey.X*v.X + f.Ey.Y*v.Y + f.Ey.Z*v.Z,
+		Z: f.Ez.X*v.X + f.Ez.Y*v.Y + f.Ez.Z*v.Z,
+	}
+}
+
+// OrbitNormalWorld returns the unit normal of body b's orbital plane in
+// world (ecliptic) axes, built from b's ecliptic-relative elements
+// (i, Ω) via the standard 3-1-3 Euler orbit normal R_z(Ω)·R_x(i)·ẑ =
+// (sin Ω·sin i, −cos Ω·sin i, cos i). Returns the zero vector for a
+// body with no orbit (the system primary). v0.10.4+.
+func OrbitNormalWorld(b bodies.CelestialBody) Vec3 {
+	// Guard the *computed* semimajor axis, which honors the
+	// OrbitalElements override (ElementsFromBody). Checking the
+	// top-level b.SemimajorAxis would wrongly zero the normal for a body
+	// whose orbit lives only in the override, collapsing
+	// PlaneMatchInclination to 0. (#90)
+	el := ElementsFromBody(b)
+	if el.A == 0 {
+		return Vec3{}
+	}
+	sI, cI := math.Sin(el.I), math.Cos(el.I)
+	sO, cO := math.Sin(el.Omega), math.Cos(el.Omega)
+	return Vec3{X: sO * sI, Y: -cO * sI, Z: cI}
+}
+
+// FrameFromNormal builds an orthonormal BodyFrame whose Ez axis is the
+// given normal (any non-zero vector — it is normalised). Ex is world +X
+// projected into the plane (falling back to +Y when +X is near-parallel
+// to the normal); Ey = Ez × Ex. Used to re-express a craft state in a
+// frame aligned to an arbitrary orbital plane, so an inclination solver
+// can treat "coplanar with that plane" as "zero inclination". Returns
+// IdentityFrame when n is degenerate. v0.10.4+.
+func FrameFromNormal(n Vec3) BodyFrame {
+	ez := n.Unit()
+	if ez.Norm() == 0 {
+		return IdentityFrame()
+	}
+	ref := Vec3{X: 1}
+	if math.Abs(ez.Dot(ref)) > 0.999 {
+		ref = Vec3{Y: 1}
+	}
+	exRaw := ref.Sub(ez.Scale(ez.Dot(ref)))
+	if exRaw.Norm() < 1e-12 {
+		return IdentityFrame()
+	}
+	ex := exRaw.Unit()
+	return BodyFrame{Ex: ex, Ey: ez.Cross(ex), Ez: ez}
+}

@@ -229,7 +229,7 @@ bun evals/wordings.ts --split test         # each rule-wording set vs. the polis
   Every semantic policy has at least 20 clear violations on each split, counting plants. Real files alone fall short on at least one split for 7 policies, worst cohesive-modules (4 dev / 4 test), thin-entry-points (12 / 3), and test-behavior-not-implementation (11 / 8); `run.ts` prints n next to every per-policy number. Planted and synthetic files have scored higher than real ones (`evals/RESEARCH.md`, H7, H12), so `run.ts` breaks results out by origin; read headline numbers on `real`.
 
   Labels model reality, ambiguity included. The 112 original files were labeled three times by `claude-opus-5-5` subagents and adjudicated; a cross-family pass with gpt-6.1-sol, adjudicated by Claude, then changed 119 labels where the two models agreed against gold (`evals/RESEARCH.md`, H2). Files added later are labeled by the two-model protocol (H11): Claude and gpt-6.1-sol each label every matching policy, a blinded Claude adjudicator decides their disagreements, and an adjudicated `ambiguous` stays `ambiguous`. Applied to the curated files, the protocol matches their gold in 128 of 137 violations and contradicts one clear label. Semantic ambiguous cases are 6%. Files are split dev/test (new files by project), and pairs stay together.
-- **Rule wordings** (`evals/corpus/wordings/<set>/`): the same semantic policies worded as users write them, each with gold labeled against its own text on the 101 original semantic files: `terse` (one line each), `style-guide` (published style-guide passages), and `agents-md` (rules from open-source projects' AGENTS.md and contributor docs). Sources and licenses are in each set's `sources.json`. `run.ts --wording <set>` scores a set; `wordings.ts` compares each with the polished policies on the same cases.
+- **Rule wordings** (`evals/corpus/wordings/<set>/`): the same semantic policies worded as users write them, each with gold labeled against its own text on every corpus file with semantic policies: `terse` (one line each), `style-guide` (published style-guide passages), and `agents-md` (rules from open-source projects' AGENTS.md and contributor docs). Sources and licenses are in each set's `sources.json`. `run.ts --wording <set>` scores a set; `wordings.ts` compares each with the polished policies on the same cases.
 - **Strategies** (`evals/strategy.ts`): each strategy is `production` plus `key=value` overrides. `production` cuts the same excerpts and plans exactly the same requests as the CLI; the runner checks this for every corpus file. The keys:
   - `model`: `clef` or `clef-flash`.
   - `batch`: questions per request, packed within Clef's 64-question limit and the model's byte limit.
@@ -271,15 +271,18 @@ Findings on the grown corpus (2026-10-21; `run.ts --origin real --category seman
 - Clef doesn't score famous or older code better. Among sampled files, projects over 20k stars minus projects under 1k is −0.032 [−0.069, +0.006]. For files last changed before 2026-07-01 minus after, it is +0.015 [−0.012, +0.043] (H14).
 - LLM plants run slightly easier than real violations of the same policies, but the gap is within noise: +0.033 [−0.020, +0.085] in mean score. Pooled across policies the gap is +0.10, and that comes mostly from which policies were planted (H12). Twins score above their originals 116 times out of 119.
 
-Rule wording, each set scored against gold labeled for its own text (`wordings.ts`, all 101 original semantic files, both splits; false alarms here are clean cases given `review` or `violation`):
+Rule wording, each set scored against gold labeled for its own text (`wordings.ts --origin real`, real files; false alarms here are clean cases given `review` or `violation`):
 
-| Wording | Clear violations (polished → set) | AUROC | False alarms | Caught |
-| --- | --- | --- | --- | --- |
-| terse (one line per rule) | 201 → 293 | 0.843 → 0.845 [−0.030, +0.038] | 5.3% → 13.8% | 23% → 36% |
-| style-guide passages | 201 → 284 | 0.843 → 0.814 [−0.058, +0.001] | 5.3% → 12.0% | 23% → 29% |
-| AGENTS.md rules (16 policies) | 194 → 322 | 0.840 → 0.811 [−0.062, +0.005] | 5.1% → 18.9% | 23% → 27% |
+| Wording | Split | Clear violations (polished → set) | AUROC | False alarms | Caught |
+| --- | --- | --- | --- | --- | --- |
+| terse (one line per rule) | dev | 611 → 809 | 0.863 → 0.866 [−0.014, +0.019] | 7.0% → 14.3% | 24% → 43% |
+| | test | 537 → 677 | 0.870 → 0.864 [−0.024, +0.013] | 7.9% → 15.2% | 28% → 42% |
+| style-guide passages | dev | 611 → 755 | 0.863 → 0.835 [−0.045, −0.012] | 7.0% → 13.6% | 24% → 31% |
+| | test | 537 → 658 | 0.870 → 0.835 [−0.052, −0.017] | 7.9% → 11.9% | 28% → 31% |
+| AGENTS.md rules (16 policies) | dev | 591 → 834 | 0.867 → 0.845 [−0.038, −0.005] | 6.6% → 17.5% | 23% → 31% |
+| | test | 524 → 735 | 0.874 → 0.851 [−0.040, −0.006] | 7.2% → 16.5% | 28% → 34% |
 
-- Real-world rules mean more violations: their gold has 40–66% more of them than the polished rules' gold. Judged against its own gold, terse wording ranks as well as the polished text. The earlier loss (H6) came from scoring terse rules against polished gold. Borrowed wordings lose about 0.03 AUROC, at the edge of noise (agents-md on dev: −0.089 to −0.002). Every set doubles to quadruples false alarms, so user-written rules are noisier mostly through the cut-offs, not the ranking (H13).
+- Real-world rules mean more violations: their gold has 23–41% more of them than the polished rules' gold. Judged against its own gold, terse wording ranks as well as the polished text; the earlier loss (H6) came from scoring terse rules against polished gold. Borrowed wordings lose 0.02–0.035 AUROC, outside noise on both splits. Every set roughly doubles false alarms (H13).
 
 Findings on the 112-file corpus, re-scored 2026-10-21 against the relabeled gold (cached answers). Strategies and cut-offs were chosen on dev; these are held-out test numbers:
 

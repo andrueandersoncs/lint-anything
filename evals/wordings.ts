@@ -1,7 +1,7 @@
 // Compares Clef's quality under each rule-wording set in corpus/wordings against the polished corpus
 // policies, on the same cases: the files labeled for that set, the policies it rewords. Each side is
 // scored against its own gold (polished gold for polished text, the set's gold for its text).
-//   bun evals/wordings.ts [--split dev|test|all] [--concurrency 8] [set ...]
+//   bun evals/wordings.ts [--split dev|test|all] [--origin all|real|planted|synthetic] [--concurrency 8] [set ...]
 import { makeClient } from "./client.ts"
 import { type Case, loadCorpus, loadWordings } from "./corpus.ts"
 import { auroc, pairedInterval, productionThresholds, quality, type Scored } from "./metrics.ts"
@@ -18,8 +18,10 @@ const flag = (name: string, fallback: string) => {
   return value
 }
 const split = flag("--split", "all")
+const origin = flag("--origin", "all")
 const concurrency = Number(flag("--concurrency", "8"))
 if (!["dev", "test", "all"].includes(split)) throw new Error("--split must be dev, test, or all")
+if (!["all", "real", "planted", "synthetic"].includes(origin)) throw new Error("--origin must be all, real, planted, or synthetic")
 const wordings = await loadWordings()
 const sets = args.length > 0 ? args : [...wordings.keys()]
 for (const set of sets) if (!wordings.has(set)) throw new Error(`no wording set ${set}`)
@@ -36,7 +38,8 @@ const perPolicy: Array<string> = []
 for (const set of sets) {
   const reworded = new Set(wordings.get(set)!.map((policy) => policy.name))
   const corpus = await loadCorpus({ wording: set })
-  const keep = (item: Case) => reworded.has(item.policy.name) && (split === "all" || item.file.split === split)
+  const keep = (item: Case) => reworded.has(item.policy.name) && (split === "all" || item.file.split === split) &&
+    (origin === "all" || item.file.origin === origin)
   const theirs = corpus.cases.filter(keep)
   const ids = new Set(theirs.map((item) => item.id))
   const ours = polished.cases.filter((item) => ids.has(item.id))

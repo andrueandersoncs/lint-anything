@@ -67,7 +67,7 @@ Clear semantic violations per policy:
 | H10 | completeness | Randomly sampled real files carry semantic violations at about the curated files' rate | supported: 0.88× overall, 1.14× thin policies |
 | H11 | correctness | The two-model labeling protocol behaves on new files as it did on the corpus in H2 | mostly: κ 0.50 / 0.44 as predicted; adjudication upholds more gpt-only flags than predicted (63–75%) |
 | H12 | correctness | LLM-planted violations remain easier than real ones at scale | partly: +0.10 pooled, but +0.03 (within noise) with policies matched |
-| H13 | correctness | With gold labeled against each wording, real-world wording still costs quality | refuted for ranking under terse (±0.03); borrowed wordings −0.03 at the edge of noise; false alarms ×2–4 |
+| H13 | correctness | With gold labeled against each wording, real-world wording still costs quality | refuted for terse ranking (±0.02 on 451 real files); borrowed wordings −0.02 to −0.035, outside noise; false alarms ×~2 |
 | H14 | correctness | Memorization, retested with recent commits and small repos | null not rejected; intervals ±0.04 |
 | H15 | completeness | Size effect under production, retested on the grown corpus | supported: −0.061 [−0.095, −0.023] |
 
@@ -623,6 +623,13 @@ grown corpus the dev-tuned file cut-offs 0.275 / 0.375 beat the CLI's 0.3 / 0.45
   0.045 loss was a change in what the rule means. Borrowed wordings lose about 0.03 (one split's interval
   excludes 0). The false-alarm half of the prediction holds for every set (2.3–3.7×). For users, wording
   mostly moves the cut-offs (more `review` on clean code), not Clef's ranking.
+- **Re-score (2026-10-21, wording gold extended to all 511 newer semantic files; `wordings.ts --origin
+  real`, 451 real files)**: terse dev 0.863 → 0.866 [−0.014, +0.019], test 0.870 → 0.864 [−0.024,
+  +0.013]; style-guide dev 0.863 → 0.835 [−0.045, −0.012], test 0.870 → 0.835 [−0.052, −0.017];
+  agents-md dev 0.867 → 0.845 [−0.038, −0.005], test 0.874 → 0.851 [−0.040, −0.006]. False alarms 7–8%
+  → 12–18%; violations in each set's gold +23–41%. Terse conclusion holds with narrower intervals; the
+  borrowed-wording loss is now outside noise on both splits, so borrowed rules cost ranking quality,
+  not only cut-off shifts. Labeling: 1,533 Claude and 1,533 gpt-6.1-sol requests, 4,246 adjudications.
 
 ## H14: memorization, retested
 
@@ -689,5 +696,8 @@ grown corpus the dev-tuned file cut-offs 0.275 / 0.375 beat the CLI's 0.3 / 0.45
   `run.ts` scoring moved to `evals/scoring.ts`; the 1,555 cases scored before reproduce exactly.
   Kernel code: `evals/.cache/research/pipeline.py` and `pipeline-session.py` (every cell in run order);
   outputs in `evals/.cache/research/{new-labels,new-adjudications,plants-new,growth}/`.
+- 2026-10-21: wording gold extended to the 511 sampled, mined and LLM-planted semantic files (same
+  protocol, `modelRoles.slow` mapped for the session and restored). `wordings.ts` gained `--origin`.
+  Clef: 4,647 new cache entries, 19.0M input tokens, about $4.57.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

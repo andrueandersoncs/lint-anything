@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 - **Comment only when context is not readily apparent from the code.**
   Generic purpose explanation do not qualify: `# Log for debugging` above `logging.debug(...)`,
   `# Validate for safety`, `# Retry for reliability` and similar provide no useful information.

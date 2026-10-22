@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 - **Global Variables**: Avoid new global variables. Pass dependencies explicitly through function parameters.
 
     **Allowed:**

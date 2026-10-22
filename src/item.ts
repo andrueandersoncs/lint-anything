@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect"
 
-const Located = Schema.Struct({
+const ItemFields = Schema.Struct({
   id: Schema.NonEmptyString,
   text: Schema.NonEmptyString,
   path: Schema.optional(Schema.NonEmptyString),
@@ -8,34 +8,20 @@ const Located = Schema.Struct({
     Schema.makeFilter(([start, end]) => (1 <= start && start <= end) || "lines must be [start, end] with 1 <= start <= end")
   ))
 })
-const located = new Set(Object.keys(Located.fields))
 
 /**
- * One thing to judge against a rule: an item a policy's selector picked out, or one of a policy's
- * examples. `id` names it in findings; `path` and `lines` (1-based, inclusive) locate it. Every other
- * field is evidence: a named string the judge reads alongside the item, in the order it was written.
+ * One thing a selector picked out to judge. `text` is everything Clef reads for it, context included; `id`
+ * names it in findings; `path` and `lines` (1-based, inclusive) say where findings point.
  */
-export interface Item extends Schema.Schema.Type<typeof Located> {
-  readonly evidence: ReadonlyArray<readonly [name: string, value: string]>
-}
+export type Item = Schema.Schema.Type<typeof ItemFields>
 
-/** Reads an item from a parsed JSON value; fails with a message saying what is wrong with it. */
-export const toItem = Effect.fn("toItem")(function*(value: unknown) {
+/** Parses one JSONL line into an item; fails with a message saying what is wrong with it. */
+export const parseItem = Effect.fn("parseItem")(function*(line: string) {
+  const value = yield* Effect.try({ try: (): unknown => JSON.parse(line), catch: () => "not valid JSON" })
   if (typeof value !== "object" || value === null || Array.isArray(value)) return yield* Effect.fail("not an object")
-  const fields = yield* Schema.decodeUnknownEffect(Located)(value).pipe(Effect.mapError((error) => error.message))
-  const evidence: Array<readonly [string, string]> = []
-  for (const [name, field] of Object.entries(value)) {
-    if (located.has(name)) continue
-    if (typeof field !== "string") return yield* Effect.fail(`evidence field ${name} must be a string`)
-    evidence.push([name, field])
+  const unknown = Object.keys(value).filter((key) => !(key in ItemFields.fields))
+  if (unknown.length > 0) {
+    return yield* Effect.fail(`unknown field ${unknown.join(", ")}; put what Clef should read in text`)
   }
-  return { ...fields, evidence } satisfies Item
+  return yield* Schema.decodeUnknownEffect(ItemFields)(value).pipe(Effect.mapError((error) => error.message))
 })
-
-/** Parses one JSONL line into an item. */
-export const parseItem = (line: string) =>
-  Effect.try({ try: (): unknown => JSON.parse(line), catch: () => "not valid JSON" }).pipe(Effect.flatMap(toItem))
-
-/** The item as one JSONL line, evidence fields after the located ones. */
-export const formatItem = ({ evidence, ...located }: Item) =>
-  JSON.stringify({ ...located, ...Object.fromEntries(evidence) })

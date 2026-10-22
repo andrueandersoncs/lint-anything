@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 # Comments
 
 Comments that contradict the code are worse than no comments.  Always

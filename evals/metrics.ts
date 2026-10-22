@@ -13,7 +13,8 @@ export interface Thresholds {
   readonly threshold: number
 }
 
-// Production verdict cut-offs (src/lint.ts and the CLI default).
+// Production verdict cut-offs (src/lint.ts): they apply to each item, and a file's verdict for a policy is
+// that of its highest-scoring item.
 export const productionThresholds: Thresholds = { floor: reviewFloor, threshold: defaultThreshold }
 
 export type Verdict = "pass" | "review" | "violation"
@@ -213,7 +214,7 @@ export const pairedInterval = (
     if (!Number.isNaN(delta)) deltas.push(delta)
   }
   deltas.sort((a, b) => a - b)
-  return [deltas[Math.floor(deltas.length * 0.025)]!, deltas[Math.floor(deltas.length * 0.975)]!]
+  return deltas.length === 0 ? [Number.NaN, Number.NaN] : [deltas[Math.floor(deltas.length * 0.025)]!, deltas[Math.floor(deltas.length * 0.975)]!]
 }
 
 /** 95% bootstrap interval of `metric(cases)`, resampling files; NaN resamples (e.g. no violation drawn) are dropped. */

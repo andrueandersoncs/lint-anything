@@ -70,6 +70,13 @@ Clear semantic violations per policy:
 | H13 | correctness | With gold labeled against each wording, real-world wording still costs quality | refuted for terse ranking (±0.02 on 451 real files); borrowed wordings −0.02 to −0.035, outside noise; false alarms ×~2 |
 | H14 | correctness | Memorization, retested with recent commits and small repos | null not rejected; intervals ±0.04 |
 | H15 | completeness | Size effect under production, retested on the grown corpus | supported: −0.061 [−0.095, −0.023] |
+| H16 | correctness | Production's misses come from a few policies and from comparing scores across policies (diagnostic) | supported: one policy (comments) is 30% of misses; pooled AUROC 0.863 vs. 0.898 within policy; no excerpt-aggregation rule beats `max` |
+| H17 | correctness | A per-policy score offset, found without corpus labels, recovers the within-policy ranking | content-free and unlabeled offsets: refuted. Offsets from ≥ 3 labeled example files per class: +0.03 AUROC on production, only ≥ 5 on the H19 shape |
+| H18 | correctness | Other request shapes or models rank violations better (sweep, grown corpus) | refuted: clef-omni −0.08, one policy per request −0.013; line numbers, outline, 2 KB excerpts, no "complete" within noise; averaging two policy orders +0.01 at 2× cost |
+| H19 | correctness | The rule in the state and the file's excerpts as questions ranks violations better | supported on dev and test: AUROC +0.036 to +0.041 with 4 KB excerpts, +0.043 to +0.051 with 1 KB; holds for terse wording and control rules; 3.5–4.7× cost |
+| H20 | correctness | Selectors still beat whole-file judging on the grown corpus | supported for comments (0.85 → 0.95 dev, 0.79 → 0.94 test); refuted for magic values (its selector reaches 2/3 of the gold violation lines); test names mixed (16–20 violations) |
+| H21 | correctness | Every policy judged through a selector built for its rule beats judging every rule against the same excerpts | supported on test: file AUROC 0.913 → 0.930 [+0.006, +0.028]; at 14% false alarms 69% caught vs. 55%; loses for no-flag-parameters and names-match-behavior; reworded rules lose 0.04–0.07 through selectors built for other text |
+| H22 | correctness | With nothing added by the CLI, a policy can reproduce the excerpt CLI (H19) exactly in score, so a rule's own selector has it as a floor | supported: excerpt policies 0.918 / 0.914 vs. H19 0.914 / 0.913 (dev / test, intervals include 0); rule selectors beat them by +0.016 to +0.019 pooled; per rule, no-flag-parameters loses on test |
 
 Order of work: H1 (sizes every later sample), H2 (gates any labeling at scale), then H3/H4, H5, H7, H6,
 H9, H8. Corpus growth (2026-10-21): H10, H11 while labeling new files, H12 while planting, then H13, H14, H15
@@ -662,6 +669,230 @@ are now the CLI's.
   is the one H9 found: clean cases in large files score higher (more excerpts, highest score kept). The
   middle bin is lowest, so the effect is not monotonic in size.
 
+## Identification rates (H16–H20)
+
+Production surfaces 63% of clear violations on test (review or violation) and calls 42% `violation`, at 10%
+of clean cases not passed. H16–H20 look for what would raise those rates. These five were exploratory: no
+prediction was written before running them, so read them as a search on dev with test as confirmation.
+Metric: AUROC, and TPR@k%: the share of clear violations scored above the score that flags k% of clean
+cases (the caught rate at a fixed false-alarm rate, free of any one pair of cut-offs). Real files,
+semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
+`evals/.cache/research/ident/` (`shapes.ts`, `aggregate.ts`, `calibrate.ts`, `context-cal.ts`,
+`examples-cal.ts`, `selectors.ts`, `matched.ts`, `verdicts.ts`, `out/`).
+
+## H16: where production's misses are
+
+- **Question**: which policies hold the misses, and is the excerpt aggregation (`max`) losing them?
+- **Result** (cached production answers, 0 requests): at the score that flags 10% of clean cases (0.273
+  dev, 0.279 test), TPR is 0.571 dev / 0.628 test.
+  - Misses concentrate: comments-explain-why misses 95% of its violations on both splits and is 30–31% of
+    all misses; then no-duplicated-knowledge (13%), intent-revealing-names (12–14%), magic values (10% on
+    dev). Comments violations average 0.176, below the clean mean of four other policies
+    (single-responsibility clean cases average 0.221).
+  - Pooled AUROC 0.863 dev / 0.870 test vs. violation-weighted within-policy AUROC 0.898 / 0.900: a
+    third of the ranking loss is policies sitting on different score scales under one pair of cut-offs.
+  - Aggregation over excerpts: `max` is best or tied. Mean −0.06, noisy-OR −0.007 to −0.023, logit `max`
+    minus a penalty per excerpt −0.03 to −0.09, top-2 mean −0.003 to −0.006; `max` + ½ second-highest
+    +0.003 dev [−0.001, +0.008], +0.008 test [+0.004, +0.012]. In excerpted files the highest excerpt
+    holds the gold lines in 69–70% of violations.
+  - Duplicated knowledge whose copies sit in different excerpts scores like duplication within one
+    excerpt (dev: 0.312, n 39, vs. 0.318, n 27), so excerpting is not what hides it.
+- **Conclusion**: two levers, ranked: per-policy scale (worth up to +0.035 AUROC if solved) and comments
+  (a third of misses). Aggregation is not one.
+
+## H17: per-policy offsets
+
+- **Question**: can each policy's score scale be corrected without the corpus's labels?
+- **Result**: offsets in logit space, per policy, applied before pooling.
+
+  | Offset source | AUROC dev | TPR@10% dev | AUROC test | TPR@10% test |
+  |---|---|---|---|---|
+  | none (production) | 0.863 | 0.571 | 0.870 | 0.628 |
+  | Clef on an empty file (contextual calibration) | 0.819 [−0.061, −0.030] | 0.525 | 0.826 [−0.057, −0.031] | 0.536 |
+  | Clef on "N/A" | 0.833 | 0.534 | 0.825 | 0.533 |
+  | other split's unlabeled scores, 90th percentile | 0.869 [−0.004, +0.017] | 0.630 | 0.878 [−0.001, +0.018] | 0.635 |
+  | other split's clean cases, 90th percentile (labels) | 0.895 [+0.023, +0.040] | 0.697 | 0.905 [+0.028, +0.043] | 0.683 |
+  | 3 labeled files per class from the other split (mean of 30 draws) | 0.895 | 0.683 | 0.901 | 0.683 |
+  | 5 per class | 0.903 | 0.706 | 0.905 | 0.700 |
+
+  - Content-free answers don't track the policy's clean-score level (descriptive-test-names: 0.41 on an
+    empty file, clean 90th percentile 0.32–0.35).
+  - On the H19 shape (1 KB excerpts), 2–3 examples per class hurt on average (AUROC 0.913 → 0.901–0.913)
+    and 5 help (0.914 → 0.924 dev, 0.913 → 0.925 test, 24–27 of 30 draws).
+- **Conclusion**: only labels fix the scale. A policy's `examples` could carry them (score the examples,
+  center the policy between its clean and violating examples), but it needs about 5 example files per
+  class to be safe, and gains less once H19's shape narrows the scale gap.
+
+## H18: other request shapes and models
+
+- **Question**: does any cheap change to production's request rank better? (Dev, 239 real files.)
+- **Result**:
+
+  | Variant | AUROC dev | TPR@10% dev | $ / 1k files |
+  |---|---|---|---|
+  | production | 0.863 | 0.571 | $4.56 |
+  | `clef-omni` (new 2026-10-09, $0.15 / M tokens) | 0.784 [−0.098, −0.059] | 0.481 | $2.74 |
+  | one policy per request (`batch=1`) | 0.850 [−0.024, −0.003] | 0.545 | $18.97 |
+  | 2 KB excerpts | 0.864 [−0.007, +0.010] | 0.612 | – |
+  | line numbers in the excerpt | 0.866 [−0.004, +0.010] | 0.581 | – |
+  | the whole file's top-level lines as an `outline` | 0.861 [−0.009, +0.004] | 0.584 | – |
+  | criteria without "complete" | 0.858 [−0.011, +0.001] | 0.571 | – |
+  | policies in reverse order | 0.871 [−0.001, +0.017] | 0.614 | $4.56 |
+  | mean of production and reverse order | 0.873 [+0.005, +0.015] | 0.599 | $9.12 |
+
+  - Reversing the order moves each policy's mean logit by −0.16 to +0.37 with no trend by position, so
+    order adds noise rather than a positional bias; averaging two orders removes some of it.
+- **Conclusion**: refuted. Nothing cheap beats production by more than +0.01 AUROC; clef-omni is clearly
+  worse.
+
+## H19: the rule in the state, excerpts as questions
+
+- **Question**: production puts the excerpt in the state and asks one question per rule. Selector items
+  use the reverse (the rule in the state, one question per item) and rank far better (README). Does the
+  reverse shape help whole-file policies?
+- **Method**: per file and policy, one request: state = guidance ("Each question shows one excerpt of a
+  file with its path and line range. Decide whether that excerpt contains at least one violation of the
+  rule below.") + the rule; one `noul` question per excerpt (path with line range, then the text; the
+  production criteria); a policy's score is its highest excerpt. Excerpts cut by `excerpts()`.
+- **Result**:
+
+  | Variant | AUROC dev | TPR@10% dev | AUROC test | TPR@10% test | $ / 1k files (dev / test) |
+  |---|---|---|---|---|---|
+  | production | 0.863 | 0.571 | 0.870 | 0.628 | $4.56 / $4.33 |
+  | rule in state, 4 KB excerpts | 0.904 [+0.029, +0.052] | 0.673 | 0.906 [+0.024, +0.049] | 0.689 | $16.06 / $14.82 |
+  | 2 KB | 0.910 [+0.035, +0.059] | 0.684 | 0.910 [+0.027, +0.054] | 0.724 | $17.84 / $16.50 |
+  | 1 KB | 0.914 [+0.038, +0.063] | 0.704 | 0.913 [+0.030, +0.057] | 0.721 | $21.69 / $20.01 |
+  | 500 B | 0.916 [+0.039, +0.067] | 0.740 | – | – | $29.27 |
+  | 8 KB | 0.904 [+0.028, +0.053] | 0.661 | – | – | $15.21 |
+  | 4 KB, one request per excerpt | 0.891 [+0.017, +0.040] | 0.617 | – | – | $18.95 |
+
+  - 1 KB vs. 4 KB, paired: dev +0.010 [+0.003, +0.018], test +0.007 [+0.000, +0.014]. Judging a file's
+    excerpts together beats one request each: −0.013 [−0.019, −0.006].
+  - Within-policy AUROC rises 0.898 → 0.928–0.935, and with 4 KB excerpts 15 of 17 policies improve on
+    dev; comments caught at 10% false alarms goes from 4 to 26 of 82. The pooled-vs-within gap (H16)
+    stays about 0.02.
+  - Terse wording, against its own gold (1 KB): dev 0.866 → 0.894 [+0.018, +0.040], test 0.864 → 0.897
+    [+0.020, +0.045]. Control rules: dev 0.989 → 0.995 [−0.001, +0.016], test 0.979 → 0.985 [−0.004,
+    +0.015].
+  - Verdicts on test, cut-offs picked on dev so clean cases are flagged at production's rates (9.8% not
+    passed, 2.7% `violation`):
+
+    | Variant | Cut-offs | Caught | Surfaced | False alarms | Ambiguous → `review` | Verdict F1 |
+    |---|---|---|---|---|---|---|
+    | production | 0.275 / 0.375 | 42% | 63% | 10% | 27% | 0.533 |
+    | 4 KB | 0.407 / 0.589 | 43% | 70% | 10% | 29% | 0.538 |
+    | 1 KB | 0.478 / 0.615 | 46% | 72% | 10% | 22% | 0.535 |
+
+    With F1-tuned cut-offs instead (1 KB, 0.45 / 0.575): caught 55%, surfaced 78%, false alarms 14%,
+    F1 0.544 [−0.009, +0.036]. The gain is in surfacing (TPR@5–20%); at the strict `violation` rate
+    (about 3% of clean cases) it is +1 to +4 points, because the cases Clef ranks highest among the clean
+    are judgment calls (27 of the 80 highest clean test cases are single-responsibility).
+- **Conclusion**: supported, and the largest gain found: AUROC +0.04 to +0.05 on both splits and both
+  wordings, surfaced violations 63% → 70–72% at the same false-alarm rate, no loss on control rules.
+  The cost is the shape: every policy re-reads the file, so tokens scale with policies × file size
+  (3.5× production at 4 KB excerpts, 4.7× at 1 KB). Shipping it means re-tuning the file cut-offs
+  (both rise, to about 0.4–0.48 / 0.59–0.62) and one request per file and policy.
+
+## H20: selectors on the grown corpus
+
+- **Question**: the README's selector gains were measured on the 112-file corpus. Do they hold on 451
+  real files?
+- **Method**: the corpus selector sets (`selectors`, `selectors-evidence`), production item shape; a
+  file's score is its highest item score, mapped onto the file scale by the CLI's cut-off correspondence
+  (item 0.5 / 0.65 ↔ file 0.275 / 0.375), so pooled numbers compare fairly. 3,334 + 2,566 + 217 dev
+  items.
+- **Result**:
+
+  | Policy | AUROC dev: file → selector | AUROC test | Gold violation lines a selector item reaches (dev / test) |
+  |---|---|---|---|
+  | comments-explain-why | 0.850 → 0.949 | 0.788 → 0.942 | 97% / 95% |
+  | explain-magic-values | 0.905 → 0.863 | 0.894 → 0.825 | 67% / 66% |
+  | descriptive-test-names | 0.843 → 0.963 (20 violations) | 0.872 → 0.851 (16) | 88% / 100% |
+
+  Pooled real semantic with these three judged by selector: AUROC dev 0.863 → 0.894 [+0.021, +0.042],
+  test 0.870 → 0.891 [+0.011, +0.032]; TPR@10% 0.571 → 0.674 and 0.628 → 0.691.
+- **Conclusion**: a selector is worth it when it reaches nearly every violation (comments); the
+  magic-values selector reaches two thirds, so per-file judging beats it. For users: rules about
+  individual comments, names, or tests should be selector policies, and their selector must cover the
+  violation's lines.
+
+## Synthesis: raising identification rates
+
+1. **Change the file request shape (H19)**: the rule in the state and the file's excerpts as questions,
+   one request per file and policy, excerpts of 1–4 KB, cut-offs re-tuned on dev. +0.04 to +0.05 AUROC on
+   dev and test; at production's false-alarm rate it surfaces 70–72% of violations instead of 63%. It
+   costs 3.5–4.7× production's tokens ($15–22 per 1,000 files vs. $4.5) and changes no CLI surface.
+2. **Selector policies for item-shaped rules (H20)**: comments 0.79–0.85 → 0.94–0.95 AUROC. The CLI
+   already supports this; the gain depends on the selector reaching the violating lines.
+3. **Per-policy offsets from `examples` (H17)**: +0.03 AUROC on production with 3+ example files per
+   class, but needs 5 per class on the H19 shape and asks users for whole-file examples. Lowest priority.
+4. Not worth doing: other aggregation rules, clef-omni, one policy per request, line numbers, outlines,
+   wording of the criteria (H16, H18).
+
+## H21: a selector for every policy
+
+- **Context**: product decision (2026-10-22): there is no default unit of judgment; every policy declares
+  a `select` command. The excerpt path (H19) was removed from `src/`. Exploratory, no prediction written.
+- **Method**: each corpus policy got a selector built for its rule, designed on dev only by four parallel
+  agents (functions, module-level, snippets and errors, tests; steps in `evals/steps/`, structure via
+  ast-grep), measured with the item shape and a file's score as its highest item score (0 with no
+  items). Baseline: H19's 1 KB excerpt scores. Then confirmed once on test.
+- **Result**: real semantic, test: file AUROC 0.913 → 0.930 [+0.006, +0.028], TPR@10% 0.721 → 0.797
+  [+0.028, +0.120]; at the shipped cut-offs (0.5 / 0.65) caught 69%, surfaced 86%, false alarms 14% (H19
+  at its cut-offs: 55%, 78%, 14%), $14–17 per 1,000 files (H19: $20–22). Dev 0.914 → 0.939. All test
+  cases: F1 0.583 (H19: 0.571). Control rules 0.94–1.0. Per policy on test: minimal-public-surface
+  +0.072 [+0.020, +0.126]; no-flag-parameters −0.067 [−0.141, −0.003] (82% of clean items flagged);
+  names-match-behavior −0.072 [−0.160, +0.001]; protect-internal-state reaches 15 of 27 gold ranges.
+  Gold ranges reached: 98% dev, 96% test.
+  - Wording sets through the same selectors: AUROC −0.04 to −0.07 (terse 0.930 → 0.888 test, borrowed
+    0.859), false alarms about doubled; the selectors reach 98% of polished gold ranges on dev but 87–95%
+    of the reworded rules'. Under H19 the loss was at most 0.02.
+  - Dev F1 maximum is 0.6 / 0.775; kept 0.5 / 0.65: test F1 0.583 vs. 0.589, caught 74% vs. 55%.
+- **Conclusion**: supported. Units and computed evidence chosen per rule beat any one shared unit, and
+  cost less. A selector is part of its rule: a different rule text needs its own selector, which is the
+  user-facing consequence. Next: no-flag-parameters and names-match-behavior selectors, and
+  protect-internal-state coverage (all designed on dev; test exposed them).
+
+## H22: the earlier CLI as a policy
+
+- **Context**: owner direction (2026-10-22): selectors, context, and globs are one concept, and the design
+  must hold every earlier strategy, so it can never score below one. Exploratory, no prediction written.
+- **Step 1, the excerpt CLI through the item request** (dev, `evals/steps/excerpts.ts` reproducing H19's
+  cutter; `ablate.ts`): the item request of H21 (CLI guidance "item … location … context", item criteria,
+  `location:`/`item:` layout, policy file with frontmatter as the rule) scored 0.907 vs. H19's 0.914
+  [−0.013, −0.001]. Rebuilding H19's exact bodies from the same items gave 0.914 (cache hits), so the
+  items were right and the framing cost the gap. Ablations (dev AUROC): H19 framing with the frontmatter
+  0.910; item framing without the frontmatter 0.908; H19 framing without the frontmatter **0.919**; item
+  framing with H19 item text 0.906–0.909. Test: H19 framing without frontmatter 0.916 vs. 0.913.
+- **Design that follows**: the CLI adds nothing. The request's text is the policy body exactly as written;
+  each question is an item's text; optional `criteria` set what yes and no mean. Items are `{id, text,
+  path?, lines?}` (context goes into `text`); frontmatter is `select`, `criteria`, `limit` (globs,
+  `evidence` steps, `{{name}}`, and `examples` are gone: files are the selector's to pick, context and
+  examples are text). Corpus policies carry the earlier framing in their bodies; their selectors end in
+  `present.ts` (the old `location:`/`item:` layout). `evals/corpus/selectors-excerpts/` is H19 as policies.
+- **Result** (real semantic, file AUROC, paired over the same cases):
+
+  | Split | H19 | Excerpt policies | Rule selectors | Rule − excerpt policies | TPR@10%: excerpt → rule |
+  |---|---|---|---|---|---|
+  | dev | 0.914 | 0.918 [−0.002, +0.010] | 0.937 | +0.019 [+0.008, +0.029] | 0.707 → 0.828 |
+  | test | 0.913 | 0.914 [−0.005, +0.006] | 0.930 | +0.016 [+0.006, +0.027] | 0.702 → 0.801 |
+
+  - Per rule, choosing the rule selector only where its dev gain over the excerpt policy is outside noise
+    selects none (n is 4–82 violations per rule; test-behavior's interval starts at +0.000), which
+    forfeits the pooled gain. no-flag-parameters: dev 0.961 → 0.976, test 0.977 → 0.915 [−0.133,
+    −0.003].
+  - CLI run (`run.ts`, cut-offs 0.5 / 0.65): test caught 69%, surfaced 85%, false alarms 13%, $13.98 per
+    1,000 files. Dev F1 maximum 0.575 / 0.725 gives test F1 0.591 vs. 0.580 but catches 63% vs. 73%
+    (all cases); kept 0.5 / 0.65.
+  - Wording sets through the corpus selectors: −0.03 to −0.05 (style-guide −0.03, terse and agents-md
+    −0.045 to −0.05); without the frontmatter in the request, about 0.02 less loss than H21.
+  - history.ts: today's date on each item no longer helps (0.877 → 0.859, within noise); computed age
+    still decides it (1.000). examples.ts: examples in the body improve Brier on both splits (−0.006 to
+    −0.009) and leave AUROC unchanged.
+- **Conclusion**: supported. The earlier CLI is a policy, scoring what it scored, so the design contains
+  it; selectors built per rule beat it pooled. Per-rule regressions (no-flag-parameters) are selector
+  quality, found only on held-out data; the excerpt policy is the fallback a tuning agent compares against.
+
 ---
 
 ## Run log
@@ -702,5 +933,21 @@ are now the CLI's.
 - 2026-10-21: file cut-offs changed to 0.275 / 0.375 (`src/lint.ts`). Re-scored from cache, real semantic:
   verdict F1 0.541 dev / 0.533 test, caught 38% / 42%, false alarms 10% / 10%; wording tables re-scored
   with `wordings.ts --origin real`. No new requests.
+- 2026-10-21: identification-rate study (H16–H20). Clef: 74,769 new cache entries, 244.3M input tokens
+  (`clef`) plus 4.4M (`clef-omni`), about $59.30. Most of it is H19's sweep (one request per file and
+  policy) on dev and test, terse wording, and control rules.
+- 2026-10-21: H19 shipped. `src/clef.ts` judges files with the rule in the state and 1 KB excerpts as
+  questions; file cut-offs 0.45 / 0.575 (dev F1 maximum, all cases). `evals/strategy.ts` gained `shape`
+  (`rule` | `file`; the earlier production is `shape=file,chunk=4000`). Test, all cases: F1 0.571 vs.
+  0.558; real semantic: AUROC 0.913, caught 55%, surfaced 78%, false alarms 14%. Wording sets re-scored
+  (`wordings.ts --origin real`): terse −0.016 to −0.020 AUROC, borrowed wordings within noise.
+- 2026-10-22: selectors required for every policy (H21). `src/` lost whole-file judging; `evals/run.ts`
+  rewritten around selectors (strategy.ts, scoring.ts, items.ts, compare.ts removed); wording files hold
+  only rule bodies. Clef: 34,520 new cache entries, 164.5M input tokens, about $39.47.
+- 2026-10-22: one concept (H22). Frontmatter is `select`, `criteria`, `limit`; the body is the request's
+  text; items are id, text, path, lines. Corpus globs moved into selectors (a POSIX `case` filter, checked
+  to accept exactly each policy's labeled files); `excerpts.ts`, `present.ts`, and the excerpt policies
+  added; `selectors-evidence` and `selectors-evidence-constants` removed. Clef: 73,810 new cache entries,
+  341.8M input tokens, about $82.04.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

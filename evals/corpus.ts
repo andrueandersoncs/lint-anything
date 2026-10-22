@@ -1,9 +1,17 @@
 import { Effect } from "effect"
-import { matches, parsePolicy, type Policy } from "../src/policy.ts"
+import { parsePolicy, type Policy } from "../src/policy.ts"
 
 export const corpusDirectory = `${import.meta.dir}/corpus`
 
-/** `ambiguous`: independent labelers could not agree under the policy text; excluded from scoring. */
+// Corpus selectors call helper steps as `bun "$EVAL_STEPS/<step>.ts"` (see evals/steps/), and the repo's dev
+// tools (such as `ast-grep`) by name.
+process.env.EVAL_STEPS = `${import.meta.dir}/steps`
+process.env.PATH = `${import.meta.dir}/../node_modules/.bin:${process.env.PATH}`
+
+/**
+ * `ambiguous`: independent labelers could not agree under the policy text. Scored at file level, where the
+ * ideal verdict is `review`; excluded from AUROC and from item labels.
+ */
 export type Label = "violates" | "complies" | "not-applicable" | "ambiguous"
 /** `semantic` policies are the intended use; `control` policies are mechanical, kept for comparison. */
 export type Category = "semantic" | "control"
@@ -63,7 +71,7 @@ export interface FileRecord {
   readonly labels: Readonly<Record<string, Gold>>
   /**
    * Gold for the same semantic policies worded differently: `wordings[set][policy]` is labeled against
-   * `corpus/wordings/<set>/<policy>.md`. A file carries a set for every policy of that set its path matches.
+   * `corpus/wordings/<set>/<policy>.md`. A file carries a set for every policy of that set it has a label for.
    */
   readonly wordings?: Readonly<Record<string, Readonly<Record<string, Gold>>>>
 }
@@ -73,7 +81,7 @@ export interface CorpusFile extends FileRecord {
   readonly source: string
 }
 
-/** One scored unit: a file judged against one policy whose globs match its path. */
+/** One scored unit: a file judged against one policy it has a label for (the labels say which policies apply). */
 export interface Case {
   readonly id: string
   readonly file: CorpusFile
@@ -128,32 +136,83 @@ export const verifyUpstream = async (files: ReadonlyArray<CorpusFile>): Promise<
   return problems
 }
 
-const parseDirectory = async (directory: string): Promise<Array<Policy>> => {
-  const names = (await Array.fromAsync(new Bun.Glob("**/*.md").scan(directory))).sort()
-  return Promise.all(names.map(async (name) =>
-    Effect.runSync(parsePolicy(name.slice(0, -".md".length), await Bun.file(`${directory}/${name}`).text()))
-  ))
+// The eval corpus's convention: a policy body is framing for Clef, then a line that is exactly `Rule:`, then
+// the rule text, which is what gold labels judge against.
+const ruleLine = /^Rule:\r?\n/m
+
+/** A policy body split at its `Rule:` line: the framing (through that line) and the rule text after it. */
+const splitRule = (policy: Policy) => {
+  const match = ruleLine.exec(policy.body)
+  if (match === null) throw new Error(`${policy.name}: the body needs a line that is exactly "Rule:" before the rule text`)
+  const end = match.index + match[0].length
+  return { framing: policy.body.slice(0, end), rule: policy.body.slice(end) }
 }
 
-const frontmatterOf = (policy: Policy) => /^---\r?\n(.*?)\r?\n---/s.exec(policy.source)?.[1]
+/** The rule text of an eval policy: everything after the first line that is exactly `Rule:`. */
+export const ruleText = (policy: Policy) => splitRule(policy).rule
 
-/** Rule-wording sets: one directory per set under `corpus/wordings`. */
-export const loadWordings = async (): Promise<Map<string, Array<Policy>>> => {
+/** The policy with its rule text replaced, framing, selector, and criteria kept. */
+export const withRuleText = (policy: Policy, rule: string): Policy => ({ ...policy, body: `${splitRule(policy).framing}${rule}` })
+
+// The item framing and criteria the corpus policies use; ad hoc eval policies use them too, so their
+// requests ask what the corpus policies ask.
+const itemFraming = "Each question shows one item with its location and any context. Decide whether that item contains at " +
+  "least one violation of the rule below.\nReturn a calibrated probability that the answer is yes."
+const itemCriteria = {
+  true: "The item contains at least one complete violation of the rule.",
+  false: "The item follows the rule, or the rule governs nothing in it."
+}
+
+/**
+ * An eval policy built in code, parsed as the CLI parses policies: the corpus framing, a `Rule:` line, and
+ * `rule`, with the corpus item criteria. `select` should end in `bun "$EVAL_STEPS/present.ts"`, which writes
+ * each item's location and context into its text as the corpus selectors do.
+ */
+export const adHocPolicy = (name: string, select: string, rule: string, limit?: { readonly max: number; readonly per: "file" | "run" }) =>
+  Effect.runSync(parsePolicy(name, `---\n${Bun.YAML.stringify({ select, criteria: itemCriteria, ...(limit === undefined ? {} : { limit }) }, null, 2)}\n---\n` +
+    `${itemFraming}\n\nRule:\n${rule}\n`))
+
+const parseDirectory = async (directory: string): Promise<Array<Policy>> => {
+  const names = (await Array.fromAsync(new Bun.Glob("**/*.md").scan(directory))).sort()
+  return Promise.all(names.map(async (name) => {
+    const policy = Effect.runSync(parsePolicy(name.slice(0, -".md".length), await Bun.file(`${directory}/${name}`).text()))
+    splitRule(policy)
+    return policy
+  }))
+}
+
+const frontmatterPattern = /^---\r?\n.*?\r?\n---(?:\r?\n|$)/s
+
+/**
+ * Rule-wording sets: one directory per set under `corpus/wordings`, each file only rule text for the corpus
+ * policy of the same name. A reworded policy is the corpus policy with its rule text replaced, so the two
+ * differ only in rule text.
+ */
+export const loadWordings = async (defaults?: ReadonlyArray<Policy>): Promise<Map<string, Array<Policy>>> => {
+  const policies = defaults ?? await parseDirectory(`${corpusDirectory}/policies`)
   const directory = `${corpusDirectory}/wordings`
-  const sets = new Set((await Array.fromAsync(new Bun.Glob("*/**/*.md").scan(directory))).map((name) => name.split("/")[0]!))
+  const files = (await Array.fromAsync(new Bun.Glob("*/**/*.md").scan(directory))).sort()
   const wordings = new Map<string, Array<Policy>>()
-  for (const set of [...sets].sort()) wordings.set(set, await parseDirectory(`${directory}/${set}`))
+  for (const file of files) {
+    const [set, ...rest] = file.split("/")
+    const name = rest.join("/").slice(0, -".md".length)
+    const original = policies.find((policy) => policy.name === name)
+    if (original === undefined) throw new Error(`wording ${set}: ${name} is not a corpus policy`)
+    const rule = await Bun.file(`${directory}/${file}`).text()
+    if (frontmatterPattern.test(rule)) throw new Error(`wording ${set}: ${name} must hold only the rule text`)
+    wordings.set(set!, [...(wordings.get(set!) ?? []), withRuleText(original, rule)])
+  }
   return wordings
 }
 
 /**
  * Policies in `corpus/policies`, parsed exactly as the CLI parses them. With `wording`, each policy that
- * set rewords is replaced by its `corpus/wordings/<wording>` text (same name and globs).
+ * set rewords is replaced by its `corpus/wordings/<wording>` text (same name and selector).
  */
 export const loadPolicies = async (wording?: string): Promise<Array<Policy>> => {
   const policies = await parseDirectory(`${corpusDirectory}/policies`)
   if (wording === undefined) return policies
-  const reworded = (await loadWordings()).get(wording)
+  const reworded = (await loadWordings(policies)).get(wording)
   if (reworded === undefined) throw new Error(`no wording set ${wording} in ${corpusDirectory}/wordings`)
   const byName = new Map(reworded.map((policy) => [policy.name, policy]))
   return policies.map((policy) => byName.get(policy.name) ?? policy)
@@ -171,8 +230,8 @@ const checkGold = (where: string, gold: Gold, lineCount: number, problems: Array
 }
 
 /**
- * Loads every slice and checks it: each file exists, carries exactly one label per policy whose globs
- * match its path (and per reworded policy, for each wording set it carries), pairs are reciprocal with the
+ * Loads every slice and checks it: each file exists, its labels name corpus policies (and each wording set
+ * it carries labels exactly the reworded policies it has labels for), pairs are reciprocal with the
  * same path, and provenance fits the origin. Throws one error listing every problem. With `wording`, cases
  * are judged against that set's text and gold, and only files labeled for that set are loaded.
  */
@@ -182,15 +241,8 @@ export const loadCorpus = async (
   const defaults = await loadPolicies()
   const policies = await loadPolicies(options.wording)
   const byName = new Map(policies.map((policy) => [policy.name, policy]))
-  const wordings = await loadWordings()
+  const wordings = await loadWordings(defaults)
   const problems: Array<string> = []
-  for (const [set, reworded] of wordings) {
-    for (const policy of reworded) {
-      const original = defaults.find((candidate) => candidate.name === policy.name)
-      if (original === undefined) problems.push(`wording ${set}: ${policy.name} is not a corpus policy`)
-      else if (frontmatterOf(original) !== frontmatterOf(policy)) problems.push(`wording ${set}: ${policy.name} frontmatter differs`)
-    }
-  }
   const files: Array<CorpusFile> = []
   for (const name of (await Array.fromAsync(new Bun.Glob("*.jsonl").scan(corpusDirectory))).sort()) {
     const slice = name.slice(0, -".jsonl".length)
@@ -222,13 +274,10 @@ export const loadCorpus = async (
   const cases: Array<Case> = []
   const loaded: Array<CorpusFile> = []
   for (const file of files) {
-    const expected = defaults.filter((policy) => matches(policy, file.path)).map((policy) => policy.name)
-    const labelled = Object.keys(file.labels)
-    for (const name of expected.filter((name) => !labelled.includes(name))) {
-      problems.push(`${file.id}: no label for matching policy ${name}`)
-    }
-    for (const name of labelled.filter((name) => !expected.includes(name))) {
-      problems.push(`${file.id}: label for ${name}, whose globs do not match ${file.path}`)
+    // A file's labels name the policies that apply to it; each must be a corpus policy.
+    const expected = Object.keys(file.labels)
+    for (const name of expected.filter((name) => !defaults.some((policy) => policy.name === name))) {
+      problems.push(`${file.id}: label for ${name}, which is not a corpus policy`)
     }
     if (options.requireSplits && file.split !== "dev" && file.split !== "test") {
       problems.push(`${file.id}: split must be dev or test`)
@@ -293,10 +342,11 @@ export const loadCorpus = async (
         problems.push(`${file.id}: labels for unknown wording set ${set}`)
         continue
       }
-      const wanted = reworded.filter((policy) => matches(policy, file.path)).map((policy) => policy.name)
+      // A set labels every policy it rewords that applies to the file.
+      const wanted = reworded.filter((policy) => expected.includes(policy.name)).map((policy) => policy.name)
       for (const name of wanted.filter((name) => gold[name] === undefined)) problems.push(`${file.id}: no ${set} label for ${name}`)
       for (const name of Object.keys(gold).filter((name) => !wanted.includes(name))) {
-        problems.push(`${file.id}: ${set} label for ${name}, which that set does not reword for ${file.path}`)
+        problems.push(`${file.id}: ${set} label for ${name}, which that set does not reword or which does not apply to the file`)
       }
       for (const [name, value] of Object.entries(gold)) checkGold(`${file.id} ${set} ${name}`, value, lineCount, problems)
     }

@@ -4,11 +4,10 @@ import { Config, Context, Effect, flow, Layer, Ref, Result, Runtime, Schedule, S
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 import type { Item } from "./item.ts"
 import type { Policy } from "./policy.ts"
-import type { SourceFile } from "./source.ts"
 
 export type Model = "clef" | "clef-flash"
 
-/** Probability that a file or selector item violates a policy. */
+/** Probability that a selector item violates a policy. */
 export interface Judgment {
   readonly violates: number
 }
@@ -31,53 +30,6 @@ export const maxRequestBytes: Readonly<Record<Model, number>> = { clef: 64_000, 
 // Clef takes at most 64 questions per request.
 const maxQuestions = 64
 
-// The request shape below won the eval suite's sweeps (evals/, see README): each file is judged as
-// excerpts of at most `excerptBytes`, each excerpt sent once with short guidance and one yes/no question
-// per policy (with explicit criteria); a policy's score is its highest across the excerpts.
-const guidance =
-  "Decide whether `file`, read in light of `path`, contains at least one violation of the rule in each question.\n" +
-  "Return a calibrated probability that the answer is yes."
-
-/** Largest excerpt Clef judges at once. Semantic violations are local, and long files dilute them. */
-export const excerptBytes = 4000
-
-/**
- * Cuts a file into consecutive excerpts of at most `maxBytes`, preferring cuts before top-level
- * declarations, then before any line that follows a blank line. Each excerpt's path names the lines it
- * holds. A file within `maxBytes` is returned whole.
- */
-export const excerpts = (file: SourceFile, maxBytes: number): ReadonlyArray<SourceFile> => {
-  if (Buffer.byteLength(file.source) <= maxBytes) return [file]
-  const lines = file.source.split("\n")
-  const afterBlank = (index: number) => index > 0 && lines[index - 1]!.trim() === "" && lines[index]!.trim() !== ""
-  const topLevel = (index: number) => afterBlank(index) && !/^[\s})\]]/.test(lines[index]!)
-  const result: Array<SourceFile> = []
-  for (let start = 0; start < lines.length;) {
-    let end = start
-    let bytes = 0
-    while (end < lines.length && bytes + Buffer.byteLength(lines[end]!) + 1 <= maxBytes) {
-      bytes += Buffer.byteLength(lines[end]!) + 1
-      end++
-    }
-    if (end < lines.length) {
-      const cutAt = (test: (index: number) => boolean) => {
-        for (let index = end; index > start; index--) if (test(index)) return index
-        return -1
-      }
-      const cut = [cutAt(topLevel), cutAt(afterBlank)].find((index) => index > start)
-      end = cut ?? Math.max(end, start + 1)
-    }
-    result.push({ path: `${file.path} (lines ${start + 1}-${end} of ${lines.length})`, source: lines.slice(start, end).join("\n") })
-    start = end
-  }
-  return result
-}
-
-const criteria = {
-  true: "The file contains at least one complete violation of the rule.",
-  false: "The file follows the rule, or the rule governs nothing in it."
-}
-
 const Noul = Schema.Struct({
   noul: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))
 })
@@ -88,19 +40,6 @@ const ClefResponse = Schema.Struct({
     answers: Schema.Record(Schema.String, Noul)
   })
 })
-
-/**
- * The question id for a policy: its name with characters Clef rejects replaced by `.`, capped at 100
- * characters, and suffixed `.2`, `.3`, … when another question in the request already has it.
- */
-const questionId = (policy: Policy, taken: ReadonlySet<string>) => {
-  const base = policy.name.replace(/[^A-Za-z0-9_.-]/g, ".")
-  for (let n = 1;; n++) {
-    const suffix = n === 1 ? "" : `.${n}`
-    const id = base.slice(0, 100 - suffix.length) + suffix
-    if (!taken.has(id)) return id
-  }
-}
 
 const serialize = (id: string, question: object) => {
   const text = `${JSON.stringify(id)}:${JSON.stringify(question)}`
@@ -162,45 +101,19 @@ const pack = <A>(
   return { requests, oversized }
 }
 
-/** The request text and one policy's question, for judging an excerpt (or whole file). */
-const fileState = (file: SourceFile) => `${guidance}\n\npath: ${file.path}\n\nfile:\n${file.source}`
-const fileQuestion = (policy: Policy) => ({ type: "noul", instructions: `Rule:\n${policy.source}`, criteria })
+// Nothing is added to what the policy says: the request's text is the policy body, each question is an
+// item's text, and the policy's criteria (if any) say what yes and no mean. Packing a policy's items as
+// questions of one request won the eval suite's sweep (README, Evals); one request per item cost 2.5×.
+const itemState = (policy: Policy) => policy.body
+const itemQuestion = (policy: Policy, item: Item) =>
+  ({ type: "noul", instructions: item.text, ...(policy.criteria === undefined ? {} : { criteria: policy.criteria }) })
 
 /**
- * Plans the requests that judge one excerpt (or whole file) against `policies`: the text once per
- * request and one question per policy.
- */
-export const planRequests = (model: Model, file: SourceFile, policies: ReadonlyArray<Policy>) =>
-  pack(model, fileState(file), policies, (policy, taken) => serialize(questionId(policy, taken), fileQuestion(policy)))
-
-// Selector items: the eval suite's item sweep (evals/items.ts, see README) chose this shape. The rule goes
-// in the state once and each item is one question; one request per item scored worse and cost 2.5×.
-const itemGuidance = "Each question shows one item with its location and any context. Decide whether that item " +
-  "contains at least one violation of the rule below.\nReturn a calibrated probability that the answer is yes."
-
-export const itemCriteria = {
-  true: "The item contains at least one complete violation of the rule.",
-  false: "The item follows the rule, or the rule governs nothing in it."
-}
-
-/** An item as the judge reads it: where it is, each non-empty evidence field under its name, then the item. */
-export const renderItem = (item: Item) =>
-  [
-    `location: ${item.path ?? item.id}${item.lines === undefined ? "" : ` (lines ${item.lines[0]}-${item.lines[1]})`}`,
-    ...item.evidence.flatMap(([name, value]) => (value === "" ? [] : [`${name}:\n${value}`])),
-    `item:\n${item.text}`
-  ].join("\n\n")
-
-/** The request text and one item's question, for judging a selector's items against a policy. */
-const itemState = (policy: Policy) => `${itemGuidance}\n\nRule:\n${policy.source}`
-const itemQuestion = (item: Item) => ({ type: "noul", instructions: renderItem(item), criteria: itemCriteria })
-
-/**
- * Plans the requests that judge a selector's `items` against `policy`: the rule once per request and one
- * question per item. Questions answer items by index into `items`.
+ * Plans the requests that judge a selector's `items` against `policy`: the policy body once per request and
+ * one question per item. Questions answer items by index into `items`.
  */
 export const planItemRequests = (model: Model, policy: Policy, items: ReadonlyArray<Item>) =>
-  pack(model, itemState(policy), items.map((_, index) => index), (index, taken) => serialize(`i${taken.size}`, itemQuestion(items[index]!)))
+  pack(model, itemState(policy), items.map((_, index) => index), (index, taken) => serialize(`i${taken.size}`, itemQuestion(policy, items[index]!)))
 
 /**
  * Answers kept on disk, one file per question, keyed by the model, the request text, and the question
@@ -225,11 +138,6 @@ const answerCache = (model: Model, directory: string) => {
 }
 
 export class Clef extends Context.Service<Clef, {
-  /** Judges `file` against every policy, excerpt by excerpt; results follow `policies` order. */
-  judge(
-    file: SourceFile,
-    policies: ReadonlyArray<Policy>
-  ): Effect.Effect<ReadonlyArray<Result.Result<Judgment, RequestTooLarge>>, ClefError>
   /** Judges each of a selector's `items` against `policy`; results follow `items` order. */
   judgeItems(
     policy: Policy,
@@ -310,33 +218,11 @@ export class Clef extends Context.Service<Clef, {
           return { answers, oversized }
         })
 
-        const judge = Effect.fn("Clef.judge")(function*(file: SourceFile, policies: ReadonlyArray<Policy>) {
-          // Each policy keeps its highest score across excerpts; it is too large only if no excerpt could send it.
-          const scores = new Map<Policy, number>()
-          const tooLarge = new Map<Policy, number>()
-          for (const excerpt of excerpts(file, excerptBytes)) {
-            const { answers, oversized } = yield* answer(
-              fileState(excerpt), policies, fileQuestion, (misses) => planRequests(model, excerpt, misses), 1)
-            for (const { value: policy, bytes } of oversized) tooLarge.set(policy, Math.max(bytes, tooLarge.get(policy) ?? 0))
-            for (const { value: policy, noul } of answers) scores.set(policy, Math.max(noul, scores.get(policy) ?? 0))
-          }
-          const results: Array<Result.Result<Judgment, RequestTooLarge>> = []
-          for (const policy of policies) {
-            const violates = scores.get(policy)
-            const bytes = tooLarge.get(policy)
-            if (violates !== undefined) results.push(Result.succeed({ violates }))
-            else if (bytes !== undefined) results.push(Result.fail(new RequestTooLarge({ bytes })))
-            // Every policy is answered, cached, or in `oversized` for every excerpt.
-            else return yield* Effect.die(new Error(`no judgment for ${policy.name}`))
-          }
-          return results
-        })
-
         const judgeItems = Effect.fn("Clef.judgeItems")(function*(policy: Policy, items: ReadonlyArray<Item>) {
           const { answers, oversized } = yield* answer(
             itemState(policy),
             items.map((_, index) => index),
-            (index) => itemQuestion(items[index]!),
+            (index) => itemQuestion(policy, items[index]!),
             (misses) => {
               const planned = planItemRequests(model, policy, misses.map((index) => items[index]!))
               return {
@@ -352,7 +238,7 @@ export class Clef extends Context.Service<Clef, {
           return results
         })
 
-        return Clef.of({ judge, judgeItems, stats: Ref.get(counts) })
+        return Clef.of({ judgeItems, stats: Ref.get(counts) })
       })
     ).pipe(Layer.provide(FetchHttpClient.layer))
 }

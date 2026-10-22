@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 Once you've pulled out common conventions and organized your solution to separate infrastructure code and business logic from your UI, your MVC action methods should be extremely thin:
 
 ```csharp

@@ -1,5 +1,7 @@
 import type { Model } from "../src/clef.ts"
 
+/** USD per input token. Clef bills no output tokens. */
+export const inputTokenPrice: Readonly<Record<Model, number>> = { clef: 0.24e-6, "clef-flash": 0.038e-6 }
 /** One answer as Clef returns it; `noul` for yes/no questions, `probabilities` for choices. */
 export interface Answer {
   readonly type: string

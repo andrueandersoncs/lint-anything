@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 - A `bool` stays a `bool` only while every use site reads as a predicate. A
   behavior switch, a bare `true`/`false` argument, or a `bool` in a tuple
   becomes an enum or a struct with named fields. A `bool` named for one of

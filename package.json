@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "devDependencies": {
+    "@ast-grep/cli": "^0.51.0",
     "@types/bun": "latest"
   },
   "peerDependencies": {
@@ -12,5 +13,8 @@
   "dependencies": {
     "@effect/platform-bun": "4.0.5",
     "effect": "4.0.5"
-  }
+  },
+  "trustedDependencies": [
+    "@ast-grep/cli"
+  ]
 }

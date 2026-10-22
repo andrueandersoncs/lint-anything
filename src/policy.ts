@@ -1,21 +1,17 @@
 import { Effect, FileSystem, Path, Runtime, Schema } from "effect"
-import { type Item, toItem } from "./item.ts"
 
 /**
- * A Markdown rule. Without `select` it is judged against each whole file its globs match. With
- * `select`, a shell command emits the items to judge: it receives the matching files as arguments, or
- * none when the policy has no globs. `evidence` steps run first, in order, with the same arguments; the
- * rule text can include their output as `{{name}}`. `examples` are labeled items (or, without a selector,
- * labeled files) that Clef reads with the rule. With `limit`, a selector policy reports how many of its items
- * violate the rule, per file or per run, against a maximum. The full policy text is sent to Clef.
+ * A Markdown policy: everything Clef is asked. The body after the frontmatter is the request's text, sent
+ * exactly as written (the rule, and any framing or examples the author wants). The `select` shell command
+ * receives every file the CLI was given and emits the items to judge; each item's text is one question.
+ * `criteria` optionally says what a yes and a no mean for every question. With `limit`, the policy reports
+ * how many of its items violate the rule, per file or per run, against a maximum.
  */
 export interface Policy {
   readonly name: string
-  readonly source: string
-  readonly globs: ReadonlyArray<Bun.Glob>
-  readonly select?: string
-  readonly evidence: ReadonlyArray<{ readonly name: string; readonly command: string }>
-  readonly examples: ReadonlyArray<{ readonly violates: boolean; readonly item: Item }>
+  readonly body: string
+  readonly select: string
+  readonly criteria?: { readonly true?: string; readonly false?: string }
   readonly limit?: { readonly max: number; readonly per: "file" | "run" }
 }
 
@@ -26,10 +22,11 @@ export class PolicyError extends Schema.TaggedError<PolicyError>()("PolicyError"
 }
 
 const Frontmatter = Schema.Struct({
-  globs: Schema.optional(Schema.NonEmptyArray(Schema.NonEmptyString)),
   select: Schema.optional(Schema.NonEmptyString),
-  evidence: Schema.optional(Schema.Record(Schema.String, Schema.NonEmptyString)),
-  examples: Schema.optional(Schema.Array(Schema.Unknown)),
+  criteria: Schema.optional(Schema.Struct({
+    true: Schema.optional(Schema.NonEmptyString),
+    false: Schema.optional(Schema.NonEmptyString)
+  })),
   limit: Schema.optional(Schema.Struct({
     max: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     per: Schema.optional(Schema.Literals(["file", "run"]))
@@ -37,10 +34,6 @@ const Frontmatter = Schema.Struct({
 })
 
 const frontmatterPattern = /^---\r?\n(.*?)\r?\n---(?:\r?\n|$)/s
-const stepName = /^[A-Za-z_][A-Za-z0-9_]*$/
-
-/** `{{name}}` references in a rule body. */
-export const referencePattern = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g
 
 export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, source: string) {
   const match = frontmatterPattern.exec(source)
@@ -51,55 +44,29 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
   if (body.trim() === "") {
     return yield* new PolicyError({ message: `${name}: empty policy` })
   }
-  const { globs, select, evidence, examples, limit } = yield* Effect.try(() => Bun.YAML.parse(match[1] ?? "")).pipe(
-    Effect.flatMap(Schema.decodeUnknownEffect(Frontmatter)),
+  const parsed = yield* Effect.try(() => Bun.YAML.parse(match[1] ?? "")).pipe(
     Effect.mapError((error) => new PolicyError({ message: `${name}: invalid frontmatter: ${String(error.message ?? error)}` }))
   )
-  if (globs === undefined && select === undefined) {
-    return yield* new PolicyError({ message: `${name}: frontmatter needs non-empty globs, a select command, or both` })
+  const unknown = Object.keys(typeof parsed === "object" && parsed !== null ? parsed : {}).filter((key) => !(key in Frontmatter.fields))
+  if (unknown.length > 0) {
+    return yield* new PolicyError({
+      message: `${name}: unknown frontmatter ${unknown.join(", ")}; a policy has select, criteria, and limit, and its body is everything else Clef reads`
+    })
   }
-  if (limit !== undefined && select === undefined) {
-    return yield* new PolicyError({ message: `${name}: limit counts a selector's items, so it needs select` })
-  }
-  const steps = Object.entries(evidence ?? {}).map(([step, command]) => ({ name: step, command }))
-  const badName = steps.find((step) => !stepName.test(step.name))
-  if (badName !== undefined) {
-    return yield* new PolicyError({ message: `${name}: evidence step name ${badName.name} must match [A-Za-z_][A-Za-z0-9_]*` })
-  }
-  const unknown = [...body.matchAll(referencePattern)].map((reference) => reference[1]!).find((reference) => !steps.some((step) => step.name === reference))
-  if (unknown !== undefined) {
-    return yield* new PolicyError({ message: `${name}: the rule references {{${unknown}}}, which no evidence step defines` })
-  }
-  const labeled: Array<{ readonly violates: boolean; readonly item: Item }> = []
-  for (const [index, example] of (examples ?? []).entries()) {
-    const { violates, ...fields } = (typeof example === "object" && example !== null ? example : {}) as Record<string, unknown>
-    if (typeof violates !== "boolean") {
-      return yield* new PolicyError({ message: `${name}: example ${index + 1} needs violates: true or false` })
-    }
-    const item = yield* toItem({ id: `example ${index + 1}`, ...fields }).pipe(
-      Effect.mapError((reason) => new PolicyError({ message: `${name}: example ${index + 1} is not a valid item: ${reason}` }))
-    )
-    labeled.push({ violates, item })
+  const { select, criteria, limit } = yield* Schema.decodeUnknownEffect(Frontmatter)(parsed).pipe(
+    Effect.mapError((error) => new PolicyError({ message: `${name}: invalid frontmatter: ${error.message}` }))
+  )
+  if (select === undefined) {
+    return yield* new PolicyError({ message: `${name}: frontmatter needs a select command that picks what the rule judges` })
   }
   return {
     name,
-    source,
-    globs: (globs ?? []).map((glob) => new Bun.Glob(glob)),
-    ...(select === undefined ? {} : { select }),
-    evidence: steps,
-    examples: labeled,
+    body,
+    select,
+    ...(criteria === undefined ? {} : { criteria }),
     ...(limit === undefined ? {} : { limit: { max: limit.max, per: limit.per ?? "file" } })
   } satisfies Policy
 })
-
-/** The policy with each `{{name}}` in its rule body replaced by that evidence step's output. */
-export const resolveReferences = (policy: Policy, outputs: ReadonlyMap<string, string>): Policy => {
-  const match = frontmatterPattern.exec(policy.source)!
-  const body = policy.source.slice(match[0].length).replace(referencePattern, (_, step: string) => outputs.get(step) ?? "")
-  return { ...policy, source: `${match[0]}${body}` }
-}
-
-export const matches = (policy: Policy, path: string): boolean => policy.globs.some((glob) => glob.match(path))
 
 /** Loads every `*.md` policy under `directory`. A missing or empty directory is an error. */
 export const loadPolicies = Effect.fn("loadPolicies")(function*(directory: string) {

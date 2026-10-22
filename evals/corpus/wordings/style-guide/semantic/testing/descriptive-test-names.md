@@ -1,6 +1,3 @@
----
-globs: ["**/*.test.{ts,tsx,js}", "**/*.spec.{ts,tsx,js}", "**/*_test.{ts,go,py}", "**/test_*.py", "**/tests/**/*.py", "**/test/**/*.{ts,js}"]
----
 ### Follow test naming standards
 
 The name of your test should consist of three parts:

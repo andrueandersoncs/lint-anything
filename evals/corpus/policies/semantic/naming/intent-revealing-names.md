@@ -1,6 +1,18 @@
 ---
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
+# Each outermost function with the generic or short names it declares, and each run of module-level code.
+select: |
+  for f do shift; case $f in *.ts|*.tsx|*.js|*.jsx|*.py|*.go) set -- "$@" "$f";; esac; done
+  [ $# -gt 0 ] || exit 0
+  bun "$EVAL_STEPS/functions.ts" --outer --module --names "$@" |
+  bun "$EVAL_STEPS/present.ts"
+criteria:
+  "true": "The item contains at least one complete violation of the rule."
+  "false": "The item follows the rule, or the rule governs nothing in it."
 ---
+Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
+Return a calibrated probability that the answer is yes.
+
+Rule:
 # Name things by what they mean
 
 Names of variables, functions, parameters, and types should say what the thing represents in the problem domain, not what kind of value it is or how it is computed.

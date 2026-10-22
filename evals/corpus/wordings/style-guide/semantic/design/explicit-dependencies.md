@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 ### Explicit dependencies
 
 **Methods and classes should explicitly require any collaborating objects they need in order to function correctly.** It is called the [Explicit Dependencies Principle](https://deviq.com/principles/explicit-dependencies-principle). Class constructors provide an opportunity for classes to identify the things they need in order to be in a valid state and to function properly. If you define classes that can be constructed and called, but that will only function properly if certain global or infrastructure components are in place, these classes are being *dishonest* with their clients. The constructor contract is telling the client that it only needs the things specified (possibly nothing if the class is just using a parameterless constructor), but then at runtime it turns out the object really did need something else.

@@ -1,16 +1,16 @@
-// Measures whether evidence from outside the file (today's date, git history) makes a date rule judgeable.
+// Measures whether context from outside the file (today's date, git history) makes a date rule judgeable.
 // Builds a git repository whose TODOs were committed on known dates, then judges "TODOs added more than 90
-// days ago must reference an issue" with four policies that differ only in their evidence.
+// days ago must reference an issue" with four policies that differ only in what their selector attaches to
+// each TODO: nothing; today's date; today's date and the TODO's commit date; today's date and its age.
 //   bun evals/history.ts [--concurrency 8]
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
-import { defaultItemThreshold, itemReviewFloor } from "../src/lint.ts"
-import { parsePolicy } from "../src/policy.ts"
-import { runSelector, withEvidence } from "../src/select.ts"
+import { defaultThreshold, reviewFloor } from "../src/lint.ts"
+import { runSelector } from "../src/select.ts"
 import { makeClient } from "./client.ts"
-import type { Case } from "./corpus.ts"
+import { adHocPolicy, type Case } from "./corpus.ts"
 import { auroc, brier, pairedInterval, quality, type Scored } from "./metrics.ts"
 import { costPerThousand, type ItemCase, productionPlan, scoreItems } from "./selected.ts"
 
@@ -101,16 +101,19 @@ const truth = new Map(todos.map((todo) => [`${todo.path}:${todo.line! + 1}`, tod
 
 const rule = "# Old TODOs reference an issue\n\nA `TODO` or `FIXME` comment added more than 90 days ago must reference a tracking issue, " +
   "written as `#123`, `ABC-123`, or a full issue URL. TODOs added in the last 90 days don't need one."
-const select = (steps: string) =>
-  `select: |\n  rg --json -w 'TODO|FIXME' "$@" |\n    jq -c 'select(.type == "match") | {id: "\\(.data.path.text):\\(.data.line_number)", ` +
-  `path: .data.path.text, lines: [.data.line_number, .data.line_number], text: (.data.lines.text | rtrimstr("\\n"))}'${steps}`
-const todayStep = `evidence:\n  today: echo ${today}\n`
+// Each TODO line, with its location and the arm's context written into its text by present.ts. The selector
+// pins today's date so every run sends the same requests; a real policy would compute it with
+// `today=$(date +%F)`.
+const select = (fields: string, steps = "") =>
+  `today=${today}\nrg --json -w 'TODO|FIXME' "$@" |\n  jq -c --arg today "$today" 'select(.type == "match") | ` +
+  `{id: "\\(.data.path.text):\\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number], ` +
+  `text: (.data.lines.text | rtrimstr("\\n"))${fields}}' |${steps}\n  bun "$EVAL_STEPS/present.ts"`
 const arms = {
-  none: `---\n${select("")}\n---\n${rule}\n`,
-  today: `---\n${todayStep}${select("")}\n---\n${rule}\n\nToday is {{today}}.\n`,
+  none: select(""),
+  today: select(", today: $today"),
   // The commit date alone; Clef has to work out the age.
-  date: `---\n${todayStep}${select(` |\n    bun "$EVAL_STEPS/blame.ts" ${today} | jq -c '.changed |= (split(",")[0])'`)}\n---\n${rule}\n\nToday is {{today}}.\n`,
-  age: `---\n${todayStep}${select(` |\n    bun "$EVAL_STEPS/blame.ts" ${today}`)}\n---\n${rule}\n\nToday is {{today}}.\n`
+  date: select(", today: $today", `\n  bun "$EVAL_STEPS/blame.ts" "$today" | jq -c '.changed |= (split(",")[0])' |`),
+  age: select(", today: $today", `\n  bun "$EVAL_STEPS/blame.ts" "$today" |`)
 }
 
 // --- Run ------------------------------------------------------------------------------------------
@@ -119,17 +122,16 @@ const ask = makeClient(concurrency)
 const paths = files.map((file) => file.path)
 const results = []
 try {
-  for (const [arm, source] of Object.entries(arms)) {
-    const policy = Effect.runSync(parsePolicy(`history/${arm}`, source))
-    const selected = await Effect.runPromise(withEvidence(policy, paths, repository, (resolved, env) =>
-      runSelector({ ...resolved, select: policy.select! }, paths, repository, env).pipe(Effect.map((items) => ({ items, resolved })))))
-    const items: Array<ItemCase> = selected.items.map((entry) => {
+  for (const [arm, command] of Object.entries(arms)) {
+    const policy = adHocPolicy(`history/${arm}`, command, rule)
+    const selected = await Effect.runPromise(runSelector(policy, paths, repository))
+    const items: Array<ItemCase> = selected.map((entry) => {
       const todo = truth.get(entry.id)
       if (todo === undefined) throw new Error(`selector found an unexpected TODO at ${entry.id}`)
       return {
         id: `${arm}:${entry.id}`,
         file: { id: entry.path! } as Case["file"],
-        policy: selected.resolved,
+        policy,
         gold: { label: todo.age > 90 && !todo.issue ? "violates" : "complies", note: "" },
         entry
       }
@@ -149,8 +151,8 @@ const near = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => Math.ab
 const youngWithoutIssue = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => ageOf(entry).age <= 90 && !ageOf(entry).issue)
 // Binary accuracy at the CLI's item threshold: `violation` vs. anything else.
 const accuracy = (scored: ReadonlyArray<Scored>) =>
-  scored.filter((entry) => ((entry.score ?? 0) >= defaultItemThreshold) === (entry.item.gold.label === "violates")).length / scored.length
-const flagged = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => (entry.score ?? 0) > itemReviewFloor).length / scored.length
+  scored.filter((entry) => ((entry.score ?? 0) >= defaultThreshold) === (entry.item.gold.label === "violates")).length / scored.length
+const flagged = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => (entry.score ?? 0) > reviewFloor).length / scored.length
 const fixed = (value: number) => (Number.isNaN(value) ? "–" : value.toFixed(3))
 const percent = (value: number) => `${(value * 100).toFixed(0)}%`
 const baseline = results[0]!
@@ -163,10 +165,10 @@ const violating = todos.filter((todo) => todo.age > 90 && !todo.issue).length
 const nearCount = todos.filter((todo) => Math.abs(todo.age - 90) <= 5).length
 console.log(`\nhistory: ${todos.length} TODOs in ${files.length} files (${violating} violating; ${nearCount} within 5 days of the threshold). ` +
   `Intervals: 95% paired bootstrap vs ${baseline.arm}, resampling files.\n`)
-console.log("| Evidence | AUROC | Brier | Accuracy at 0.65 | Near threshold (±5 days) accuracy | Issue-less TODOs ≤ 90 days old flagged | Caught / false alarms | $ / 1k items |")
+console.log("| Selector adds | AUROC | Brier | Accuracy at 0.65 | Near threshold (±5 days) accuracy | Issue-less TODOs ≤ 90 days old flagged | Caught / false alarms | $ / 1k items |")
 console.log("|---|---|---|---|---|---|---|---|")
 for (const { arm, run, items } of results) {
-  const q = quality(run.scored, { floor: itemReviewFloor, threshold: defaultItemThreshold })
+  const q = quality(run.scored, { floor: reviewFloor, threshold: defaultThreshold })
   const tokens = [...run.inputTokens.values()].reduce((sum, value) => sum + value, 0)
   console.log(`| ${arm} | ${fixed(auroc(run.scored))}${delta(run.scored, auroc)} | ${fixed(brier(run.scored))}${delta(run.scored, brier)} | ` +
     `${percent(accuracy(run.scored))}${delta(run.scored, accuracy)} | ${percent(accuracy(near(run.scored)))} | ` +

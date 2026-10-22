@@ -2,9 +2,9 @@ import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Runtime, Schema } from "effect"
 import { Argument, Command } from "effect/cli"
 import { Clef } from "./src/clef.ts"
-import { defaultItemThreshold, defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
+import { defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
 import { loadPolicies } from "./src/policy.ts"
-import { readSources } from "./src/source.ts"
+import { readPaths } from "./src/source.ts"
 
 class ViolationsFound extends Schema.TaggedError<ViolationsFound>()("ViolationsFound", {
   count: Schema.Number
@@ -17,7 +17,7 @@ const rulesDirectory = ".lint-anything/rules"
 const cacheDirectory = ".lint-anything/cache"
 const verdicts: ReadonlyArray<Verdict> = ["violation", "review", "inconclusive", "pass"]
 
-/** Where a finding is: a file's path, an item's `path:start-end`, or else the item's id. */
+/** Where a finding is: an item's `path:start-end`, else the item's id, else (a `limit` group) its path. */
 const location = ({ path, item, lines }: Finding) =>
   path !== undefined && lines !== undefined ? `${path}:${lines[0]}-${lines[1]}` : item ?? path ?? ""
 
@@ -49,8 +49,8 @@ const command = Command.make(
   },
   Effect.fn(function*({ files }) {
     const policies = yield* loadPolicies(rulesDirectory)
-    const sources = yield* readSources(files)
-    const findings = yield* lint(sources, policies, { threshold: defaultThreshold, itemThreshold: defaultItemThreshold }).pipe(
+    const paths = yield* readPaths(files)
+    const findings = yield* lint(paths, policies, defaultThreshold).pipe(
       Effect.provide(Clef.layer("clef", cacheDirectory))
     )
     yield* Console.log(formatText(findings))

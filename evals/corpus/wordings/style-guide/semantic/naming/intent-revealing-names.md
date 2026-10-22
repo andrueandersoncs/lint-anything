@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 #### Descriptive names
 
 Names *must* be descriptive and clear to a new reader. Do not use abbreviations

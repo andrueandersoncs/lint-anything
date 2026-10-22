@@ -1,34 +1,32 @@
-// Shared by evals/items.ts and evals/compare.ts: selector sets, item cases labelled from the corpus, and
-// scoring planned item requests through the cached client.
+// Selector items for the evals: selector sets, item cases labelled from the corpus, scoring planned item
+// requests through the cached client, and the file-level view of item scores.
+import { availableParallelism } from "node:os"
 import { Effect } from "effect"
 import { planItemRequests } from "../src/clef.ts"
-import { matches, parsePolicy, type Policy } from "../src/policy.ts"
 import type { Item } from "../src/item.ts"
-import { runSelector, withEvidence } from "../src/select.ts"
-import type { makeClient } from "./client.ts"
-import { type Case, type Corpus, corpusDirectory } from "./corpus.ts"
+import { parsePolicy, type Policy } from "../src/policy.ts"
+import { runSelector } from "../src/select.ts"
+import { inputTokenPrice, type makeClient } from "./client.ts"
+import { type Case, type Corpus, corpusDirectory, ruleText } from "./corpus.ts"
 import type { Scored } from "./metrics.ts"
-import { inputTokenPrice } from "./strategy.ts"
 
-// Eval selectors call helper steps as `bun "$EVAL_STEPS/<step>.ts"` (see evals/steps/).
-process.env.EVAL_STEPS = `${import.meta.dir}/steps`
-
-export type SelectPolicy = Policy & { readonly select: string }
-
-/** A directory of selector policies, each adding a `select` to the corpus policy of the same name. */
+/** Policies whose selectors pick the items to judge, each standing in for the corpus policy `original`. */
 export interface SelectorSet {
   readonly name: string
-  readonly policies: ReadonlyArray<{ readonly policy: SelectPolicy; readonly original: Policy }>
+  readonly policies: ReadonlyArray<{ readonly policy: Policy; readonly original: Policy }>
 }
 
-const frontmatter = /^---\r?\n(.*?)\r?\n---(?:\r?\n|$)/s
-const body = (source: string) => source.replace(frontmatter, "")
-const globsOf = (source: string) =>
-  JSON.stringify((Bun.YAML.parse(frontmatter.exec(source)?.[1] ?? "") as { readonly globs?: unknown } | null)?.globs)
+/** The corpus policies through their own selectors. */
+export const corpusSelectorSet = (corpus: Corpus): SelectorSet => ({
+  name: "policies",
+  policies: corpus.policies.map((policy) => ({ policy, original: policy }))
+})
 
 /**
- * Loads the selector policies in `directory`. Their globs and rule text must equal the corpus policy's, so
- * the corpus labels still apply; everything else in the frontmatter (select, evidence) may differ.
+ * Loads an alternative selector set: the policies in `directory`, each replacing the corpus policy of the
+ * same name. Their rule text (after the `Rule:` line) must equal the corpus policy's, so the corpus labels
+ * still apply; the framing, criteria, and selector may differ, and the selector's file filter must accept
+ * the same files.
  */
 export const loadSelectorSet = async (corpus: Corpus, directory: string): Promise<SelectorSet> => ({
   name: directory.split("/").filter((part) => part !== "").pop()!,
@@ -38,53 +36,65 @@ export const loadSelectorSet = async (corpus: Corpus, directory: string): Promis
       const policy = Effect.runSync(parsePolicy(name, await Bun.file(`${directory}/${file}`).text()))
       const original = corpus.policies.find((candidate) => candidate.name === name)
       if (original === undefined) throw new Error(`selector policy ${name} has no corpus policy`)
-      if (body(policy.source) !== body(original.source)) throw new Error(`selector policy ${name}: rule text differs from the corpus policy`)
-      if (globsOf(policy.source) !== globsOf(original.source)) throw new Error(`selector policy ${name}: globs differ from the corpus policy`)
-      if (policy.select === undefined) throw new Error(`selector policy ${name} has no select`)
-      return { policy: policy as SelectPolicy, original }
+      if (ruleText(policy) !== ruleText(original)) throw new Error(`selector policy ${name}: rule text differs from the corpus policy`)
+      return { policy, original }
     })
   )
 })
 
-/** One scored unit: an item, labelled `violates` when its lines overlap the file's gold violation lines. */
+/**
+ * One scored unit: an item, labelled `violates` when its lines overlap the file's gold violation lines,
+ * `ambiguous` when the file's gold for the policy is ambiguous, and `complies` otherwise.
+ */
 export interface ItemCase extends Case {
   readonly entry: Item
 }
 
+const overlaps = (lines: readonly [number, number], [start, end]: readonly [number, number]) => lines[0] <= end && start <= lines[1]
+
+/** Calls `use` on every value with at most `limit` calls in flight; results follow `values` order. */
+const pooled = async <A, B>(values: ReadonlyArray<A>, limit: number, use: (value: A) => Promise<B>): Promise<Array<B>> => {
+  const results: Array<B> = []
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (next < values.length) {
+      const index = next++
+      results[index] = await use(values[index]!)
+    }
+  }))
+  return results
+}
+
 /**
- * Runs each selector, after its evidence steps, on every non-ambiguous corpus file case of `split` (from
- * the file's directory, with its path as the only argument) and labels the items. Each item carries the
- * policy with its `{{name}}` references filled in for that run. Also counts how many gold violation ranges
- * some item overlaps.
+ * Runs each selector on every corpus file case of `split` its set covers (from the file's directory, with
+ * its path as the only argument) and labels the items. Also counts how many gold violation ranges some
+ * item overlaps. File cases labelled ambiguous are left out unless `options.ambiguous`; their items are
+ * labelled `ambiguous`.
  */
-export const selectItems = async (corpus: Corpus, split: string, set: SelectorSet) => {
+export const selectItems = async (
+  corpus: Corpus,
+  split: string,
+  set: SelectorSet,
+  options: { readonly ambiguous?: boolean } = {}
+) => {
   const fileCases = corpus.cases.filter((item) =>
-    (split === "all" || item.file.split === split) && item.gold.label !== "ambiguous" &&
+    (split === "all" || item.file.split === split) && (options.ambiguous === true || item.gold.label !== "ambiguous") &&
     set.policies.some(({ original }) => original === item.policy)
   )
+  const selections = await pooled(fileCases, availableParallelism(), async (fileCase) => {
+    const { policy } = set.policies.find(({ original }) => original === fileCase.policy)!
+    const selected = await Effect.runPromise(runSelector(policy, [fileCase.file.path], `${corpusDirectory}/files/${fileCase.file.id}`))
+    return { fileCase, selected, policy }
+  })
   const items: Array<ItemCase> = []
   let goldRanges = 0
   let coveredRanges = 0
-  const overlaps = (lines: readonly [number, number], [start, end]: readonly [number, number]) =>
-    lines[0] <= end && start <= lines[1]
-  for (const fileCase of fileCases) {
-    const { policy } = set.policies.find(({ original }) => original === fileCase.policy)!
-    if (!matches(policy, fileCase.file.path)) continue
-    const cwd = `${corpusDirectory}/files/${fileCase.file.id}`
-    const paths = [fileCase.file.path]
-    const { selected, resolved } = await Effect.runPromise(withEvidence(policy, paths, cwd, (resolved, env) =>
-      runSelector({ ...resolved, select: policy.select }, paths, cwd, env).pipe(Effect.map((selected) => ({ selected, resolved })))))
+  for (const { fileCase, selected, policy } of selections) {
     const gold = fileCase.gold.label === "violates" ? fileCase.gold.lines ?? [] : []
     for (const entry of selected) {
       if (entry.lines === undefined) throw new Error(`${policy.name}: eval selectors must emit lines (${entry.id})`)
-      const violates = gold.some((range) => overlaps(entry.lines!, range))
-      items.push({
-        id: `${fileCase.id}:${entry.id}`,
-        file: fileCase.file,
-        policy: resolved,
-        gold: { label: violates ? "violates" : "complies", note: "" },
-        entry
-      })
+      const label = fileCase.gold.label === "ambiguous" ? "ambiguous" : gold.some((range) => overlaps(entry.lines!, range)) ? "violates" : "complies"
+      items.push({ id: `${fileCase.id}:${entry.id}`, file: fileCase.file, policy, gold: { label, note: "" }, entry })
     }
     goldRanges += gold.length
     coveredRanges += gold.filter((range) => selected.some((entry) => entry.lines !== undefined && overlaps(entry.lines, range))).length
@@ -122,7 +132,7 @@ export interface ItemRun {
 
 /**
  * Judges `items` with `plan`, one group per selector run (one policy on one file), as the CLI groups a
- * policy's items. Oversized items score `null`.
+ * policy's items when linting that file. Oversized items score `null`.
  */
 export const scoreItems = async (ask: ReturnType<typeof makeClient>, items: ReadonlyArray<ItemCase>, plan: Plan): Promise<ItemRun> => {
   const groups = new Map<string, Array<ItemCase>>()
@@ -153,7 +163,24 @@ export const scoreItems = async (ask: ReturnType<typeof makeClient>, items: Read
   return { scored: items.map((item) => ({ item, score: scores.get(item) ?? null })), requests, inputTokens, ms }
 }
 
-/** USD per 1,000 items for `tokens` input tokens spent on `count` items. */
+/**
+ * The file-level view of item scores, as the CLI reports a file: each file case scores its highest item
+ * score, 0 when the selector found nothing in the file, and `null` when every item was too large to send.
+ */
+export const fileScores = (fileCases: ReadonlyArray<Case>, scored: ReadonlyArray<Scored>): Array<Scored> => {
+  const byCase = new Map<string, Array<number | null>>()
+  for (const { item, score } of scored) {
+    const key = `${item.file.id}\0${item.policy.name}`
+    byCase.set(key, [...(byCase.get(key) ?? []), score])
+  }
+  return fileCases.map((item) => {
+    const scores = byCase.get(`${item.file.id}\0${item.policy.name}`) ?? []
+    const answered = scores.filter((score) => score !== null)
+    return { item, score: scores.length > 0 && answered.length === 0 ? null : Math.max(0, ...answered) }
+  })
+}
+
+/** USD per 1,000 units (items or files) for `tokens` input tokens spent on `count` of them. */
 export const costPerThousand = (tokens: number, count: number) => (tokens * inputTokenPrice.clef * 1000) / count
 
 export const writeScores = (path: string, scored: ReadonlyArray<Scored>) =>

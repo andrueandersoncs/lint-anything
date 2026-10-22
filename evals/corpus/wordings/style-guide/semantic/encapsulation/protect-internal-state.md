@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 ### Copy Slices and Maps at Boundaries
 
 Slices and maps contain pointers to the underlying data so be wary of scenarios

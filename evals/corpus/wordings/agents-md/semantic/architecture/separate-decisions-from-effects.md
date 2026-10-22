@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 ## State and side effects
 
 Prefer a functional core: keep business logic pure and push I/O to the edges, to the degree the app allows.

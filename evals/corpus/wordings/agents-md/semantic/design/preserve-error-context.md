@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 ## Error Handling
 
 - Preserve useful diagnostics and the original exception when translating

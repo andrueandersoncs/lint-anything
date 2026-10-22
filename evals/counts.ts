@@ -1,17 +1,17 @@
 // Measures `limit`: does counting judged items answer a count rule ("at most 3 issue-less TODOs per file")
 // better than asking Clef the count rule about the whole file? Generates 64 files with a known number of
-// issue-less TODOs (0 to 7, most near the limit) and judges them both ways through the eval client.
+// issue-less TODOs (0 to 7, most near the limit) and judges them both ways through the eval client: A, a
+// count-rule policy whose selector emits each whole file as one item; B, a per-TODO policy with `limit`.
 //   bun evals/counts.ts [--concurrency 8]
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect } from "effect"
-import { planRequests } from "../src/clef.ts"
-import { aggregate, defaultItemThreshold, defaultThreshold, type Finding, itemReviewFloor, reviewFloor, verdictOf } from "../src/lint.ts"
-import { parsePolicy, type Policy } from "../src/policy.ts"
+import { aggregate, defaultThreshold, type Finding, reviewFloor, verdictOf } from "../src/lint.ts"
+import type { Policy } from "../src/policy.ts"
 import { runSelector } from "../src/select.ts"
 import { makeClient } from "./client.ts"
-import type { Case } from "./corpus.ts"
+import { adHocPolicy, type Case } from "./corpus.ts"
 import { auroc, type Scored } from "./metrics.ts"
 import { costPerThousand, type ItemCase, productionPlan, scoreItems } from "./selected.ts"
 
@@ -55,44 +55,51 @@ const files = await Promise.all(counts.map(async (issueless, index) => {
   return { path, source, issueless, total: todos.length }
 }))
 
-const policy = (name: string, frontmatter: string, rule: string) =>
-  Effect.runSync(parsePolicy(name, `---\n${frontmatter}\n---\n${rule}\n`))
-const select = `select: |\n  rg --json -w 'TODO|FIXME' "$@" | jq -c 'select(.type == "match") | {id: "\\(.data.path.text):\\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number], text: (.data.lines.text | rtrimstr("\\n"))}'`
-const whole = policy("counts/whole-file", 'globs: ["src/**/*"]',
+// Both selectors keep the generated sources under src/ (all the files they are given) and end in
+// present.ts, which writes each item's location into its text as the corpus selectors do.
+const sources = `for f do shift; case $f in src/*) set -- "$@" "$f";; esac; done\n[ $# -gt 0 ] || exit 0\n`
+// A's rule counts across the file, so its selector hands Clef each whole file as one item.
+const whole = adHocPolicy("counts/whole-file", `${sources}bun "$EVAL_STEPS/whole-file.ts" "$@" | bun "$EVAL_STEPS/present.ts"`,
   `# At most ${limit} untracked TODOs\n\nA file may contain at most ${limit} \`TODO\` or \`FIXME\` comments that don't reference a tracking issue ` +
   `(\`#123\`, \`ABC-123\`, or an issue URL). Report a file with ${limit + 1} or more.`)
-const items = policy("counts/limit", `globs: ["src/**/*"]\n${select}\nlimit: { max: ${limit}, per: file }`,
-  "# TODOs reference an issue\n\nEvery `TODO` or `FIXME` comment must reference a tracking issue, written as `#123`, `ABC-123`, or a full issue URL.")
+// B's rule is about one TODO, so its selector emits each TODO line; `limit` does the counting.
+const items = adHocPolicy("counts/limit",
+  `${sources}rg --json -w 'TODO|FIXME' "$@" |\n  jq -c 'select(.type == "match") | {id: "\\(.data.path.text):\\(.data.line_number)", path: .data.path.text, ` +
+    `lines: [.data.line_number, .data.line_number], text: (.data.lines.text | rtrimstr("\\n"))}' |\n  bun "$EVAL_STEPS/present.ts"`,
+  "# TODOs reference an issue\n\nEvery `TODO` or `FIXME` comment must reference a tracking issue, written as `#123`, `ABC-123`, or a full issue URL.",
+  { max: limit, per: "file" })
+
+/** Runs `policy`'s selector over the files and judges its items in the CLI's order, one group per file. */
+const judge = async (policy: Policy) => {
+  const selected = await Effect.runPromise(runSelector(policy, files.map((file) => file.path), directory))
+  const itemCases: Array<ItemCase> = selected.toSorted((a, b) => a.id.localeCompare(b.id)).map((entry) => ({
+    id: entry.id, file: { id: entry.path! } as Case["file"], policy, gold: { label: "complies", note: "" }, entry
+  }))
+  return scoreItems(ask, itemCases, productionPlan)
+}
+const entryOf = (scored: Scored) => (scored.item as ItemCase).entry
 
 try {
-  // A: the count rule asked about each whole file (all files are under the 4,000-byte excerpt size).
-  let wholeTokens = 0
-  const wholeScores = await Promise.all(files.map(async (file) => {
-    const [request] = planRequests("clef", file, [whole]).requests
-    const reply = await ask("clef", request!.body)
-    wholeTokens += reply.inputTokens
-    return reply.answers[request!.questions[0]!.id]!.noul!
-  }))
+  // A: the count rule asked about each whole file.
+  const wholeRun = await judge(whole)
+  const wholeScores = new Map(wholeRun.scored.map((scored) => [entryOf(scored).path!, scored.score ?? 0]))
 
   // B: each TODO judged against the item rule, then counted against the limit.
-  const selected = await Effect.runPromise(runSelector(items as Policy & { select: string }, files.map((file) => file.path), directory))
-  const itemCases: Array<ItemCase> = selected.toSorted((a, b) => a.id.localeCompare(b.id)).map((entry) => ({
-    id: entry.id, file: { id: entry.path! } as Case["file"], policy: items, gold: { label: "complies", note: "" }, entry
-  }))
-  const run = await scoreItems(ask, itemCases, productionPlan)
+  const run = await judge(items)
   const findings: Array<Finding> = run.scored.map((scored) => {
-    const entry = (scored.item as ItemCase).entry
-    return { policy: items.name, path: entry.path!, item: entry.id, verdict: verdictOf(scored.score ?? 0, itemReviewFloor, defaultItemThreshold) }
+    const entry = entryOf(scored)
+    return { policy: items.name, path: entry.path!, item: entry.id, verdict: verdictOf(scored.score ?? 0, reviewFloor, defaultThreshold) }
   })
   const counted = new Map(aggregate(items.name, items.limit!, findings).map((finding) => [finding.path!, finding]))
 
-  const rows = files.map((file, index) => {
+  const rows = files.map((file) => {
     const aggregateFinding = counted.get(file.path)
+    const wholeScore = wholeScores.get(file.path) ?? 0
     return {
       file,
       violates: file.issueless > limit,
-      wholeScore: wholeScores[index]!,
-      wholeSaysViolation: verdictOf(wholeScores[index]!, reviewFloor, defaultThreshold) === "violation",
+      wholeScore,
+      wholeSaysViolation: verdictOf(wholeScore, reviewFloor, defaultThreshold) === "violation",
       count: aggregateFinding?.violating?.length ?? 0,
       limitSaysViolation: aggregateFinding?.verdict === "violation"
     }
@@ -102,13 +109,13 @@ try {
     `${((100 * subset.filter((row) => says(row) === row.violates).length) / subset.length).toFixed(0)}% (${subset.filter((row) => says(row) === row.violates).length}/${subset.length})`
   const asScored = (score: (row: (typeof rows)[number]) => number): Array<Scored> =>
     rows.map((row) => ({ item: { id: row.file.path, file: { id: row.file.path }, gold: { label: row.violates ? "violates" : "complies" } } as unknown as Case, score: score(row) }))
-  const itemTokens = [...run.inputTokens.values()].reduce((sum, value) => sum + value, 0)
+  const tokens = (judged: typeof run) => [...judged.inputTokens.values()].reduce((sum, value) => sum + value, 0)
   console.log(`\n${files.length} files, ${rows.filter((row) => row.violates).length} with more than ${limit} issue-less TODOs; ${near.length} with exactly ${limit} or ${limit + 1}.`)
   console.log("| Approach | Accuracy | At the limit (3 or 4) | AUROC | $ / 1k files |\n|---|---|---|---|---|")
   console.log(`| A. count rule, whole file | ${accuracy(rows, (row) => row.wholeSaysViolation)} | ${accuracy(near, (row) => row.wholeSaysViolation)} | ` +
-    `${auroc(asScored((row) => row.wholeScore)).toFixed(3)} | $${costPerThousand(wholeTokens, files.length).toFixed(3)} |`)
+    `${auroc(asScored((row) => row.wholeScore)).toFixed(3)} | $${costPerThousand(tokens(wholeRun), files.length).toFixed(3)} |`)
   console.log(`| B. item rule + limit | ${accuracy(rows, (row) => row.limitSaysViolation)} | ${accuracy(near, (row) => row.limitSaysViolation)} | ` +
-    `${auroc(asScored((row) => row.count)).toFixed(3)} | $${costPerThousand(itemTokens, files.length).toFixed(3)} |`)
+    `${auroc(asScored((row) => row.count)).toFixed(3)} | $${costPerThousand(tokens(run), files.length).toFixed(3)} |`)
   const exact = rows.filter((row) => row.count === row.file.issueless).length
   const error = rows.reduce((sum, row) => sum + Math.abs(row.count - row.file.issueless), 0) / rows.length
   console.log(`\nB's counts: exact for ${exact} of ${rows.length} files, mean absolute error ${error.toFixed(2)} TODOs.`)

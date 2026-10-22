@@ -1,6 +1,7 @@
 // Measures the answer cache through the CLI's own Clef path (real requests, a temporary cache): a re-run
 // should send nothing, an edit should send only the questions it changed, and verdicts of unedited files
-// should hold still. Lints 24 dev corpus files with four whole-file policies and two selector policies.
+// should hold still. Lints 24 dev corpus files with five corpus policies through their own selectors: the
+// three whose items the edit below adds (comments, magic values, TODOs) and two that judge larger units.
 // Repeatability without the cache and batch independence are in evals/packing.ts.
 //   bun evals/cache.ts
 import { mkdtempSync, rmSync } from "node:fs"
@@ -9,11 +10,9 @@ import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { Clef } from "../src/clef.ts"
-import { defaultItemThreshold, defaultThreshold, type Finding, lint } from "../src/lint.ts"
-import type { Policy } from "../src/policy.ts"
-import { readSources } from "../src/source.ts"
-import { corpusDirectory, loadCorpus } from "./corpus.ts"
-import { loadSelectorSet } from "./selected.ts"
+import { defaultThreshold, type Finding, lint } from "../src/lint.ts"
+import { readPaths } from "../src/source.ts"
+import { loadCorpus } from "./corpus.ts"
 
 const corpus = await loadCorpus({ requireSplits: true })
 const workspace = mkdtempSync(join(tmpdir(), "lint-anything-cache-"))
@@ -21,25 +20,21 @@ const cacheDirectory = join(workspace, ".cache")
 const files = corpus.files.filter((file) => file.split === "dev" && file.origin === "real").slice(0, 24)
 for (const file of files) await Bun.write(join(workspace, file.id, file.path), file.source)
 
-const filePolicyNames = [
+const policyNames = [
   "semantic/readability/comments-explain-why",
-  "semantic/design/single-responsibility",
   "semantic/readability/explain-magic-values",
+  "control/hygiene/todo-has-issue",
+  "semantic/design/single-responsibility",
   "semantic/naming/intent-revealing-names"
 ]
-const selectors = await loadSelectorSet(corpus, `${corpusDirectory}/selectors`)
-const policies: Array<Policy> = [
-  ...filePolicyNames.map((name) => corpus.policies.find((policy) => policy.name === name)!),
-  ...selectors.policies.filter(({ policy }) => ["control/hygiene/todo-has-issue", "semantic/readability/comments-explain-why"].includes(policy.name))
-    .map(({ policy }) => ({ ...policy, name: `${policy.name} (selector)` }))
-]
+const policies = policyNames.map((name) => corpus.policies.find((policy) => policy.name === name)!)
 
 process.chdir(workspace)
 const run = async (cache: boolean) => {
   const started = performance.now()
   const result = await Effect.runPromise(Effect.gen(function*() {
-    const sources = yield* readSources(["**/*.{ts,tsx,js,jsx,py,go}"])
-    const findings = yield* lint(sources, policies, { threshold: defaultThreshold, itemThreshold: defaultItemThreshold })
+    const paths = yield* readPaths(["**/*.{ts,tsx,js,jsx,py,go}"])
+    const findings = yield* lint(paths, policies, defaultThreshold)
     return { findings, stats: yield* (yield* Clef).stats }
   }).pipe(Effect.provide(Layer.mergeAll(Clef.layer("clef", cache ? cacheDirectory : undefined), BunServices.layer))))
   return { ...result, ms: performance.now() - started }
@@ -75,7 +70,7 @@ try {
   const warm = await run(true)
   const fresh = await run(false)
   const percent = (value: number) => `${(value * 100).toFixed(1)}%`
-  console.log(`\n${files.length} files, ${policies.length} policies (${filePolicyNames.length} whole-file, 2 selector), ${cold.findings.length} checks before the edit.`)
+  console.log(`\n${files.length} files, ${policies.length} policies, ${cold.findings.length} checks before the edit.`)
   console.log("| Run | Requests | Cached answers | Time | Findings vs. a fresh run |")
   console.log("|---|---|---|---|---|")
   const row = (name: string, result: Awaited<ReturnType<typeof run>>, against?: ReadonlyArray<Finding>) => {

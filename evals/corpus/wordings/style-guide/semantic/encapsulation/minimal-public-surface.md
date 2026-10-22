@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 #### Export visibility
 
 TypeScript does not support restricting the visibility for exported symbols.

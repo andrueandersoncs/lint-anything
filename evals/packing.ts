@@ -1,6 +1,7 @@
 // Measures how packing items into requests affects answers. (1) Repeatability: two fresh lint runs on the
 // same 24 dev corpus files, through the CLI's own Clef path (real requests), must agree, which is why a
-// selector's items are sorted before packing. (2) Batch independence: the same dev items judged in full
+// selector's items are sorted before packing. (2) Batch independence: the dev items of six corpus policies
+// with many short items (TODOs, `any`, `except` handlers, comments, numeric literals, tests) judged in full
 // batches and in two half-size batches, through the eval client, to show how far answers move when the
 // other questions in a request change, and whether quality does.
 //   bun evals/packing.ts
@@ -10,30 +11,25 @@ import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { Clef } from "../src/clef.ts"
-import { defaultItemThreshold, defaultThreshold, type Finding, lint } from "../src/lint.ts"
-import type { Policy } from "../src/policy.ts"
-import { readSources } from "../src/source.ts"
+import { defaultThreshold, type Finding, lint, reviewFloor, verdictOf } from "../src/lint.ts"
+import { readPaths } from "../src/source.ts"
 import { makeClient } from "./client.ts"
-import { corpusDirectory, loadCorpus } from "./corpus.ts"
+import { loadCorpus } from "./corpus.ts"
 import { auroc, brier, pairedInterval } from "./metrics.ts"
-import { loadSelectorSet, productionPlan, scoreItems, selectItems } from "./selected.ts"
+import { corpusSelectorSet, productionPlan, scoreItems, selectItems } from "./selected.ts"
 
 const corpus = await loadCorpus({ requireSplits: true })
-const selectors = await loadSelectorSet(corpus, `${corpusDirectory}/selectors`)
+const byName = (name: string) => corpus.policies.find((policy) => policy.name === name)!
 
 // --- (1) Repeatability -------------------------------------------------------------------------------
 const workspace = mkdtempSync(join(tmpdir(), "lint-anything-packing-"))
 const files = corpus.files.filter((file) => file.split === "dev" && file.origin === "real").slice(0, 24)
 for (const file of files) await Bun.write(join(workspace, file.id, file.path), file.source)
-const policies: Array<Policy> = [
-  ...["semantic/readability/comments-explain-why", "semantic/design/single-responsibility"].map((name) => corpus.policies.find((policy) => policy.name === name)!),
-  ...selectors.policies.filter(({ policy }) => ["control/hygiene/todo-has-issue", "semantic/readability/comments-explain-why"].includes(policy.name))
-    .map(({ policy }) => ({ ...policy, name: `${policy.name} (selector)` }))
-]
+const policies = ["semantic/readability/comments-explain-why", "semantic/design/single-responsibility", "control/hygiene/todo-has-issue"].map(byName)
 const cwd = process.cwd()
 process.chdir(workspace)
-const run = () => Effect.runPromise(readSources(["**/*.{ts,tsx,js,jsx,py,go}"]).pipe(
-  Effect.flatMap((sources) => lint(sources, policies, { threshold: defaultThreshold, itemThreshold: defaultItemThreshold })),
+const run = () => Effect.runPromise(readPaths(["**/*.{ts,tsx,js,jsx,py,go}"]).pipe(
+  Effect.flatMap((paths) => lint(paths, policies, defaultThreshold)),
   Effect.provide(Layer.mergeAll(Clef.layer("clef"), BunServices.layer))
 ))
 try {
@@ -49,8 +45,17 @@ try {
 }
 
 // --- (2) Batch independence -------------------------------------------------------------------------
+const batchPolicies = new Set([
+  "control/hygiene/todo-has-issue",
+  "control/typescript/no-any",
+  "control/python/no-swallowed-exceptions",
+  "semantic/readability/comments-explain-why",
+  "semantic/readability/explain-magic-values",
+  "semantic/testing/descriptive-test-names"
+])
+const set = corpusSelectorSet(corpus)
+const { items } = await selectItems(corpus, "dev", { ...set, policies: set.policies.filter(({ policy }) => batchPolicies.has(policy.name)) })
 const ask = makeClient(8)
-const { items } = await selectItems(corpus, "dev", selectors)
 const full = await scoreItems(ask, items, productionPlan)
 const halves = await scoreItems(ask, items, (policy, entries) => {
   const parts = [0, 1].map((parity) => entries.flatMap((entry, index) => (index % 2 === parity ? [{ entry, index }] : [])))
@@ -62,7 +67,7 @@ const halves = await scoreItems(ask, items, (policy, entries) => {
   }
 })
 const deltas = full.scored.map((scored, index) => Math.abs((scored.score ?? 0) - (halves.scored[index]!.score ?? 0)))
-const verdictOfScore = (score: number) => (score <= 0.5 ? "pass" : score >= 0.65 ? "violation" : "review")
+const verdictOfScore = (score: number) => verdictOf(score, reviewFloor, defaultThreshold)
 const changed = full.scored.filter((scored, index) => verdictOfScore(scored.score ?? 0) !== verdictOfScore(halves.scored[index]!.score ?? 0)).length
 const interval = (metric: typeof auroc) => {
   const [low, high] = pairedInterval(full.scored, halves.scored, metric)

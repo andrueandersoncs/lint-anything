@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 #### Error Wrapping
 
 There are three main options for propagating errors if a call fails:

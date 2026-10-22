@@ -1,6 +1,3 @@
----
-globs: ["**/*.{ts,tsx,js,jsx,py,go}"]
----
 ##### Getters and setters
 
 Getters and setters, also known as accessors, for class members *may* be used.

@@ -28,8 +28,11 @@ const killGroup = (pid: number) => {
   try {
     process.kill(-pid, "SIGKILL")
   } catch (error) {
-    // ESRCH: everything in the group has already exited.
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
+    // ESRCH: everything in the group has already exited. EPERM: on macOS, everything in it has exited but
+    // hasn't been reaped yet. Either way there is nothing left to kill, and this runs on `exit`, where a
+    // throw would turn a run's exit code into 1 and print a stack trace.
+    const { code } = error as NodeJS.ErrnoException
+    if (code !== "ESRCH" && code !== "EPERM") throw error
   }
 }
 

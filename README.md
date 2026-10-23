@@ -54,6 +54,8 @@ A missing rules directory, one with no `.md` files, or an invalid policy stops t
 
 Policies are meant to be written and tuned by a coding agent: give it the rule you want, files that break and follow it, and `evals/` as the way to measure, and let it iterate on the selector, the body, and the criteria together. Because the CLI adds nothing, any way of asking Clef that a request can express is available to a policy. `evals/corpus/selectors-excerpts/` is the earlier CLI's whole-file judging written as policies: its selector cuts files into 1,000-byte excerpts, and its body and criteria are that CLI's own words.
 
+`skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, writing and tuning policies, and the pitfalls selectors run into. Install it in a coding agent's skills directory.
+
 ### Selectors
 
 - The selector runs once per lint run with `sh -c`, from the current directory, with no arguments, an empty stdin, and the CLI's environment (`.env` included) without any variable whose name starts with `CLOUDFLARE_`, so a policy's shell never sees the API token. It finds what it checks itself: the example above searches the `.ts` and `.tsx` files under the current directory (`rg` skips what `.gitignore` ignores). A selector can select things that aren't files (`git log`, an API, a database), or facts derived from them.

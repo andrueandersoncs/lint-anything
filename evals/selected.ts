@@ -2,11 +2,11 @@
 // requests through the cached client, and the file-level view of item scores.
 import { availableParallelism } from "node:os"
 import { Effect } from "effect"
-import { planItemRequests } from "../src/clef.ts"
+import { inputTokenPrice, planItemRequests } from "../src/clef.ts"
 import type { Item } from "../src/item.ts"
 import { parsePolicy, type Policy } from "../src/policy.ts"
 import { runSelector } from "../src/select.ts"
-import { inputTokenPrice, type makeClient } from "./client.ts"
+import type { makeClient } from "./client.ts"
 import { type Case, type Corpus, corpusDirectory, ruleText } from "./corpus.ts"
 import type { Scored } from "./metrics.ts"
 

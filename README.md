@@ -11,7 +11,7 @@ echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
 bun index.ts
 ```
 
-The CLI takes no arguments: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the `clef` model and printed as text. Clef's answers are cached in `.lint-anything/cache` (add it to `.gitignore`).
+The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the `clef` model and printed as text. Clef's answers are cached in `.lint-anything/cache` (add it to `.gitignore`).
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
@@ -54,7 +54,7 @@ Policies are meant to be written and tuned by a coding agent: give it the rule y
 
 ### Selectors
 
-- The selector runs once per lint run with `sh -c`, from the current directory, with no arguments and an empty stdin. It finds what it checks itself: the example above searches the `.ts` and `.tsx` files under the current directory (`rg` skips what `.gitignore` ignores). A selector can select things that aren't files (`git log`, an API, a database), or facts derived from them.
+- The selector runs once per lint run with `sh -c`, from the current directory, with no arguments, an empty stdin, and the CLI's environment (`.env` included). It finds what it checks itself: the example above searches the `.ts` and `.tsx` files under the current directory (`rg` skips what `.gitignore` ignores). A selector can select things that aren't files (`git log`, an API, a database), or facts derived from them.
 - It must print JSONL, one item per line, with these fields and no others:
 
   | Field | Required | Meaning |
@@ -65,6 +65,7 @@ Policies are meant to be written and tuned by a coding agent: give it the rule y
   | `lines` | no | `[start, end]`, 1-based and inclusive, for findings |
 
 - A non-zero exit or a line that isn't a valid item stops the run (exit 2). `rg` and `grep` exit 1 when nothing matches, so end a bare search with `|| true`, or pipe it on as above.
+- A selector still running after 10 minutes is killed, with every process it started, and stops the run (exit 2).
 - From the evals:
   - Items must reach every place a violation can be: a selector whose items miss the violating lines can't find them.
   - Context belongs in each item's text, and computed facts beat raw data: a TODO's age in days lets Clef judge "older than 90 days" at 99% accuracy; its commit date and today's date do not. Context costs input tokens.
@@ -93,7 +94,7 @@ Write the rule about one item, and put the count in `limit`: Clef judges items w
 
 ## How it works
 
-Each policy's selector runs from the current directory, then Clef judges the selected items. Policies run one at a time. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing.
+Each policy's selector runs from the current directory, then Clef judges the selected items. Up to 8 policies run at once, and at most 8 requests are in flight across the run. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing. Findings are printed in policy order.
 
 A request holds at most 64 questions (Clef's limit) and 64,000 bytes. Items that don't fit in one request are split across several.
 
@@ -104,9 +105,11 @@ A request holds at most 64 questions (Clef's limit) and 64,000 bytes. Items that
 | otherwise | `review`: uncertain, including cases where careful reviewers would disagree |
 | request with only that item over the byte limit | `inconclusive` (not sent; Clef would truncate it) |
 
-Transient HTTP failures are retried up to 3 times with exponential backoff.
+An attempt that hasn't returned its whole response within 60 seconds counts as a transient failure. Transient HTTP failures (timeouts, network errors, 408, 429, 5xx) are retried up to 3 times with exponential backoff, waiting at least as long as a `Retry-After` header asks. A request that still fails stops the run (exit 2) with the HTTP status and Cloudflare's error, or the network error.
 
-Answers are cached on disk in `.lint-anything/cache`, one file per question, keyed by the model, the request's text (the policy body), and the question (item text and criteria). Only questions whose inputs changed are sent: re-running when nothing changed sends nothing, and editing a policy re-asks only that policy. Delete the directory to judge everything afresh.
+Answers are cached on disk in `.lint-anything/cache`, one file per question, keyed by the model, the request's text (the policy body), and the question (item text and criteria). Only questions whose inputs changed are sent: re-running when nothing changed sends nothing, and editing a policy re-asks only that policy. Each request's answers are cached as it returns, so a run stopped by a failed request keeps the answers it already received. Delete the directory to judge everything afresh.
+
+A cached answer stands for 30 days; after that, its question is asked again, so answers follow updates to the model. At most once a day (the `pruned` file there records when), a run deletes expired answers, so the cache doesn't grow without bound. A cache file that doesn't hold a probability (cut short by a crash, or edited) is a miss, never an answer; answers are written to a temporary file and renamed into place, so a crash can't cut one short.
 
 Clef's answer to one question shifts a little with the other questions in its request (see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers; with the cache, an edit in one file also leaves the verdicts of every other file as they were.
 
@@ -123,11 +126,20 @@ violation     0.97   9acebc18  commits
 
 Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`.
 
+With `--debug`, the CLI also prints, to stderr after the findings (or before the error, if the run stops), what each policy cost: requests sent, answers taken from the cache, input tokens Clef reported, and their cost at Clef's input-token price, then the total:
+
+```
+policy   requests  cached  input tokens  cost (USD)
+exports         1       0           379     $0.0001
+todo            0       3             0     $0.0000
+total           1       3           379     $0.0001
+```
+
 | Exit code | Meaning |
 | --- | --- |
 | `0` | No violations |
 | `1` | At least one violation |
-| `2` | Policy, selector, configuration, or Clef API error |
+| `2` | Invalid command line; policy, selector, configuration, or Clef API error |
 
 ## Develop
 
@@ -255,7 +267,7 @@ Each feature has an intended purpose, an eval that measures it, and a result. Ch
 | Per-policy cut-offs | Better verdicts than global cut-offs | `cutoffs.ts` | Fails: surfaced violations fall from 72% to 52% for +0.002 F1 | no |
 | Policy file sent whole as the rule | Clef reads the rule with its frontmatter | `evals/.cache/research/ident/ablate.ts` (2026-10-22) | Replaced: with the excerpt framing, sending the body without the frontmatter (selector code) raised dev AUROC 0.910 → 0.919; the body alone is now the request's text | no |
 | `ask` routing step | Drop items a rule doesn't govern, cutting false alarms | (commit `c825cff`) | Fails: dev false alarms rose, violations dropped | no |
-| `check` subcommand, `--baseline` / `--changed-since`, `--sarif` | Example checks; adoption on existing code; code scanning | (commits `d4d5052` to `1eddf4d`) | Each measured; see below | no: removed, because the CLI takes no flags or subcommands |
+| `check` subcommand, `--baseline` / `--changed-since`, `--sarif` | Example checks; adoption on existing code; code scanning | (commits `d4d5052` to `1eddf4d`) | Each measured; see below | no: removed, because the CLI takes no subcommands and no flags but `--debug` |
 
 #### Context from outside the file
 

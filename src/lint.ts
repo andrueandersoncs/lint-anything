@@ -75,7 +75,15 @@ const itemLocation = (item: Item) => ({
 const byLocation = (a: Item, b: Item) =>
   (a.path ?? "").localeCompare(b.path ?? "") || (a.lines?.[0] ?? 0) - (b.lines?.[0] ?? 0) || a.id.localeCompare(b.id)
 
-/** Runs each policy's selector from the current directory and judges the items it selects. */
+// Policies judged at once. Clef bounds requests in flight across the run, so this only lets one policy's
+// selector run, and its requests fill slots, while another's are in flight. Each policy's requests are
+// packed alone, so concurrency changes no answer.
+const policyConcurrency = 8
+
+/**
+ * Runs each policy's selector from the current directory and judges the items it selects. Findings follow
+ * `policies` order.
+ */
 export const lint = Effect.fn("lint")(function*(
   policies: ReadonlyArray<Policy>,
   threshold: number
@@ -97,6 +105,6 @@ export const lint = Effect.fn("lint")(function*(
           })
         )
       )
-    ))
+    ), { concurrency: policyConcurrency })
   return findings.flat()
 })

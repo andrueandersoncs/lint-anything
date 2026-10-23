@@ -9,7 +9,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
-import { Clef } from "../src/clef.ts"
+import { Clef, sumUsage } from "../src/clef.ts"
 import { defaultThreshold, type Finding, lint } from "../src/lint.ts"
 import { loadCorpus } from "./corpus.ts"
 
@@ -33,7 +33,7 @@ const run = async (cache: boolean) => {
   const started = performance.now()
   const result = await Effect.runPromise(Effect.gen(function*() {
     const findings = yield* lint(policies, defaultThreshold)
-    return { findings, stats: yield* (yield* Clef).stats }
+    return { findings, stats: sumUsage((yield* (yield* Clef).stats).values()) }
   }).pipe(Effect.provide(Layer.mergeAll(Clef.layer("clef", cache ? cacheDirectory : undefined), BunServices.layer))))
   return { ...result, ms: performance.now() - started }
 }

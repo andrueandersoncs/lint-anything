@@ -1,9 +1,11 @@
+#!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Runtime, Schema } from "effect"
 import { CliError, Command, Flag } from "effect/cli"
 import { Clef, inputTokenPrice, noUsage, sumUsage, type Usage } from "./src/clef.ts"
 import { defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
 import { loadPolicies, type Policy } from "./src/policy.ts"
+import { version } from "./package.json" with { type: "json" }
 
 class ViolationsFound extends Schema.TaggedError<ViolationsFound>()("ViolationsFound", {
   count: Schema.Number
@@ -99,7 +101,7 @@ const command = Command.make(
 ).pipe(Command.withDescription(`Check every policy in ${rulesDirectory} with Cloudflare Clef`))
 
 command.pipe(
-  Command.run({ version: "0.1.0" }),
+  Command.run({ version }),
   // Exit 1 means violations, so an invalid command line (help with errors, which the CLI has printed)
   // exits 2 like every other error that stops a run. `--help` alone still exits 0.
   Effect.catchIf(

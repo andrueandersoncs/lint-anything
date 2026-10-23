@@ -1,18 +1,33 @@
 {
-  "name": "lint-anything",
-  "module": "index.ts",
+  "name": "@andrueandersoncs/lint-anything",
+  "version": "0.1.0",
+  "description": "Check anything against plain-English policies, judged by Cloudflare's Clef decision model",
+  "license": "MIT",
+  "author": "Andrue Anderson",
   "type": "module",
-  "private": true,
+  "bin": {
+    "lint-anything": "dist/cli.js"
+  },
+  "files": [
+    "dist/cli.js",
+    "skills"
+  ],
+  "engines": {
+    "bun": ">=1.2.23"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "bun build index.ts --target=bun --minify --outfile dist/cli.js",
+    "prepublishOnly": "bunx tsc --noEmit && bun run build"
+  },
   "devDependencies": {
     "@ast-grep/cli": "^0.51.0",
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^7"
-  },
-  "dependencies": {
     "@effect/platform-bun": "4.0.5",
-    "effect": "4.0.5"
+    "@types/bun": "latest",
+    "effect": "4.0.5",
+    "typescript": "^7"
   },
   "trustedDependencies": [
     "@ast-grep/cli"

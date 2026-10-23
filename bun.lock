@@ -4,15 +4,11 @@
   "workspaces": {
     "": {
       "name": "lint-anything",
-      "dependencies": {
-        "@effect/platform-bun": "4.0.5",
-        "effect": "4.0.5",
-      },
       "devDependencies": {
         "@ast-grep/cli": "^0.51.0",
+        "@effect/platform-bun": "4.0.5",
         "@types/bun": "latest",
-      },
-      "peerDependencies": {
+        "effect": "4.0.5",
         "typescript": "^7",
       },
     },

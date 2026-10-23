@@ -4,12 +4,16 @@ Check anything against plain-English policies, judged by Cloudflare's [Clef](htt
 
 ## Run
 
+Requires [Bun](https://bun.sh) 1.2.23 or later, plus whatever your policies' selectors call (`rg`, `jq`, and `ast-grep` are common; none are bundled).
+
 ```sh
-bun install
+bun add -d @andrueandersoncs/lint-anything   # or: bun add -g @andrueandersoncs/lint-anything
 echo 'CLOUDFLARE_ACCOUNT_ID=...' >> .env
 echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
-bun index.ts
+bunx lint-anything                          # from the project root
 ```
+
+The command is `lint-anything`. It runs on Bun, not Node: without Bun on the `PATH` it fails with `env: bun: No such file or directory`.
 
 The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the `clef` model and printed as text. Clef's answers are cached in `.lint-anything/cache/answers.sqlite` (add `.lint-anything/cache` to `.gitignore`). Effect CLI also provides its global flags (`--help`, `--version`, `--wizard`, `--completions`, `--log-level`); they are expected and stay.
 
@@ -19,7 +23,7 @@ The CLI takes no arguments, and one flag, `--debug`: each run checks every polic
 | `CLOUDFLARE_AUTH_TOKEN` | yes | API token |
 | `CLOUDFLARE_API_BASE_URL` | no | Defaults to `https://api.cloudflare.com/client/v4` |
 
-Bun loads `.env` automatically.
+Bun loads `.env` and `.env.local` from the current directory automatically.
 
 ## Policies
 
@@ -54,7 +58,7 @@ A missing rules directory, one with no `.md` files, or an invalid policy stops t
 
 Policies are meant to be written and tuned by a coding agent: give it the rule you want, files that break and follow it, and `evals/` as the way to measure, and let it iterate on the selector, the body, and the criteria together. Because the CLI adds nothing, any way of asking Clef that a request can express is available to a policy. `evals/corpus/selectors-excerpts/` is the earlier CLI's whole-file judging written as policies: its selector cuts files into 1,000-byte excerpts, and its body and criteria are that CLI's own words.
 
-`skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, writing and tuning policies, and the pitfalls selectors run into. Install it in a coding agent's skills directory.
+`skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, writing and tuning policies, and the pitfalls selectors run into. It ships in the package (`node_modules/@andrueandersoncs/lint-anything/skills/lint-anything/`); copy that directory into a coding agent's skills directory.
 
 ### Selectors
 
@@ -156,8 +160,15 @@ An error that stops the run (exit `2`) is printed to stderr as one line, `error:
 ## Develop
 
 ```sh
+bun install
 bunx tsc --noEmit
+bun index.ts              # run from source
+bun run build             # bundle to dist/cli.js, the published `lint-anything` bin
+bun pm pack               # the tarball npm would get: dist/cli.js, skills/, README, LICENSE
+npm publish               # runs prepublishOnly (type check, build) first; the package is public
 ```
+
+The bundle includes every dependency, so the published package installs nothing else. The version printed by `--version` is `package.json`'s, inlined at build time.
 
 ## Evals
 

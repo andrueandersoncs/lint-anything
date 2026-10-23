@@ -18,6 +18,8 @@ lint-anything          # check every policy
 lint-anything --debug  # also prints per-policy cost to stderr
 ```
 
+If `lint-anything` isn't found, install it with `bun add -d @andrueandersoncs/lint-anything` and run it as `bunx lint-anything`. It needs Bun 1.2.23 or later; it doesn't run on Node.
+
 - **No arguments.** Every run checks every policy; you can't pass files, a rule name, a threshold, or an output format. To check less, change the selector. The only flag is `--debug`; `--help` and `--version` also exist.
 - **The working directory matters.** Policies are read from `./.lint-anything/rules`, and selectors run in the current directory. Run from a subdirectory and you get `error: cannot read policies in .lint-anything/rules`: there is no upward search.
 - **Credentials:** `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_AUTH_TOKEN`, from the environment or from `.env` / `.env.local` in the current directory. They are required on every run, even when every answer would come from the cache. `CLOUDFLARE_API_BASE_URL` is optional.

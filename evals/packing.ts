@@ -28,7 +28,7 @@ const policies = ["semantic/readability/comments-explain-why", "semantic/design/
 const cwd = process.cwd()
 process.chdir(workspace)
 const run = () => Effect.runPromise(lint(policies, defaultThreshold).pipe(
-  Effect.provide(Layer.mergeAll(Clef.layer("clef"), BunServices.layer))
+  Effect.provide(Layer.mergeAll(Clef.layer(), BunServices.layer))
 ))
 try {
   const [first, second] = [await run(), await run()]

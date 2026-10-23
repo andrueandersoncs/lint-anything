@@ -34,7 +34,7 @@ const run = async (cache: boolean) => {
   const result = await Effect.runPromise(Effect.gen(function*() {
     const findings = yield* lint(policies, defaultThreshold)
     return { findings, stats: sumUsage((yield* (yield* Clef).stats).values()) }
-  }).pipe(Effect.provide(Layer.mergeAll(Clef.layer("clef", cache ? cacheDirectory : undefined), BunServices.layer))))
+  }).pipe(Effect.provide(Layer.mergeAll(Clef.layer(cache ? cacheDirectory : undefined), BunServices.layer))))
   return { ...result, ms: performance.now() - started }
 }
 const key = (finding: Finding) => `${finding.policy}\0${finding.path ?? ""}\0${finding.item ?? ""}`

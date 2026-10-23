@@ -949,5 +949,7 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   to accept exactly each policy's labeled files); `excerpts.ts`, `present.ts`, and the excerpt policies
   added; `selectors-evidence` and `selectors-evidence-constants` removed. Clef: 73,810 new cache entries,
   341.8M input tokens, about $82.04.
+- 2026-10-23: `clef-flash` removed from `src/clef.ts` and the eval client; `clef` is the only model.
+  Request bodies and cache keys are unchanged, so existing caches still hit. No requests sent.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

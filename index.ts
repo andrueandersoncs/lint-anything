@@ -18,7 +18,14 @@ class UsageError extends Schema.TaggedError<UsageError>()("UsageError", {}) {
   override readonly [Runtime.errorReported] = false
 }
 
-const model = "clef"
+/** A run-stopping error, already printed to stderr as `error: <message>`. */
+class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", {}) {
+  override readonly [Runtime.errorExitCode] = 2
+  override readonly [Runtime.errorReported] = false
+}
+
+const runStopping = ["PolicyError", "SelectorError", "ClefError"]
+
 const rulesDirectory = ".lint-anything/rules"
 const cacheDirectory = ".lint-anything/cache"
 const verdicts: ReadonlyArray<Verdict> = ["violation", "review", "inconclusive", "pass"]
@@ -52,7 +59,7 @@ const formatUsage = (policies: ReadonlyArray<Policy>, usage: ReadonlyMap<string,
     ["policy", "requests", "cached", "input tokens", "cost (USD)"],
     ...[...policies.map((policy) => [policy.name, usage.get(policy.name) ?? noUsage] as const), ["total", total] as const].map(
       ([name, { requests, cached, inputTokens }]) =>
-        [name, String(requests), String(cached), String(inputTokens), `$${(inputTokens * inputTokenPrice[model]).toFixed(4)}`]
+        [name, String(requests), String(cached), String(inputTokens), `$${(inputTokens * inputTokenPrice).toFixed(4)}`]
     )
   ]
   const widths = rows[0]!.map((_, column) => Math.max(...rows.map((row) => row[column]!.length)))
@@ -83,7 +90,7 @@ const command = Command.make(
       yield* Console.log(formatText(findings))
       yield* printUsage
       return findings
-    }).pipe(Effect.provide(Clef.layer(model, cacheDirectory)))
+    }).pipe(Effect.provide(Clef.layer(cacheDirectory)))
     const count = findings.filter((finding) => finding.verdict === "violation").length
     if (count > 0) {
       return yield* new ViolationsFound({ count })
@@ -98,6 +105,12 @@ command.pipe(
   Effect.catchIf(
     (error) => CliError.isCliError(error) && !(error._tag === "ShowHelp" && error.errors.length === 0),
     () => Effect.fail(new UsageError())
+  ),
+  // Stopping errors go to stderr as their message alone: stdout holds only findings, and Effect's default
+  // report (timestamp, stack through node_modules) is noise to whoever acts on it.
+  Effect.catchIf(
+    (error): error is Extract<typeof error, { readonly message: string }> => runStopping.includes(error._tag),
+    (error) => Console.error(`error: ${error.message}`).pipe(Effect.andThen(Effect.fail(new RunFailed())))
   ),
   Effect.provide(BunServices.layer),
   BunRuntime.runMain

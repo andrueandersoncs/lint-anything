@@ -14,7 +14,7 @@ alwaysApply: false
 
 lint-anything is a CLI; its interface is its user experience. You are FORBIDDEN from changing the user experience without the user's explicit permission. That includes:
 
-- **No arguments, no new CLI flags, no subcommands.** The CLI takes no arguments: a run checks every policy, and each policy's selector decides what it checks (files, derived facts, history, third-party services). Its one flag is `--debug` (user-approved), which prints debugging details to stderr; debugging metadata belongs there rather than in a new flag. Do not add arguments, flags, options, or subcommands, not even "for testing" or "for evals".
+- **No arguments, no new CLI flags, no subcommands.** The CLI takes no arguments: a run checks every policy, and each policy's selector decides what it checks (files, derived facts, history, third-party services). Its one flag is `--debug` (user-approved), which prints debugging details to stderr; debugging metadata belongs there rather than in a new flag. Effect CLI's global flags (`--help`, `--version`, `--wizard`, `--completions`, `--log-level`) come with the framework and are user-approved to stay; don't remove them. Do not add arguments, flags, options, or subcommands, not even "for testing" or "for evals".
 - **No new output.** Do not change what the CLI prints (lines, summary, formats) or its exit codes.
 - **No new side effects.** Do not make the CLI write files (caches, reports, baselines) or require new environment variables.
 - **Eval needs stay in `evals/`.** If an eval needs a helper, a switch, or a measurement hook, build it in `evals/` (scripts, stub layers, programmatic calls to `src/`), never as CLI surface.

@@ -1,4 +1,4 @@
-import type { Model } from "../src/clef.ts"
+import { model } from "../src/clef.ts"
 
 /** One answer as Clef returns it; `noul` for yes/no questions, `probabilities` for choices. */
 export interface Answer {
@@ -37,7 +37,7 @@ export const makeClient = (concurrency: number) => {
     waiting.shift()?.()
   }
 
-  const send = async (model: Model, body: string): Promise<{ json: any; ms: number }> => {
+  const send = async (body: string): Promise<{ json: any; ms: number }> => {
     if (accountId === undefined || token === undefined) {
       throw new Error("set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AUTH_TOKEN")
     }
@@ -67,7 +67,7 @@ export const makeClient = (concurrency: number) => {
     }
   }
 
-  return async (model: Model, body: string): Promise<ClefReply> => {
+  return async (body: string): Promise<ClefReply> => {
     const key = new Bun.CryptoHasher("sha256").update(model).update("\0").update(body).digest("hex")
     const cacheFile = Bun.file(`${cacheDirectory}/${key.slice(0, 2)}/${key}.json`)
     if (await cacheFile.exists()) {
@@ -76,7 +76,7 @@ export const makeClient = (concurrency: number) => {
     }
     await acquire()
     try {
-      const { json, ms } = await send(model, body)
+      const { json, ms } = await send(body)
       await Bun.write(cacheFile, JSON.stringify({ json, ms }))
       return reply(json, ms, false)
     } finally {

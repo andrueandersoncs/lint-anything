@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect"
+import { Effect, Schema, SchemaIssue } from "effect"
 
 const ItemFields = Schema.Struct({
   id: Schema.NonEmptyString,
@@ -15,6 +15,8 @@ const ItemFields = Schema.Struct({
  */
 export type Item = Schema.Schema.Type<typeof ItemFields>
 
+const formatIssues = SchemaIssue.makeFormatterStandardSchemaV1()
+
 /** Parses one JSONL line into an item; fails with a message saying what is wrong with it. */
 export const parseItem = Effect.fn("parseItem")(function*(line: string) {
   const value = yield* Effect.try({ try: (): unknown => JSON.parse(line), catch: () => "not valid JSON" })
@@ -23,5 +25,9 @@ export const parseItem = Effect.fn("parseItem")(function*(line: string) {
   if (unknown.length > 0) {
     return yield* Effect.fail(`unknown field ${unknown.join(", ")}; put what Clef should read in text`)
   }
-  return yield* Schema.decodeUnknownEffect(ItemFields)(value).pipe(Effect.mapError((error) => error.message))
+  return yield* Schema.decodeUnknownEffect(ItemFields)(value).pipe(
+    Effect.mapError((error) =>
+      formatIssues(error.issue).issues.map(({ path, message }) => `${path?.length ? `${path.join(".")}: ` : ""}${message}`).join("; ")
+    )
+  )
 })

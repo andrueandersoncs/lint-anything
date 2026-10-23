@@ -115,7 +115,7 @@ export type Plan = (policy: Policy, entries: ReadonlyArray<Item>) => {
 
 /** What the CLI sends for a selector's items. */
 export const productionPlan: Plan = (policy, entries) => {
-  const planned = planItemRequests("clef", policy, entries)
+  const planned = planItemRequests(policy, entries)
   return {
     requests: planned.requests.map(({ body, questions }) => ({ body, questions: questions.map(({ id, value }) => ({ id, index: value })) })),
     oversized: planned.oversized.map(({ value }) => value)
@@ -149,7 +149,7 @@ export const scoreItems = async (ask: ReturnType<typeof makeClient>, items: Read
     const planned = plan(policy, group.map((item) => item.entry))
     for (const index of planned.oversized) scores.set(group[index]!, null)
     await Promise.all(planned.requests.map(async (request) => {
-      const reply = await ask("clef", request.body)
+      const reply = await ask(request.body)
       requests++
       inputTokens.set(policy.name, (inputTokens.get(policy.name) ?? 0) + reply.inputTokens)
       ms.push(reply.ms)
@@ -181,7 +181,7 @@ export const fileScores = (fileCases: ReadonlyArray<Case>, scored: ReadonlyArray
 }
 
 /** USD per 1,000 units (items or files) for `tokens` input tokens spent on `count` of them. */
-export const costPerThousand = (tokens: number, count: number) => (tokens * inputTokenPrice.clef * 1000) / count
+export const costPerThousand = (tokens: number, count: number) => (tokens * inputTokenPrice * 1000) / count
 
 export const writeScores = (path: string, scored: ReadonlyArray<Scored>) =>
   Bun.write(path, `${scored.map(({ item, score }) => JSON.stringify({ case: item.id, label: item.gold.label, score })).join("\n")}\n`)

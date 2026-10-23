@@ -5,7 +5,8 @@ import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, HttpCl
 import type { Item } from "./item.ts"
 import type { Policy } from "./policy.ts"
 
-export type Model = "clef" | "clef-flash"
+/** The Workers AI model lint-anything asks: `@cf/cloudflare/clef`. */
+export const model = "clef"
 
 /** Probability that a selector item violates a policy. */
 export interface Judgment {
@@ -23,15 +24,15 @@ export class RequestTooLarge extends Schema.TaggedError<RequestTooLarge>()("Requ
   bytes: Schema.Number
 }) {}
 
-// Context windows are 65,536 tokens (clef) and 24,576 (clef-flash). A token is at least one byte, so a
-// body within these limits is never truncated.
-export const maxRequestBytes: Readonly<Record<Model, number>> = { clef: 64_000, "clef-flash": 24_000 }
+// Clef's context window is 65,536 tokens. A token is at least one byte, so a body within this limit is
+// never truncated.
+const maxRequestBytes = 64_000
 
 // Clef takes at most 64 questions per request.
 const maxQuestions = 64
 
 /** USD per input token. Clef bills no output tokens. */
-export const inputTokenPrice: Readonly<Record<Model, number>> = { clef: 0.24e-6, "clef-flash": 0.038e-6 }
+export const inputTokenPrice = 0.24e-6
 
 // Requests in flight at once across the whole run, as many as one policy sent before policies ran
 // concurrently, so a run puts no more load on Workers AI than it did.
@@ -75,11 +76,10 @@ export interface Planned<A> {
 
 /**
  * Packs one question per value, in order, into as few requests sharing `state` as Clef's 64-question
- * limit and the model's byte limit allow. `entry` serializes a value's question given the ids already in
+ * limit and byte limit allow. `entry` serializes a value's question given the ids already in
  * its request. A value too large to send even alone is returned in `oversized`.
  */
 const pack = <A>(
-  model: Model,
   state: string,
   values: ReadonlyArray<A>,
   entry: (value: A, taken: ReadonlySet<string>) => ReturnType<typeof serialize>
@@ -88,7 +88,7 @@ const pack = <A>(
   const head = `${JSON.stringify({ model, state }).slice(0, -1)},"questions":{`
   const tail = "}}"
   const fixedBytes = Buffer.byteLength(head) + tail.length
-  const limit = maxRequestBytes[model]
+  const limit = maxRequestBytes
   const requests: Array<Planned<A>> = []
   const oversized: Array<{ readonly value: A; readonly bytes: number }> = []
   let entries: Array<string> = []
@@ -133,15 +133,15 @@ const itemQuestion = (policy: Policy, item: Item) =>
  * Plans the requests that judge a selector's `items` against `policy`: the policy body once per request and
  * one question per item. Questions answer items by index into `items`.
  */
-export const planItemRequests = (model: Model, policy: Policy, items: ReadonlyArray<Item>) =>
-  pack(model, itemState(policy), items.map((_, index) => index), (index, taken) => serialize(`i${taken.size}`, itemQuestion(policy, items[index]!)))
+export const planItemRequests = (policy: Policy, items: ReadonlyArray<Item>) =>
+  pack(itemState(policy), items.map((_, index) => index), (index, taken) => serialize(`i${taken.size}`, itemQuestion(policy, items[index]!)))
 
 /**
  * Answers kept on disk, one file per question, keyed by the model, the request text, and the question
  * (not its id or the other questions in the request), so unchanged questions aren't sent again. An answer
  * older than `cacheMaxAgeMs` at `now` is a miss.
  */
-const answerCache = (model: Model, directory: string, now: number) => {
+const answerCache = (directory: string, now: number) => {
   const path = (state: string, question: object) => {
     const key = new Bun.CryptoHasher("sha256").update(`${model}\0${state}\0${JSON.stringify(question)}`).digest("hex")
     return join(directory, key.slice(0, 2), key)
@@ -249,7 +249,7 @@ export class Clef extends Context.Service<Clef, {
    * Clef on Workers AI; with `cacheDirectory`, answers are cached there per question across runs, and
    * answers older than `cacheMaxAgeMs` are asked again and deleted.
    */
-  static readonly layer = (model: Model, cacheDirectory?: string) =>
+  static readonly layer = (cacheDirectory?: string) =>
     Layer.effect(
       Clef,
       Effect.gen(function*() {
@@ -274,7 +274,7 @@ export class Clef extends Context.Service<Clef, {
           HttpClient.retryTransient({ schedule: Schedule.exponential(500), times: attemptRetries })
         )
 
-        const cache = cacheDirectory === undefined ? undefined : answerCache(model, cacheDirectory, Date.now())
+        const cache = cacheDirectory === undefined ? undefined : answerCache(cacheDirectory, Date.now())
         if (cache !== undefined) yield* Effect.sync(cache.prune)
         const permits = yield* Semaphore.make(maxConcurrentRequests)
         const usage = yield* Ref.make<ReadonlyMap<string, Usage>>(new Map())
@@ -343,7 +343,7 @@ export class Clef extends Context.Service<Clef, {
             items.map((_, index) => index),
             (index) => itemQuestion(policy, items[index]!),
             (misses) => {
-              const planned = planItemRequests(model, policy, misses.map((index) => items[index]!))
+              const planned = planItemRequests(policy, misses.map((index) => items[index]!))
               return {
                 requests: planned.requests.map(({ body, questions }) => ({ body, questions: questions.map(({ id, value }) => ({ id, value: misses[value]! })) })),
                 oversized: planned.oversized.map(({ value, bytes }) => ({ value: misses[value]!, bytes }))

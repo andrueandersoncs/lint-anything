@@ -11,7 +11,7 @@ echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
 bun index.ts
 ```
 
-The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the `clef` model and printed as text. Clef's answers are cached in `.lint-anything/cache` (add it to `.gitignore`).
+The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the `clef` model and printed as text. Clef's answers are cached in `.lint-anything/cache` (add it to `.gitignore`). Effect CLI also provides its global flags (`--help`, `--version`, `--wizard`, `--completions`, `--log-level`); they are expected and stay.
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
@@ -140,6 +140,8 @@ total           1       3           379     $0.0001
 | `0` | No violations |
 | `1` | At least one violation |
 | `2` | Invalid command line; policy, selector, configuration, or Clef API error |
+
+An error that stops the run (exit `2`) is printed to stderr as one line, `error: <message>`; stdout holds only findings.
 
 ## Develop
 
@@ -341,7 +343,7 @@ Each flag the CLI used to take is now fixed at one value. Whether that value is 
 | Flag | Fixed at | Evidence | Best default? |
 | --- | --- | --- | --- |
 | `--threshold` | floor 0.5, threshold 0.65 | `run.ts`, corpus policies (2026-10-22): the dev F1 maximum is 0.575 / 0.725 (all cases). On all test cases it gives F1 0.591 vs. 0.580, but catches 63% of violations instead of 73% and surfaces 80% instead of 86% (false alarms 8% vs. 12%) | yes: F1 is flat across both, and 0.5 / 0.65 finds more violations |
-| `--model` | `clef` | `run.ts` with the earlier request shape (cached answers): clef-flash AUROC 0.879 → 0.764 [−0.150, −0.081] on dev, 0.869 → 0.771 [−0.146, −0.051] on test; false alarms 4% → 32% (dev). Workers AI now rejects `clef-flash` ("Unsupported model 'clef-flash'. Use 'clef'") | yes; the only model that runs |
+| `--model` | `clef` | `run.ts` with the earlier request shape (cached answers): clef-flash AUROC 0.879 → 0.764 [−0.150, −0.081] on dev, 0.869 → 0.771 [−0.146, −0.051] on test; false alarms 4% → 32% (dev) | yes; the CLI and evals now support only `clef`, and the `clef-flash` code is removed |
 | `--no-cache` | cache on | `cache.ts` above | yes (on) |
 | `--changed-since` | off | Throwaway script on `adoption.ts`'s repository and stub (below) | yes (off) |
 | `--baseline` / `--write-baseline` | off | Same script | yes (off) |

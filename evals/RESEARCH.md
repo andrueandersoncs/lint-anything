@@ -951,5 +951,8 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   341.8M input tokens, about $82.04.
 - 2026-10-23: `clef-flash` removed from `src/clef.ts` and the eval client; `clef` is the only model.
   Request bodies and cache keys are unchanged, so existing caches still hit. No requests sent.
+- 2026-10-23: `criteria.true` and `criteria.false` required. A rule-only body inverted verdicts
+  (`TODO(#12)` 0.94, issue-less TODO 0.02); with criteria, 0.02 and 0.94. Every corpus policy already
+  had both, so request bodies and cache keys are unchanged. About 30 probe requests.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

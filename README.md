@@ -27,9 +27,9 @@ There are no built-in policies, and the CLI adds nothing to what a policy asks. 
 
 - the **body** (after the frontmatter) is the text of every request, sent exactly as written: the rule, and any framing or examples that help Clef judge it;
 - the **`select`** command decides what is judged: which files, which parts of them, and what context goes with each part. Each item it emits is one yes/no question;
-- the optional **`criteria`** say what a yes and a no mean.
+- the **`criteria`** say what a yes and a no mean: `true` describes an item that violates the rule, `false` one that follows it.
 
-The CLI reads Clef's yes as "this item violates the rule", so the policy must say that: in the body ("Decide whether it breaks the rule below"), in `criteria.true`, or both. A body that only states the rule leaves the question open, and Clef may answer whether the item *follows* it, which inverts every verdict. With only `Rule: every TODO must reference a tracking issue like #123.` as the body and no criteria, `// TODO(#12): tracked` scored 0.94 (`violation`) and `// TODO: fix this later` scored 0.02 (`pass`). The example below's body and criteria scored them 0.10 and 0.94.
+The CLI reads Clef's yes as "this item violates the rule", so a policy must have both criteria. Without them, Clef may read the question as whether the item *follows* the rule, which inverts every verdict. With only `Rule: every TODO must reference a tracking issue like #123.` as the body and no criteria, `// TODO(#12): tracked` scored 0.94 (`violation`) and `// TODO: fix this later` scored 0.02 (`pass`). With criteria added, they scored 0.02 and 0.94. A body that says what to decide ("Decide whether it breaks the rule below") helps too.
 
 ````md
 ---
@@ -46,7 +46,7 @@ Each question shows one comment. Decide whether it breaks the rule below.
 Rule: every `TODO` or `FIXME` comment must reference a tracking issue, written as `#123`, `ABC-123`, or a full issue URL.
 ````
 
-- Frontmatter holds `select` (required), `criteria` (`true` and `false`, both optional), and `limit` (below). Any other key is an error.
+- Frontmatter holds `select` and `criteria` (`true` and `false`), all required, and `limit` (below). Any other key is an error.
 - The body must not be empty.
 - The policy name is its path relative to the rules directory, without `.md` (for example `sub/todo-has-issue`).
 
@@ -83,6 +83,9 @@ A policy can count instead of reporting each item: with `limit`, its items are j
 ---
 select: |
   rg --json -w 'TODO|FIXME' | jq -c '…'
+criteria:
+  "true": "The comment has no tracking issue."
+  "false": "The comment references a tracking issue."
 limit: { max: 3, per: file }
 ---
 Rule: every `TODO` or `FIXME` comment must reference a tracking issue.

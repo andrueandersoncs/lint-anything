@@ -123,11 +123,10 @@ const pack = <A>(
 }
 
 // Nothing is added to what the policy says: the request's text is the policy body, each question is an
-// item's text, and the policy's criteria (if any) say what yes and no mean. Packing a policy's items as
+// item's text, and the policy's criteria say what yes and no mean. Packing a policy's items as
 // questions of one request won the eval suite's sweep (README, Evals); one request per item cost 2.5×.
 const itemState = (policy: Policy) => policy.body
-const itemQuestion = (policy: Policy, item: Item) =>
-  ({ type: "noul", instructions: item.text, ...(policy.criteria === undefined ? {} : { criteria: policy.criteria }) })
+const itemQuestion = (policy: Policy, item: Item) => ({ type: "noul", instructions: item.text, criteria: policy.criteria })
 
 /**
  * Plans the requests that judge a selector's `items` against `policy`: the policy body once per request and

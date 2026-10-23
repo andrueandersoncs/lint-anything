@@ -3,15 +3,16 @@ import { Effect, FileSystem, Path, Runtime, Schema } from "effect"
 /**
  * A Markdown policy: everything Clef is asked. The body after the frontmatter is the request's text, sent
  * exactly as written (the rule, and any framing or examples the author wants). The `select` shell command
- * finds what to judge itself and emits it as items; each item's text is one question.
- * `criteria` optionally says what a yes and a no mean for every question. With `limit`, the policy reports
- * how many of its items violate the rule, per file or per run, against a maximum.
+ * finds what to judge itself and emits it as items; each item's text is one question. `criteria` says what
+ * a yes (the item violates the rule) and a no mean for every question: without them Clef may read yes as
+ * "follows the rule" and invert every verdict. With `limit`, the policy reports how many of its items
+ * violate the rule, per file or per run, against a maximum.
  */
 export interface Policy {
   readonly name: string
   readonly body: string
   readonly select: string
-  readonly criteria?: { readonly true?: string; readonly false?: string }
+  readonly criteria: { readonly true: string; readonly false: string }
   readonly limit?: { readonly max: number; readonly per: "file" | "run" }
 }
 
@@ -59,11 +60,16 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
   if (select === undefined) {
     return yield* new PolicyError({ message: `${name}: frontmatter needs a select command that picks what the rule judges` })
   }
+  if (criteria?.true === undefined || criteria.false === undefined) {
+    return yield* new PolicyError({
+      message: `${name}: frontmatter needs criteria with "true" (what an item that violates the rule is) and "false" (what one that follows it is)`
+    })
+  }
   return {
     name,
     body,
     select,
-    ...(criteria === undefined ? {} : { criteria }),
+    criteria: { true: criteria.true, false: criteria.false },
     ...(limit === undefined ? {} : { limit: { max: limit.max, per: limit.per ?? "file" } })
   } satisfies Policy
 })

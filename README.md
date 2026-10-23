@@ -215,12 +215,12 @@ bun evals/wordings.ts --split test         # each rule-wording set vs. the polis
   Verdicts use `--thresholds floor,threshold`, which defaults to the CLI's. The table also shows the cut-offs that would maximize F1 on the scored cases; pick them on dev and pass them to test. The first variant is the baseline, and intervals are 95% paired bootstraps that resample files, because cases in one file share requests.
 - **Cache**: replies are cached in `evals/.cache` by model and exact request body, since Clef is deterministic. Reruns and re-scoring are free; only new requests are sent. Per-case scores go to `evals/results/<split>[.<origins>][.<category>][.wording-<set>]/<variant>.jsonl`.
 
-Findings (2026-10-22; `run.ts --origin real --category semantic`, cut-offs 0.5 / 0.65):
+Findings (2026-10-22, re-run 2026-10-23 with every answer from the cache; `run.ts --origin real --category semantic`, cut-offs 0.5 / 0.65):
 
 | Real files, semantic | Cases | Clear violations | File AUROC | Verdict F1 | Caught | Surfaced | False alarms | Item AUROC | Gold ranges reached | $ / 1k files |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | dev | 3,691 | 611 | 0.937 | 0.567 | 68% | 87% | 13% | 0.919 | 1,428 / 1,459 | $16.31 |
-| test | 3,258 | 537 | 0.931 | 0.566 | 69% | 85% | 13% | 0.909 | 1,045 / 1,093 | $13.98 |
+| test | 3,258 | 537 | 0.930 | 0.566 | 69% | 85% | 13% | 0.909 | 1,045 / 1,093 | $13.98 |
 
 The same rules as the earlier excerpt CLI (`evals/RESEARCH.md`, H19), as excerpt policies, and with their own selectors (file AUROC on clear cases, paired over the same cases):
 

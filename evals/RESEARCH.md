@@ -954,5 +954,9 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
 - 2026-10-23: `criteria.true` and `criteria.false` required. A rule-only body inverted verdicts
   (`TODO(#12)` 0.94, issue-less TODO 0.02); with criteria, 0.02 and 0.94. Every corpus policy already
   had both, so request bodies and cache keys are unchanged. About 30 probe requests.
+- 2026-10-23: after the error-output, `clef-flash`, and required-criteria changes, `run.ts --origin real
+  --category semantic` re-run on dev and test: 0 new cache entries (every request body unchanged) and
+  every number as before. README's test file AUROC corrected from 0.931 to 0.930, as `run.ts` prints it
+  and as the excerpt comparison table already gave it.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

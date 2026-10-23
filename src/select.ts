@@ -34,11 +34,18 @@ const killGroup = (pid: number) => {
 }
 
 // Each selector runs in its own process group, so a timeout can kill a whole pipeline rather than just
-// `sh`. That also keeps a terminal's Ctrl-C from reaching it, so the groups still running when the CLI
-// exits (a failed run, an interrupt) are killed here.
+// `sh`. That also keeps a terminal's Ctrl-C, or its hangup, from reaching it, so the groups still running
+// when the CLI exits (a failed run, an interrupt) are killed here. SIGINT and SIGTERM interrupt the run
+// and end in `exit`; SIGHUP (the terminal closed) would kill the CLI without it, so it kills the groups
+// and then dies of SIGHUP as it would have.
 const running = new Set<number>()
-process.on("exit", () => {
+const killRunning = () => {
   for (const pid of running) killGroup(pid)
+}
+process.on("exit", killRunning)
+process.once("SIGHUP", () => {
+  killRunning()
+  process.kill(process.pid, "SIGHUP")
 })
 
 const start = async (select: string, cwd: string | undefined): Promise<SelectorOutput> => {

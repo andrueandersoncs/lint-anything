@@ -72,12 +72,13 @@ Policies are meant to be written and tuned by a coding agent: give it the rule y
   - Items must reach every place a violation can be: a selector whose items miss the violating lines can't find them.
   - Context belongs in each item's text, and computed facts beat raw data: a TODO's age in days lets Clef judge "older than 90 days" at 99% accuracy; its commit date and today's date do not. Context costs input tokens.
   - Packing a policy's items as questions of one request matches one request per item and costs 2.4× less.
+- An item's answer is cached by its text, so whatever the text holds decides when it is asked again. Line numbers in the text (as in the example above) re-ask every item below an edit in that file; text without them stays cached until the item itself changes. `path` and `lines` set the finding's location either way.
 - Structural units (functions, classes, handlers, tests) are easiest to select with a syntax-aware tool such as [ast-grep](https://ast-grep.github.io/). The eval corpus's policies (`evals/corpus/policies/`) and their scripts (`evals/steps/`) are worked examples: a selector lists the files it judges (`rg --files -g '*.ts'`) and pipes their paths to a script that cuts out the units.
 - Policies with the same `select` command share one run of it per lint run, so a selector several policies use can live in a script (for example `.lint-anything/lib/functions.sh`) that each calls.
 
 ### Counting items: `limit`
 
-A policy can count instead of reporting each item: with `limit`, its items are judged as usual, and then the policy reports one finding per file (or, with `per: run`, one for the whole run) that is a `violation` when more than `max` items are violations.
+A policy can count instead of reporting each item: with `limit`, its items are judged as usual, and then the policy reports one finding per file (or, with `per: run`, one for the whole run) that is a `violation` when more than `max` items are violations. Its reason says where the violating items are: their lines within the file, or (with `per: run`) their `path:lines`, else their ids. A group that isn't over the limit is `inconclusive` when its items too large to judge could put it over. With `per: file`, every item needs a `path`; an item without one stops the run (exit 2).
 
 ````md
 ---
@@ -92,7 +93,7 @@ Rule: every `TODO` or `FIXME` comment must reference a tracking issue.
 ````
 
 ```
-violation     -      src/many.ts  todos  4 of 4 items violate the rule (at most 3 allowed)
+violation     -      src/many.ts  todos  4 of 4 items violate the rule (at most 3 allowed): 2-2, 9-9, 14-14, 30-30
 ```
 
 Write the rule about one item, and put the count in `limit`: Clef judges items well and counts badly (see Evals). Items in `review` are mentioned in the reason but not counted.
@@ -120,12 +121,12 @@ Clef's answer to one question shifts a little with the other questions in its re
 
 ## Output
 
-The CLI prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the item's `path:start-end`, or its `id` when it has no path and lines; a `limit` finding gives its file's path and its count as the reason:
+The CLI prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the item's `path:start-end`, or its `id` when it has no path and lines. Clef answers only with a probability, so an item's reason is the policy's `criteria.true`: what the policy says a violation is. A `limit` finding gives its file's path, and its count and the violating items' places as the reason:
 
 ```
-violation     0.93   src/a.ts  module-cohesion
-violation     0.97   src/a.ts:4-4  todo
-violation     0.97   9acebc18  commits
+violation     -      src/a.ts  todo-limit  2 of 3 items violate the rule (at most 1 allowed): 1-1, 3-3
+violation     0.97   src/a.ts:4-4  todo  The comment has no tracking issue.
+violation     0.97   9acebc18  commits  The commit message doesn't say why.
 3 checks: 3 violation, 0 review, 0 inconclusive, 0 pass
 ```
 
@@ -145,6 +146,8 @@ total           1       3           379     $0.0001
 | `0` | No violations |
 | `1` | At least one violation |
 | `2` | Invalid command line; policy, selector, configuration, or Clef API error |
+| `130` | Interrupted (SIGINT or SIGTERM): running selectors are killed and answers already received stay cached |
+| `129` | Killed by SIGHUP (terminal closed): running selectors are killed first |
 
 An error that stops the run (exit `2`) is printed to stderr as one line, `error: <message>`; stdout holds only findings.
 

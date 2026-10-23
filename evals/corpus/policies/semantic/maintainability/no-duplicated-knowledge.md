@@ -1,9 +1,8 @@
 ---
 # Each ~1 KB excerpt of the file, numbered, with the code elsewhere in the file most like it and its lines and literals that recur elsewhere.
 select: |
-  for f do shift; case $f in *.ts|*.tsx|*.js|*.jsx|*.py|*.go) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/duplicates.ts" "$@" |
+  rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
+  bun "$EVAL_STEPS/duplicates.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

@@ -1,9 +1,8 @@
 ---
 # Each named function with its doc comment (parts of at most 40 lines), enclosing class or function, side-effect lines, and in-file callees.
 select: |
-  for f do shift; case $f in *.ts|*.tsx|*.js|*.jsx|*.py|*.go) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/functions.ts" --named --docs --chunk 40 --context --effects "$@" |
+  rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
+  bun "$EVAL_STEPS/functions.ts" --named --docs --chunk 40 --context --effects |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

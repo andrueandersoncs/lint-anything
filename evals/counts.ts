@@ -55,23 +55,22 @@ const files = await Promise.all(counts.map(async (issueless, index) => {
   return { path, source, issueless, total: todos.length }
 }))
 
-// Both selectors keep the generated sources under src/ (all the files they are given) and end in
-// present.ts, which writes each item's location into its text as the corpus selectors do.
-const sources = `for f do shift; case $f in src/*) set -- "$@" "$f";; esac; done\n[ $# -gt 0 ] || exit 0\n`
+// Both selectors read the generated sources under src/ and end in present.ts, which writes each item's
+// location into its text as the corpus selectors do.
 // A's rule counts across the file, so its selector hands Clef each whole file as one item.
-const whole = adHocPolicy("counts/whole-file", `${sources}bun "$EVAL_STEPS/whole-file.ts" "$@" | bun "$EVAL_STEPS/present.ts"`,
+const whole = adHocPolicy("counts/whole-file", `rg --files --sort path src | bun "$EVAL_STEPS/whole-file.ts" | bun "$EVAL_STEPS/present.ts"`,
   `# At most ${limit} untracked TODOs\n\nA file may contain at most ${limit} \`TODO\` or \`FIXME\` comments that don't reference a tracking issue ` +
   `(\`#123\`, \`ABC-123\`, or an issue URL). Report a file with ${limit + 1} or more.`)
 // B's rule is about one TODO, so its selector emits each TODO line; `limit` does the counting.
 const items = adHocPolicy("counts/limit",
-  `${sources}rg --json -w 'TODO|FIXME' "$@" |\n  jq -c 'select(.type == "match") | {id: "\\(.data.path.text):\\(.data.line_number)", path: .data.path.text, ` +
+  `rg --json -w 'TODO|FIXME' src |\n  jq -c 'select(.type == "match") | {id: "\\(.data.path.text):\\(.data.line_number)", path: .data.path.text, ` +
     `lines: [.data.line_number, .data.line_number], text: (.data.lines.text | rtrimstr("\\n"))}' |\n  bun "$EVAL_STEPS/present.ts"`,
   "# TODOs reference an issue\n\nEvery `TODO` or `FIXME` comment must reference a tracking issue, written as `#123`, `ABC-123`, or a full issue URL.",
   { max: limit, per: "file" })
 
-/** Runs `policy`'s selector over the files and judges its items in the CLI's order, one group per file. */
+/** Runs `policy`'s selector in the generated directory and judges its items in the CLI's order, one group per file. */
 const judge = async (policy: Policy) => {
-  const selected = await Effect.runPromise(runSelector(policy, files.map((file) => file.path), directory))
+  const selected = await Effect.runPromise(runSelector(policy, directory))
   const itemCases: Array<ItemCase> = selected.toSorted((a, b) => a.id.localeCompare(b.id)).map((entry) => ({
     id: entry.id, file: { id: entry.path! } as Case["file"], policy, gold: { label: "complies", note: "" }, entry
   }))

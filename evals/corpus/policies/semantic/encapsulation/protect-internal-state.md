@@ -1,9 +1,8 @@
 ---
 # Each place that can leak mutable state (a class's public fields; a method returning a field or storing a parameter as given; a public or returned module-level mutable value), with its owner's fields.
 select: |
-  for f do shift; case $f in *.ts|*.tsx|*.js|*.jsx|*.py|*.go) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/module-state.ts" "$@" |
+  rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
+  bun "$EVAL_STEPS/module-state.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

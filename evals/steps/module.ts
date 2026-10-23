@@ -2,6 +2,7 @@
 // Python, or TypeScript/JavaScript file — its top-level declarations, the members of its classes and
 // structs, and where names are referenced — computed without a parser from strings-and-comments-blanked
 // lines and bracket depth. Eval helpers, not part of the CLI.
+import { inputPaths } from "./step.ts"
 
 export type Language = "go" | "py" | "ts"
 
@@ -418,12 +419,12 @@ export const numbered = (lines: ReadonlyArray<string>, from: number, to: number,
   return shown.join("\n")
 }
 
-/** Reads each argument path and runs `select` on it, writing the items it returns as JSONL. */
+/** Reads each path on stdin and runs `select` on it, writing the items it returns as JSONL. */
 export const selectFiles = async (
   select: (path: string, source: string, language: Language) => ReadonlyArray<Record<string, unknown>>
 ) => {
   const items: Array<string> = []
-  for (const path of Bun.argv.slice(2)) {
+  for (const path of await inputPaths("module", Bun.argv.slice(2))) {
     const language = languageOf(path)
     if (language === undefined) continue
     const source = await Bun.file(path).text()

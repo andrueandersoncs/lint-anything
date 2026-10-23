@@ -263,6 +263,10 @@ export const loadCorpus = async (
         problems.push(`${where}: ${record.id}: missing ${location}`)
         continue
       }
+      // Selectors find files themselves, run from this directory, so it must hold only this file.
+      const others = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: `${corpusDirectory}/files/${record.id}`, dot: true })))
+        .filter((path) => path !== record.path)
+      if (others.length > 0) problems.push(`${where}: ${record.id}: files/${record.id} holds more than its file: ${others.join(", ")}`)
       files.push({ ...record, slice, source: await file.text() })
     }
   }

@@ -1,5 +1,5 @@
-// Eval selector: the functions and methods (TS/TSX/JS, Python, Go) of each file given as an argument, one
-// item each, found with ast-grep. Shared by the function-level corpus policies; flags pick the units and
+// Eval selector: the functions and methods (TS/TSX/JS, Python, Go) of each file whose path it reads on
+// stdin, one item each, found with ast-grep. Shared by the function-level corpus policies; flags pick the units and
 // the evidence each policy needs:
 //   --min-lines N   only functions of at least N lines
 //   --chunk N       split a function longer than N lines into equal parts of at most N lines, one item each,
@@ -28,6 +28,8 @@
 // Items: id `path:line name`, the function's lines (decorators included) as text, plus the flags' evidence.
 // Module-code items: id `path:line (module code)`, at most 60 lines each.
 
+import { inputPaths } from "./step.ts"
+
 const args = Bun.argv.slice(2)
 const option = (name: string) => {
   const at = args.indexOf(name)
@@ -55,7 +57,7 @@ const hidden = option("--hidden") ?? false
 const names = option("--names") ?? false
 const effectsOn = option("--effects") ?? false
 const minMethods = Number(value("--classes") ?? "Infinity")
-const paths = args
+const paths = await inputPaths("functions", args)
 
 type Language = "ts" | "py" | "go"
 const languageOf = (path: string): Language | undefined =>

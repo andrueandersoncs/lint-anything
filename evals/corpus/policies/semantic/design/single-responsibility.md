@@ -1,9 +1,8 @@
 ---
 # Each function of 20 or more lines with its enclosing class or function, and each class with 3 or more methods as an outline.
 select: |
-  for f do shift; case $f in *.ts|*.tsx|*.js|*.jsx|*.py|*.go) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/functions.ts" --min-lines 20 --context --classes 3 "$@" |
+  rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
+  bun "$EVAL_STEPS/functions.ts" --min-lines 20 --context --classes 3 |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

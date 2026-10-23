@@ -1,9 +1,7 @@
 ---
 # Each TODO or FIXME line.
 select: |
-  for f do shift; case $f in *.ts|*.js|*.py|*.go|*.sh|*.sql) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  rg --json -w 'TODO|FIXME' "$@" |
+  rg --json -w 'TODO|FIXME' --hidden -g '*.{ts,js,py,go,sh,sql}' |
     jq -c 'select(.type == "match") | (.data.lines.text | rtrimstr("\n")) as $t | {id: "\(.data.path.text):\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number + ($t | split("\n") | length) - 1], text: $t}' |
   bun "$EVAL_STEPS/present.ts"
 criteria:

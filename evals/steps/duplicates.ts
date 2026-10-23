@@ -1,10 +1,11 @@
-// Eval selector: each file given as an argument cut into excerpts of about 1 KB (cuts preferred before
+// Eval selector: each file whose path it reads on stdin cut into excerpts of about 1 KB (cuts preferred before
 // top-level declarations, then after blank lines), one item per excerpt, numbered. Evidence:
 // `similar` — the other places in the file that share the most token sequences with the excerpt (exact
 // runs of 4 tokens, ignoring runs that are everywhere in the file), shown numbered; `repeated elsewhere` —
 // the excerpt's non-trivial lines and its string and number literals that also appear elsewhere in the
 // file. For rules about repeated logic or knowledge within a file.
 import { languageOf, numbered } from "./module.ts"
+import { inputPaths } from "./step.ts"
 
 const maxBytes = 1000
 const gram = 4
@@ -46,7 +47,7 @@ const trivialLine = (line: string) =>
   line.length < 24 || /^(?:import\b|from\s+\S+\s+import\b|if err != nil\b|return (?:nil, )?err\b|\} else \{$|[})\]]+[;,]?$)/.test(line)
 
 const items: Array<string> = []
-for (const path of Bun.argv.slice(2)) {
+for (const path of await inputPaths("duplicates", Bun.argv.slice(2))) {
   const language = languageOf(path)
   const source = await Bun.file(path).text()
   if (source.trim() === "") continue

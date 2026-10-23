@@ -75,11 +75,8 @@ const itemLocation = (item: Item) => ({
 const byLocation = (a: Item, b: Item) =>
   (a.path ?? "").localeCompare(b.path ?? "") || (a.lines?.[0] ?? 0) - (b.lines?.[0] ?? 0) || a.id.localeCompare(b.id)
 
-/**
- * Runs each policy's selector on `paths` (every file the CLI was given) and judges the items it selects.
- */
+/** Runs each policy's selector from the current directory and judges the items it selects. */
 export const lint = Effect.fn("lint")(function*(
-  paths: ReadonlyArray<string>,
   policies: ReadonlyArray<Policy>,
   threshold: number
 ) {
@@ -87,7 +84,7 @@ export const lint = Effect.fn("lint")(function*(
   // Policies with the same selector run it once in this run.
   const runs: SelectorRuns = new Map()
   const findings = yield* Effect.forEach(policies, (policy) =>
-    runSelector(policy, paths, undefined, runs).pipe(
+    runSelector(policy, undefined, runs).pipe(
       // Answers depend on how items are packed into requests, and tools like rg emit matches in varying
       // order; sorting makes the packing, and so the verdicts, repeatable.
       Effect.map((items) => items.toSorted(byLocation)),

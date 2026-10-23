@@ -1,9 +1,8 @@
 ---
 # Excerpts of at most 1,000 bytes, asked about as the excerpt CLI asked (evals/RESEARCH.md, H19).
 select: |
-  for f do shift; case $f in *.ts) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/excerpts.ts" 1000 "$@"
+  rg --files --hidden --sort path -g '*.ts' |
+  bun "$EVAL_STEPS/excerpts.ts" 1000
 criteria:
   "true": "The file contains at least one complete violation of the rule."
   "false": "The file follows the rule, or the rule governs nothing in it."

@@ -3,7 +3,7 @@ import { Effect, FileSystem, Path, Runtime, Schema } from "effect"
 /**
  * A Markdown policy: everything Clef is asked. The body after the frontmatter is the request's text, sent
  * exactly as written (the rule, and any framing or examples the author wants). The `select` shell command
- * receives every file the CLI was given and emits the items to judge; each item's text is one question.
+ * finds what to judge itself and emits it as items; each item's text is one question.
  * `criteria` optionally says what a yes and a no mean for every question. With `limit`, the policy reports
  * how many of its items violate the rule, per file or per run, against a maximum.
  */

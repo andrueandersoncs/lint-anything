@@ -66,10 +66,10 @@ const pooled = async <A, B>(values: ReadonlyArray<A>, limit: number, use: (value
 }
 
 /**
- * Runs each selector on every corpus file case of `split` its set covers (from the file's directory, with
- * its path as the only argument) and labels the items. Also counts how many gold violation ranges some
- * item overlaps. File cases labelled ambiguous are left out unless `options.ambiguous`; their items are
- * labelled `ambiguous`.
+ * Runs each selector on every corpus file case of `split` its set covers (from the file's directory, which
+ * holds only that file) and labels the items. Also counts how many gold violation ranges some item
+ * overlaps. File cases labelled ambiguous are left out unless `options.ambiguous`; their items are labelled
+ * `ambiguous`.
  */
 export const selectItems = async (
   corpus: Corpus,
@@ -83,7 +83,7 @@ export const selectItems = async (
   )
   const selections = await pooled(fileCases, availableParallelism(), async (fileCase) => {
     const { policy } = set.policies.find(({ original }) => original === fileCase.policy)!
-    const selected = await Effect.runPromise(runSelector(policy, [fileCase.file.path], `${corpusDirectory}/files/${fileCase.file.id}`))
+    const selected = await Effect.runPromise(runSelector(policy, `${corpusDirectory}/files/${fileCase.file.id}`))
     return { fileCase, selected, policy }
   })
   const items: Array<ItemCase> = []

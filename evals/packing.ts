@@ -12,7 +12,6 @@ import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { Clef } from "../src/clef.ts"
 import { defaultThreshold, type Finding, lint, reviewFloor, verdictOf } from "../src/lint.ts"
-import { readPaths } from "../src/source.ts"
 import { makeClient } from "./client.ts"
 import { loadCorpus } from "./corpus.ts"
 import { auroc, brier, pairedInterval } from "./metrics.ts"
@@ -28,8 +27,7 @@ for (const file of files) await Bun.write(join(workspace, file.id, file.path), f
 const policies = ["semantic/readability/comments-explain-why", "semantic/design/single-responsibility", "control/hygiene/todo-has-issue"].map(byName)
 const cwd = process.cwd()
 process.chdir(workspace)
-const run = () => Effect.runPromise(readPaths(["**/*.{ts,tsx,js,jsx,py,go}"]).pipe(
-  Effect.flatMap((paths) => lint(paths, policies, defaultThreshold)),
+const run = () => Effect.runPromise(lint(policies, defaultThreshold).pipe(
   Effect.provide(Layer.mergeAll(Clef.layer("clef"), BunServices.layer))
 ))
 try {

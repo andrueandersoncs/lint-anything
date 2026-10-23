@@ -1,9 +1,7 @@
 ---
 # Each run of comment lines with the line after it.
 select: |
-  for f do shift; case $f in *.ts|*.tsx|*.js|*.jsx|*.py|*.go) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  rg --json -U -P '^(?:[ \t]*(?://|#|/\*|\*).*\n)+.*' "$@" |
+  rg --json -U -P '^(?:[ \t]*(?://|#|/\*|\*).*\n)+.*' --hidden -g '*.{ts,tsx,js,jsx,py,go}' |
     jq -c 'select(.type == "match") | (.data.lines.text | rtrimstr("\n")) as $t | {id: "\(.data.path.text):\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number + ($t | split("\n") | length) - 1], text: $t}' |
   bun "$EVAL_STEPS/present.ts"
 criteria:

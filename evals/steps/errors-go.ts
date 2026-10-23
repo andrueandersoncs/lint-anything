@@ -1,10 +1,11 @@
-// Eval selector: `bun "$EVAL_STEPS/errors-go.ts" "$@"` emits, for each Go file given, every statement that
+// Eval selector: `bun "$EVAL_STEPS/errors-go.ts"` emits, for each Go file whose path it reads on stdin, every statement that
 // could drop a returned error: a call used as a bare statement, a `defer` or `go` call, and an assignment
 // that puts a call's result into `_`. Calls that return nothing an error could hide in are left out (the
 // fmt print family, builtins, testing.T reporting, sync locking). Evidence, when the file shows it: the
 // callee's signature if the file declares exactly one of that name (`declared`), which result `_` takes
 // (`blank`), and the line that set the call's receiver (`receiver`).
 import { $ } from "bun"
+import { inputPaths } from "./step.ts"
 
 const rule = `
 id: dropped
@@ -114,7 +115,7 @@ const receiverOf = (lines: ReadonlyArray<string>, start: number, name: string) =
   return ""
 }
 
-const paths = Bun.argv.slice(2)
+const paths = await inputPaths("errors-go", Bun.argv.slice(2))
 const out: Array<string> = []
 if (paths.length > 0) {
   const run = await $`ast-grep scan --inline-rules ${rule} --json=stream ${paths}`.nothrow().quiet()

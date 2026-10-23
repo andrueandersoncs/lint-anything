@@ -1,9 +1,8 @@
 ---
 # Each test, named subtest, and describe block: its name, with its suites, subtests, and assertions as evidence.
 select: |
-  for f do shift; case $f in *.test.ts|*.test.tsx|*.test.js|*.spec.ts|*.spec.tsx|*.spec.js|*_test.ts|*_test.go|*_test.py|test_*.py|*/test_*.py|tests/*.py|*/tests/*.py|test/*.ts|test/*.js|*/test/*.ts|*/test/*.js) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/tests.ts" names "$@" |
+  rg --files --hidden --sort path -g '*.{test,spec}.{ts,tsx,js}' -g '*_test.{ts,go,py}' -g 'test_*.py' -g '**/tests/**/*.py' -g '**/test/**/*.{ts,js}' |
+  bun "$EVAL_STEPS/tests.ts" names |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

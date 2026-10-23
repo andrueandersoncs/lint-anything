@@ -1,9 +1,8 @@
 ---
 # Each function of 10 or more lines, and each run of module-level code (script bodies).
 select: |
-  for f do shift; case $f in *.ts|*.tsx|*.js|*.jsx|*.py|*.go) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/functions.ts" --min-lines 10 --module "$@" |
+  rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
+  bun "$EVAL_STEPS/functions.ts" --min-lines 10 --module |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

@@ -1,4 +1,4 @@
-// Eval selector: `bun "$EVAL_STEPS/tests.ts" <names|behavior> <file>…` emits the tests in test files as items
+// Eval selector: `bun "$EVAL_STEPS/tests.ts" <names|behavior>` emits the tests in the test files whose paths it reads on stdin as items
 // (JSONL), found with ast-grep: TypeScript/JavaScript `it`/`test` calls and `describe` blocks, Python `test…`
 // functions and methods (unittest classes included), Go `Test…` functions and `t.Run` subtests.
 //   names:    one item per test, subtest, and describe block whose name is written out: the name, with its
@@ -10,6 +10,7 @@
 // These are eval helpers, not part of the CLI.
 
 import { resolve } from "node:path"
+import { inputPaths } from "./step.ts"
 
 // suite: a describe block or test class; wrapper: a function that declares tests (`function suite() { describe(…) }`).
 type Kind = "test" | "subtest" | "suite" | "wrapper" | "helper"
@@ -23,12 +24,12 @@ interface Unit {
   parent?: Unit
 }
 
-const mode = Bun.argv[2]
-const paths = Bun.argv.slice(3)
+const [mode, ...extra] = Bun.argv.slice(2)
 if (mode !== "names" && mode !== "behavior") {
   console.error(`tests: first argument must be names or behavior (got ${JSON.stringify(mode)})`)
   process.exit(2)
 }
+const paths = await inputPaths("tests", extra)
 
 const jsCalls = "it|test|describe|context|suite|specify|beforeEach|afterEach|beforeAll|afterAll|before|after"
 // Rule ids must be unique in one scan; `call/TypeScript` is read as `call`.

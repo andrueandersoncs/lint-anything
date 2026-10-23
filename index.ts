@@ -1,10 +1,9 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Runtime, Schema } from "effect"
-import { Argument, Command } from "effect/cli"
+import { Command } from "effect/cli"
 import { Clef } from "./src/clef.ts"
 import { defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
 import { loadPolicies } from "./src/policy.ts"
-import { readPaths } from "./src/source.ts"
 
 class ViolationsFound extends Schema.TaggedError<ViolationsFound>()("ViolationsFound", {
   count: Schema.Number
@@ -41,16 +40,10 @@ const formatText = (findings: ReadonlyArray<Finding>): string => {
 
 const command = Command.make(
   "lint-anything",
-  {
-    files: Argument.String("files").pipe(
-      Argument.withDescription("Globs of files to lint, relative to the current directory"),
-      Argument.variadic({ min: 1 })
-    )
-  },
-  Effect.fn(function*({ files }) {
+  {},
+  Effect.fn(function*() {
     const policies = yield* loadPolicies(rulesDirectory)
-    const paths = yield* readPaths(files)
-    const findings = yield* lint(paths, policies, defaultThreshold).pipe(
+    const findings = yield* lint(policies, defaultThreshold).pipe(
       Effect.provide(Clef.layer("clef", cacheDirectory))
     )
     yield* Console.log(formatText(findings))
@@ -59,7 +52,7 @@ const command = Command.make(
       return yield* new ViolationsFound({ count })
     }
   })
-).pipe(Command.withDescription("Lint files against natural-language policies with Cloudflare Clef"))
+).pipe(Command.withDescription(`Check every policy in ${rulesDirectory} with Cloudflare Clef`))
 
 command.pipe(
   Command.run({ version: "0.1.0" }),

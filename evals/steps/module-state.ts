@@ -6,7 +6,7 @@
 //   directly, or stores one of its parameters in a field;
 // - each module-level mutable value (a list, map, object, or set literal bound to a name), public or used by
 //   a function that returns it.
-// For rules about leaking internal mutable state. Paths are given as arguments.
+// For rules about leaking internal mutable state. Paths are read on stdin.
 import { type Declaration, declarations, numbered, scan, type Scanned, selectFiles, wordPattern } from "./module.ts"
 
 const maxLines = 30

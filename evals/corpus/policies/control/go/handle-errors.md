@@ -2,9 +2,8 @@
 # Each statement that could drop a returned error (a bare call, a defer or go call, an assignment to `_`),
 # with the callee's signature when this file declares it, which result `_` takes, and where the receiver was set.
 select: |
-  for f do shift; case $f in *.go) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/errors-go.ts" "$@" |
+  rg --files --hidden --sort path -g '*.go' |
+  bun "$EVAL_STEPS/errors-go.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

@@ -2,9 +2,8 @@
 # Each line holding an unnamed number or string literal that isn't a message, key, import, or type, with its
 # literals, where they recur in the file (and any constant naming them), and its enclosing block.
 select: |
-  for f do shift; case $f in *.ts|*.tsx|*.js|*.jsx|*.py|*.go) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/literals.ts" "$@" | bun "$EVAL_STEPS/enclosing.ts" |
+  rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
+  bun "$EVAL_STEPS/literals.ts" | bun "$EVAL_STEPS/enclosing.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

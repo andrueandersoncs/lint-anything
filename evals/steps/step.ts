@@ -1,9 +1,12 @@
 // Runs an eval selector step as a script: reads items (JSONL) on stdin, transforms them, writes them back
-// (JSONL) to stdout. Eval selectors call these steps as `bun "$EVAL_STEPS/<step>.ts"`; evals/selected.ts
+// (JSONL) to stdout. Eval selectors call these steps as `bun "$EVAL_STEPS/<step>.ts"`; evals/corpus.ts
 // sets EVAL_STEPS. These are eval helpers, not part of the CLI.
 //
 // Inside a selector pipeline an item may carry context fields beyond id, text, path, and lines; the CLI
 // accepts only those four, so a pipeline ends with `present.ts`, which writes the context into the text.
+//
+// Steps that cut files into items (functions.ts, literals.ts, …) start a pipeline instead: they read file
+// paths on stdin, one per line, as `rg --files` prints them.
 import { Effect } from "effect"
 
 export interface StepItem {
@@ -47,6 +50,18 @@ const parseStepItem = (line: string): StepItem | string => {
 }
 
 export const formatStepItem = ({ evidence, ...item }: StepItem) => JSON.stringify({ ...item, ...Object.fromEntries(evidence) })
+
+/**
+ * The file paths a file-cutting step reads on stdin, one per line. `extra` is what is left of its arguments
+ * once its options are read; anything left is a mistake (paths come on stdin), so the step exits.
+ */
+export const inputPaths = async (name: string, extra: ReadonlyArray<string>) => {
+  if (extra.length > 0) {
+    console.error(`${name}: unexpected arguments ${extra.join(" ")}; pass file paths on stdin, one per line`)
+    process.exit(2)
+  }
+  return (await Bun.stdin.text()).split("\n").filter((line) => line !== "")
+}
 
 export const runStep = async (name: string, step: (items: ReadonlyArray<StepItem>) => Effect.Effect<ReadonlyArray<StepItem>, Error>) => {
   const items: Array<StepItem> = []

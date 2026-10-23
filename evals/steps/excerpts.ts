@@ -1,17 +1,20 @@
-// Eval selector: cuts each file given as an argument into consecutive excerpts of at most <bytes> bytes, the
+// Eval selector: cuts each file whose path it reads on stdin into consecutive excerpts of at most <bytes> bytes, the
 // cutter the CLI used before selectors were required (evals/RESEARCH.md, H19): cut before a top-level
 // declaration where possible, else before a line after a blank line, else where the bytes run out. A file
 // within <bytes> is one excerpt. Each excerpt is one item whose text is the question the excerpt CLI asked
 // about it (`path: <path> (lines a-b of n)`, then `file:` and the excerpt), so a policy with this selector,
 // that CLI's guidance in its body, and its criteria sends that CLI's requests: the floor a selector built
 // for a rule has to beat.
-//   bun "$EVAL_STEPS/excerpts.ts" <bytes> <file> …
-const [limit, ...paths] = Bun.argv.slice(2)
+//   rg --files | bun "$EVAL_STEPS/excerpts.ts" <bytes>
+import { inputPaths } from "./step.ts"
+
+const [limit, ...extra] = Bun.argv.slice(2)
 const maxBytes = Number(limit)
 if (!Number.isInteger(maxBytes) || maxBytes < 1) {
   console.error("excerpts.ts: first argument must be the excerpt size in bytes")
   process.exit(2)
 }
+const paths = await inputPaths("excerpts", extra)
 
 const excerpts = (source: string): Array<{ start: number; end: number; text: string }> => {
   const lines = source.split("\n")

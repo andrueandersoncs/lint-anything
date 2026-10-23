@@ -1,7 +1,7 @@
 // Eval selector: each public declaration of a file (exported top-level function, type, class, constant, or
 // variable; public method or property of an exported class) as one item, with where else in the file it
 // is referenced (`references`) and the file's public and non-public names (`module`). For rules about a
-// module's public surface. Paths are given as arguments.
+// module's public surface. Paths are read on stdin.
 import { type Declaration, declarations, enclosing, numbered, references, scan, selectFiles } from "./module.ts"
 
 const maxLines = 25

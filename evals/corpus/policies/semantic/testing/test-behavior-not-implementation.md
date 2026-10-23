@@ -1,9 +1,8 @@
 ---
 # Each test, subtest, describe block, and test helper, fixture, or hook: its code, with the private members it touches, its mocks, and its assertions on calls as evidence.
 select: |
-  for f do shift; case $f in *.test.ts|*.test.tsx|*.test.js|*.spec.ts|*.spec.tsx|*.spec.js|*_test.ts|*_test.go|*_test.py|test_*.py|*/test_*.py|tests/*.py|*/tests/*.py|test/*.ts|test/*.js|*/test/*.ts|*/test/*.js) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/tests.ts" behavior "$@" |
+  rg --files --hidden --sort path -g '*.{test,spec}.{ts,tsx,js}' -g '*_test.{ts,go,py}' -g 'test_*.py' -g '**/tests/**/*.py' -g '**/test/**/*.{ts,js}' |
+  bun "$EVAL_STEPS/tests.ts" behavior |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

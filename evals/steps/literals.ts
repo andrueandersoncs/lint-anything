@@ -1,5 +1,5 @@
-// Eval selector: `bun "$EVAL_STEPS/literals.ts" "$@"` emits each line of the TypeScript, JavaScript,
-// Python, and Go files given that holds a literal which might need a name: a number other than 0 and 1 (or
+// Eval selector: `bun "$EVAL_STEPS/literals.ts"` emits each line of the TypeScript, JavaScript, Python,
+// and Go files whose paths it reads on stdin that holds a literal which might need a name: a number other than 0 and 1 (or
 // a 1 in a duration or shift), or a string that is neither prose, a format string, nor empty. Literals that
 // already have a name are left out (module-level and ALL_CAPS constants, Go `const`, package `var`s, enum
 // members), and so are literals that carry no decision: imports, type positions, struct tags, object and
@@ -8,6 +8,7 @@
 // file and the constants already named with those values (`elsewhere`). Pipe the items through
 // `enclosing.ts` for the code around them.
 import { $ } from "bun"
+import { inputPaths } from "./step.ts"
 
 // Calls whose arguments are messages, not decisions: logging, printing, test names, assertions.
 const messageCall = "(?i)(^|\\\\.)(log\\\\w*|logger|print\\\\w*|printf|sprintf|errorf|fatal\\\\w*|panic\\\\w*|warn\\\\w*|info\\\\w*|debug\\\\w*|trace|error|exception|assert\\\\w*|t\\\\.run|describe|it|test|skip|gettext|_)$"
@@ -153,7 +154,7 @@ const elsewhereOf = (lines: ReadonlyArray<string>, line: number, literals: Reado
     return [`${literal} also on line${others.length > 1 ? "s" : ""} ${shown}${names === "" ? "" : `; named at ${names}`}`]
   }).join("\n")
 
-const paths = Bun.argv.slice(2)
+const paths = await inputPaths("literals", Bun.argv.slice(2))
 const out: Array<string> = []
 if (paths.length > 0) {
   const run = await $`ast-grep scan --inline-rules ${rules} --json=stream ${paths}`.nothrow().quiet()

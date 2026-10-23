@@ -2,9 +2,8 @@
 # Each error handler (a catch or except clause, a `.catch(…)` handler, a Go `if` that tests an error, a Go
 # error built from another), with the code whose error it handles and the line opening its function.
 select: |
-  for f do shift; case $f in *.ts|*.tsx|*.js|*.jsx|*.py|*.go) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  bun "$EVAL_STEPS/errors.ts" "$@" |
+  rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
+  bun "$EVAL_STEPS/errors.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
   "true": "The item contains at least one complete violation of the rule."

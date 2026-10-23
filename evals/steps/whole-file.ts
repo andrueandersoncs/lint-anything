@@ -1,7 +1,9 @@
-// Eval selector: each file given as an argument becomes one item holding the whole file. For rules about a
-// file as a whole. Empty files emit nothing.
+// Eval selector: each file whose path it reads on stdin becomes one item holding the whole file. For rules
+// about a file as a whole. Empty files emit nothing.
+import { inputPaths } from "./step.ts"
+
 const items: Array<string> = []
-for (const path of Bun.argv.slice(2)) {
+for (const path of await inputPaths("whole-file", Bun.argv.slice(2))) {
   const text = await Bun.file(path).text()
   if (text.trim() === "") continue
   const lines = text.endsWith("\n") ? text.split("\n").length - 1 : text.split("\n").length

@@ -1,4 +1,4 @@
-// Eval selector: each file given as an argument as one item spanning the whole file, whose text is the
+// Eval selector: each file whose path it reads on stdin as one item spanning the whole file, whose text is the
 // file's outline: what it imports, then each top-level declaration (line, kind, signature, and the first
 // line of its doc comment or docstring) with the names of a class's or struct's members. For rules about
 // what a file is about as a whole.

@@ -1,5 +1,5 @@
-// Eval selector: `bun "$EVAL_STEPS/errors.ts" "$@"` emits every error handler in the TypeScript,
-// JavaScript, Python, and Go files given: `catch` clauses and `.catch(…)`-style handler calls, `except`
+// Eval selector: `bun "$EVAL_STEPS/errors.ts"` emits every error handler in the TypeScript, JavaScript,
+// Python, and Go files whose paths it reads on stdin: `catch` clauses and `.catch(…)`-style handler calls, `except`
 // clauses and `suppress(…)` blocks, Go `if` blocks that test an error (or `recover()`), and Go
 // `fmt.Errorf` / `errors.New` / `log.Fatal…` calls outside those blocks. A Go block that only returns the
 // error unchanged (`return nil, err`) handles nothing and is left out. Each item is the handler (at most
@@ -7,6 +7,7 @@
 // statement before an `if err != nil`, or the expression `.catch` is called on) and the line that opens
 // the enclosing function (`function`).
 import { $ } from "bun"
+import { inputPaths } from "./step.ts"
 
 const handlerProperty = "^(catch|catchAll|catchTag|catchTags|catchAllCause|catchError|mapError|orElse|tapError)$"
 const script = (language: string) => `
@@ -180,7 +181,7 @@ const linesOf = async (path: string) => {
   return files.get(path)!
 }
 
-const paths = Bun.argv.slice(2)
+const paths = await inputPaths("errors", Bun.argv.slice(2))
 const out: Array<string> = []
 if (paths.length > 0) {
   const run = await $`ast-grep scan --inline-rules ${rules} --json=stream ${paths}`.nothrow().quiet()

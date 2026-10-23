@@ -12,28 +12,30 @@ type ShellOutput = Awaited<ReturnType<typeof Bun.$>>
 
 /**
  * The selectors one lint run has started, so policies with the same selector run it once. Create one per
- * run: files may change between runs.
+ * run: what selectors read may change between runs.
  */
 export type SelectorRuns = Map<string, Promise<ShellOutput>>
 
 /**
- * Runs `policy.select` with `sh -c`, passing `paths` as its arguments (`"$@"`), from `cwd`. Its stdout must
- * be JSONL: one item per non-empty line. A non-zero exit or an invalid line fails the run. With `runs`, a
- * selector already run with the same command, arguments, and directory reuses that run's output.
+ * Runs `policy.select` with `sh -c` from `cwd`, with no arguments and an empty stdin: the selector finds
+ * what it judges itself. Its stdout must be JSONL: one item per non-empty line. A non-zero exit or an
+ * invalid line fails the run. With `runs`, a selector already run with the same command and directory
+ * reuses that run's output.
  */
 export const runSelector = Effect.fn("runSelector")(function*(
   policy: Policy,
-  paths: ReadonlyArray<string>,
   cwd?: string,
   runs?: SelectorRuns
 ) {
   const result = yield* Effect.promise(() => {
     const start = () => {
-      const started = Bun.$`sh -c ${policy.select} sh ${paths}`.quiet().nothrow()
+      // Without a path, tools such as rg search stdin when it is a pipe, so the CLI's own stdin would
+      // silently become the selector's input.
+      const started = Bun.$`sh -c ${policy.select} < /dev/null`.quiet().nothrow()
       return Promise.resolve(cwd === undefined ? started : started.cwd(cwd))
     }
     if (runs === undefined) return start()
-    const key = JSON.stringify([policy.select, paths, cwd ?? process.cwd()])
+    const key = JSON.stringify([policy.select, cwd ?? process.cwd()])
     let run = runs.get(key)
     if (run === undefined) {
       run = start()

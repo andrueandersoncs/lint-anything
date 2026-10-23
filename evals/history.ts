@@ -105,7 +105,7 @@ const rule = "# Old TODOs reference an issue\n\nA `TODO` or `FIXME` comment adde
 // pins today's date so every run sends the same requests; a real policy would compute it with
 // `today=$(date +%F)`.
 const select = (fields: string, steps = "") =>
-  `today=${today}\nrg --json -w 'TODO|FIXME' "$@" |\n  jq -c --arg today "$today" 'select(.type == "match") | ` +
+  `today=${today}\nrg --json -w 'TODO|FIXME' |\n  jq -c --arg today "$today" 'select(.type == "match") | ` +
   `{id: "\\(.data.path.text):\\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number], ` +
   `text: (.data.lines.text | rtrimstr("\\n"))${fields}}' |${steps}\n  bun "$EVAL_STEPS/present.ts"`
 const arms = {
@@ -119,12 +119,11 @@ const arms = {
 // --- Run ------------------------------------------------------------------------------------------
 
 const ask = makeClient(concurrency)
-const paths = files.map((file) => file.path)
 const results = []
 try {
   for (const [arm, command] of Object.entries(arms)) {
     const policy = adHocPolicy(`history/${arm}`, command, rule)
-    const selected = await Effect.runPromise(runSelector(policy, paths, repository))
+    const selected = await Effect.runPromise(runSelector(policy, repository))
     const items: Array<ItemCase> = selected.map((entry) => {
       const todo = truth.get(entry.id)
       if (todo === undefined) throw new Error(`selector found an unexpected TODO at ${entry.id}`)

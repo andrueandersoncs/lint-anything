@@ -1,6 +1,6 @@
 # lint-anything
 
-Lint any text file against plain-English policies, judged by Cloudflare's [Clef](https://developers.cloudflare.com/workers-ai/models/clef/) decision model on Workers AI.
+Check anything against plain-English policies, judged by Cloudflare's [Clef](https://developers.cloudflare.com/workers-ai/models/clef/) decision model on Workers AI. A policy's selector decides what is checked: parts of files, facts derived from them, a repository's history, a third-party service.
 
 ## Run
 
@@ -8,10 +8,10 @@ Lint any text file against plain-English policies, judged by Cloudflare's [Clef]
 bun install
 echo 'CLOUDFLARE_ACCOUNT_ID=...' >> .env
 echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
-bun index.ts 'src/**/*.ts'
+bun index.ts
 ```
 
-Pass one or more globs; the CLI takes nothing else. They are expanded relative to the current directory and deduplicated, and every policy's selector receives the matching files. Scope them (for example `src/**/*.ts`, not `**/*`) to avoid `node_modules`. Policies are read from `.lint-anything/rules`, judged by the `clef` model, and printed as text. Clef's answers are cached in `.lint-anything/cache` (add it to `.gitignore`).
+The CLI takes no arguments: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the `clef` model and printed as text. Clef's answers are cached in `.lint-anything/cache` (add it to `.gitignore`).
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
@@ -32,9 +32,7 @@ There are no built-in policies, and the CLI adds nothing to what a policy asks. 
 ````md
 ---
 select: |
-  for f do shift; case $f in *.ts|*.tsx) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  rg --json -w 'TODO|FIXME' "$@" |
+  rg --json -w 'TODO|FIXME' -g '*.{ts,tsx}' |
     jq -c 'select(.type == "match") | {id: "\(.data.path.text):\(.data.line_number)", path: .data.path.text,
            lines: [.data.line_number, .data.line_number], text: "comment at \(.data.path.text):\(.data.line_number):\n\(.data.lines.text)"}'
 criteria:
@@ -56,7 +54,7 @@ Policies are meant to be written and tuned by a coding agent: give it the rule y
 
 ### Selectors
 
-- The selector runs once per lint run with `sh -c`, from the current directory, with every file the CLI's globs matched as its arguments (`"$@"`, possibly none). It picks the files it cares about itself: the `for f do shift; case … esac; done` line above keeps only `.ts` and `.tsx` files, and `[ $# -gt 0 ] || exit 0` stops when none are left (bare `rg` with no paths would search the whole directory). A selector can also ignore its arguments and select things that aren't files (`git log`, an API, a database).
+- The selector runs once per lint run with `sh -c`, from the current directory, with no arguments and an empty stdin. It finds what it checks itself: the example above searches the `.ts` and `.tsx` files under the current directory (`rg` skips what `.gitignore` ignores). A selector can select things that aren't files (`git log`, an API, a database), or facts derived from them.
 - It must print JSONL, one item per line, with these fields and no others:
 
   | Field | Required | Meaning |
@@ -71,7 +69,7 @@ Policies are meant to be written and tuned by a coding agent: give it the rule y
   - Items must reach every place a violation can be: a selector whose items miss the violating lines can't find them.
   - Context belongs in each item's text, and computed facts beat raw data: a TODO's age in days lets Clef judge "older than 90 days" at 99% accuracy; its commit date and today's date do not. Context costs input tokens.
   - Packing a policy's items as questions of one request matches one request per item and costs 2.4× less.
-- Structural units (functions, classes, handlers, tests) are easiest to select with a syntax-aware tool such as [ast-grep](https://ast-grep.github.io/). The eval corpus's policies (`evals/corpus/policies/`) and their scripts (`evals/steps/`) are worked examples.
+- Structural units (functions, classes, handlers, tests) are easiest to select with a syntax-aware tool such as [ast-grep](https://ast-grep.github.io/). The eval corpus's policies (`evals/corpus/policies/`) and their scripts (`evals/steps/`) are worked examples: a selector lists the files it judges (`rg --files -g '*.ts'`) and pipes their paths to a script that cuts out the units.
 - Policies with the same `select` command share one run of it per lint run, so a selector several policies use can live in a script (for example `.lint-anything/lib/functions.sh`) that each calls.
 
 ### Counting items: `limit`
@@ -81,7 +79,7 @@ A policy can count instead of reporting each item: with `limit`, its items are j
 ````md
 ---
 select: |
-  rg --json -w 'TODO|FIXME' "$@" | jq -c '…'
+  rg --json -w 'TODO|FIXME' | jq -c '…'
 limit: { max: 3, per: file }
 ---
 Rule: every `TODO` or `FIXME` comment must reference a tracking issue.
@@ -95,7 +93,7 @@ Write the rule about one item, and put the count in `limit`: Clef judges items w
 
 ## How it works
 
-Each policy's selector runs on the files given to the CLI, then Clef judges the selected items. Policies run one at a time. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing.
+Each policy's selector runs from the current directory, then Clef judges the selected items. Policies run one at a time. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing.
 
 A request holds at most 64 questions (Clef's limit) and 64,000 bytes. Items that don't fit in one request are split across several.
 
@@ -108,7 +106,7 @@ A request holds at most 64 questions (Clef's limit) and 64,000 bytes. Items that
 
 Transient HTTP failures are retried up to 3 times with exponential backoff.
 
-Answers are cached on disk in `.lint-anything/cache`, one file per question, keyed by the model, the request's text (the policy body), and the question (item text and criteria). Only questions whose inputs changed are sent: re-running on unchanged files sends nothing, and editing a policy re-asks only that policy. Delete the directory to judge everything afresh.
+Answers are cached on disk in `.lint-anything/cache`, one file per question, keyed by the model, the request's text (the policy body), and the question (item text and criteria). Only questions whose inputs changed are sent: re-running when nothing changed sends nothing, and editing a policy re-asks only that policy. Delete the directory to judge everything afresh.
 
 Clef's answer to one question shifts a little with the other questions in its request (see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers; with the cache, an edit in one file also leaves the verdicts of every other file as they were.
 
@@ -128,7 +126,7 @@ Only `violation` fails the run; `review` and `inconclusive` are reported but exi
 | Exit code | Meaning |
 | --- | --- |
 | `0` | No violations |
-| `1` | At least one violation, or an input file could not be read |
+| `1` | At least one violation |
 | `2` | Policy, selector, configuration, or Clef API error |
 
 ## Develop
@@ -162,7 +160,7 @@ bun evals/wordings.ts --split test         # each rule-wording set vs. the polis
 
 `evals/RESEARCH.md` is the research notebook. It lists each hypothesis with its prediction, method, result, and conclusion, the labeling protocol for new files, and the experiments behind the CLI's design.
 
-- **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`. Each body is a short framing ("Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below. …"), then a line `Rule:` and the rule; gold labels refer to the rule. Each selector keeps the files its rule applies to, cuts out the units its rule judges, and ends with `evals/steps/present.ts`, which writes each item's location and context into its text. The scripts selectors call are in `evals/steps/` (run as `bun "$EVAL_STEPS/<step>.ts"`, with `ast-grep` from the dev dependencies on the `PATH`).
+- **Policies** (`evals/corpus/policies/`) come in two categories, picked with `--category`. Each body is a short framing ("Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below. …"), then a line `Rule:` and the rule; gold labels refer to the rule. Each selector finds the files its rule applies to (`rg` with globs), cuts out the units its rule judges, and ends with `evals/steps/present.ts`, which writes each item's location and context into its text. The scripts selectors call are in `evals/steps/` (run as `bun "$EVAL_STEPS/<step>.ts"`, with `ast-grep` from the dev dependencies on the `PATH`); those that cut files read their paths on stdin, one per line.
   - `semantic/`: 17 rules of the kind lint-anything is for, which static analysis can't practically enforce. They cover naming (intent-revealing names, names that match behavior), readability (one level of abstraction per function, named magic values, comments that explain why), design (no flag parameters, single responsibility, explicit dependencies, preserving error context), architecture (decisions separate from I/O, thin entry points), encapsulation (no leaked mutable state, minimal public surface), organization (cohesive modules), maintainability (no duplicated knowledge), and testing (behavior over implementation, descriptive test names). Most apply to every `.ts`/`.js`/`.py`/`.go` file; the two testing rules apply to test files. Their voice varies and some list exceptions, but each rule is a paragraph of 56–124 words. Rules worded as users write them are a separate axis (rule wordings, below).
   - `control/`: four mechanical rules that existing linters already handle (TODOs need an issue, no `any`, Go errors handled, no swallowed Python exceptions), kept for comparison.
 
@@ -187,7 +185,7 @@ bun evals/wordings.ts --split test         # each rule-wording set vs. the polis
 
   Labels model reality, ambiguity included. The 112 original files were labeled three times by `claude-opus-5-5` subagents and adjudicated; a cross-family pass with gpt-6.1-sol, adjudicated by Claude, then changed 119 labels where the two models agreed against gold (`evals/RESEARCH.md`, H2). Files added later are labeled by the two-model protocol (H11): Claude and gpt-6.1-sol each label every matching policy, a blinded Claude adjudicator decides their disagreements, and an adjudicated `ambiguous` stays `ambiguous`. Applied to the curated files, the protocol matches their gold in 128 of 137 violations and contradicts one clear label. Semantic ambiguous cases are 6%. Files are split dev/test (new files by project), and pairs stay together.
 - **Rule wordings** (`evals/corpus/wordings/<set>/`): the same semantic rules worded as users write them, each with gold labeled against its own text on every corpus file with semantic policies: `terse` (one line each), `style-guide` (published style-guide passages), and `agents-md` (rules from open-source projects' AGENTS.md and contributor docs). Each file holds only the rule; a reworded policy is the corpus policy with its rule (after `Rule:`) replaced, so it differs only in rule text. Sources and licenses are in each set's `sources.json`. `run.ts --wording <set>` scores a set; `wordings.ts` compares each with the polished policies on the same items.
-- **Runner** (`evals/run.ts`): runs every corpus policy's selector on every file it applies to, with that file as its argument, and judges the items as the CLI does. Each item is labeled `violates` when its lines overlap the file's gold violation lines and clean otherwise; items of files labeled `ambiguous` for the policy are left out of item metrics. A file's score for a policy is its highest item score (0 when the selector found nothing), compared with the file-level gold. Variants: request shapes (`production`, the CLI's: the body once, one question per item; `single`, one request per item) and `--selectors <dir>`, a set of policies that replace their corpus namesakes (same rule). `--origin` and `--category` decide which cases are scored; `--wording <set>` swaps in that set's rules and gold.
+- **Runner** (`evals/run.ts`): runs every corpus policy's selector, for every file it applies to, from that file's directory in `evals/corpus/files/` (which holds only that file), and judges the items as the CLI does. Each item is labeled `violates` when its lines overlap the file's gold violation lines and clean otherwise; items of files labeled `ambiguous` for the policy are left out of item metrics. A file's score for a policy is its highest item score (0 when the selector found nothing), compared with the file-level gold. Variants: request shapes (`production`, the CLI's: the body once, one question per item; `single`, one request per item) and `--selectors <dir>`, a set of policies that replace their corpus namesakes (same rule). `--origin` and `--category` decide which cases are scored; `--wording <set>` swaps in that set's rules and gold.
 - **Metrics**: the ideal score is 1 for a clear violation, 0.5 for an ambiguous case, and 0 otherwise.
   - file-level AUROC on clear cases, ordinal concordance (whether ambiguous cases fall between clean and violating ones), and Brier score against the 0 / 0.5 / 1 target;
   - three-way verdict macro-F1 (`pass`↔clean, `review`↔ambiguous, `violation`↔violates);
@@ -275,7 +273,7 @@ Purpose: context from outside the file makes rules about time or history judgeab
 
 #### Shared selector runs
 
-Purpose: policies that share a selector don't repeat the work. `evals/shared.ts` lints `src/**` and `README.md` with six policies that share one selector (it keeps `src/*.ts`), against a stub Clef that sends no requests, and counts executions through a log the selector appends to: it runs once instead of six times, and the findings (540, 90 per policy) are the same as without sharing. Sharing is scoped to one lint run.
+Purpose: policies that share a selector don't repeat the work. `evals/shared.ts` lints this repository's `src/*.ts` with six policies that share one selector, against a stub Clef that sends no requests, and counts executions through a log the selector appends to: it runs once instead of six times, and the findings (516, 86 per policy) are the same as without sharing. Sharing is scoped to one lint run.
 
 #### Examples in the body
 
@@ -348,11 +346,11 @@ Each flag the CLI used to take is now fixed at one value. Whether that value is 
 | | changed since HEAD | 3 of 14 | 5 | 1 |
 | | baseline from the first run | 3 of 14 | 35 | 1 |
 
-Either default passes a clean checkout that has violations, and changed-since fails outright outside a git repository (`git diff HEAD` errors, exit 2). Off reports everything in the files given; scope a run by passing fewer globs.
+Either default passes a clean checkout that has violations, and changed-since fails outright outside a git repository (`git diff HEAD` errors, exit 2). Off reports everything the selectors find; a selector scopes what it checks.
 
 #### Removed from the CLI: `check`, baseline, changed-lines scope, SARIF
 
-These were built and measured with new flags and subcommands, then removed because the CLI takes nothing but file globs. The code and evals are in the git history.
+These were built and measured with new flags and subcommands, then removed because the CLI takes no arguments. The code and evals are in the git history.
 
 - `lint-anything check` (commit `d4d5052`): judged each policy's examples against the rule without them. It caught a rule about the wrong thing (examples agreeing fell from 90% to 48%) but not an inverted one (87%), and it failed two semantic policies in their own wording.
 - `--baseline` and `--changed-since` (commit `d43f246`): on a generated repository, all five adoption scenarios behaved as expected; a baseline keyed by item text survived line shifts (one keyed by line would have called 7 of 11 accepted findings new).

@@ -1,9 +1,7 @@
 ---
 # Each `except` clause with its handler body.
 select: |
-  for f do shift; case $f in *.py) set -- "$@" "$f";; esac; done
-  [ $# -gt 0 ] || exit 0
-  rg --json -U -P '^([ \t]*)except\b.*\n(?:\1[ \t]+.*\n|[ \t]*\n)*' "$@" |
+  rg --json -U -P '^([ \t]*)except\b.*\n(?:\1[ \t]+.*\n|[ \t]*\n)*' --hidden -g '*.py' |
     jq -c 'select(.type == "match") | (.data.lines.text | rtrimstr("\n")) as $t | {id: "\(.data.path.text):\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number + ($t | split("\n") | length) - 1], text: $t}' |
   bun "$EVAL_STEPS/present.ts"
 criteria:

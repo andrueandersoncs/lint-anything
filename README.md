@@ -289,8 +289,8 @@ Each feature has an intended purpose, an eval that measures it, and a result. Ch
 | `limit` | Count rules judged reliably | `counts.ts` | Holds: 100% vs 92% (79% at the boundary) | yes |
 | Per-policy cut-offs | Better verdicts than global cut-offs | `cutoffs.ts` | Fails: surfaced violations fall from 72% to 52% for +0.002 F1 | no |
 | Policy file sent whole as the rule | Clef reads the rule with its frontmatter | `evals/.cache/research/ident/ablate.ts` (2026-10-22) | Replaced: with the excerpt framing, sending the body without the frontmatter (selector code) raised dev AUROC 0.910 → 0.919; the body alone is now the request's text | no |
-| `ask` routing step | Drop items a rule doesn't govern, cutting false alarms | (commit `c825cff`) | Fails: dev false alarms rose, violations dropped | no |
-| `check` subcommand, `--baseline` / `--changed-since`, `--sarif` | Example checks; adoption on existing code; code scanning | (commits `d4d5052` to `1eddf4d`) | Each measured; see below | no: removed, because the CLI takes no subcommands and no flags but `--debug` |
+| `ask` routing step | Drop items a rule doesn't govern, cutting false alarms | (commit `a4caa7c`) | Fails: dev false alarms rose, violations dropped | no |
+| `check` subcommand, `--baseline` / `--changed-since`, `--sarif` | Example checks; adoption on existing code; code scanning | (commits `47705a7` to `cfab4c3`) | Each measured; see below | no: removed, because the CLI takes no subcommands and no flags but `--debug` |
 
 #### Context from outside the file
 
@@ -387,10 +387,10 @@ Either default passes a clean checkout that has violations, and changed-since fa
 
 These were built and measured with new flags and subcommands, then removed because the CLI takes no arguments. The code and evals are in the git history.
 
-- `lint-anything check` (commit `d4d5052`): judged each policy's examples against the rule without them. It caught a rule about the wrong thing (examples agreeing fell from 90% to 48%) but not an inverted one (87%), and it failed two semantic policies in their own wording.
-- `--baseline` and `--changed-since` (commit `d43f246`): on a generated repository, all five adoption scenarios behaved as expected; a baseline keyed by item text survived line shifts (one keyed by line would have called 7 of 11 accepted findings new).
-- `--sarif` (commit `1eddf4d`): the log validated against the SARIF 2.1.0 schema and every finding mapped to one result.
-- `ask` routing step (commit `c825cff`): routing the comments policy's items through "is this exempt?" raised dev false alarms from 8.2% to 11.5% and dropped 3 of 36 violating comments.
+- `lint-anything check` (commit `47705a7`): judged each policy's examples against the rule without them. It caught a rule about the wrong thing (examples agreeing fell from 90% to 48%) but not an inverted one (87%), and it failed two semantic policies in their own wording.
+- `--baseline` and `--changed-since` (commit `9ddefd2`): on a generated repository, all five adoption scenarios behaved as expected; a baseline keyed by item text survived line shifts (one keyed by line would have called 7 of 11 accepted findings new).
+- `--sarif` (commit `cfab4c3`): the log validated against the SARIF 2.1.0 schema and every finding mapped to one result.
+- `ask` routing step (commit `a4caa7c`): routing the comments policy's items through "is this exempt?" raised dev false alarms from 8.2% to 11.5% and dropped 3 of 36 violating comments.
 
 #### Counting with `limit`
 

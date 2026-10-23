@@ -1,9 +1,15 @@
 {
   "name": "@andrueandersoncs/lint-anything",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Check anything against plain-English policies, judged by Cloudflare's Clef decision model",
   "license": "MIT",
   "author": "Andrue Anderson",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrueandersoncs/lint-anything.git"
+  },
+  "homepage": "https://github.com/andrueandersoncs/lint-anything#readme",
+  "bugs": "https://github.com/andrueandersoncs/lint-anything/issues",
   "type": "module",
   "bin": {
     "lint-anything": "dist/cli.js"

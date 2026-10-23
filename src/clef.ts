@@ -1,5 +1,6 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { Database } from "bun:sqlite"
+import { mkdirSync } from "node:fs"
+import { join } from "node:path"
 import { Cause, Config, Context, Effect, flow, Layer, Ref, Result, Runtime, Schedule, Schema, Semaphore } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http"
 import type { Item } from "./item.ts"
@@ -45,11 +46,14 @@ const attemptRetries = 3
 
 /**
  * How long a cached answer stands. After it, the question is asked again, so answers follow updates to the
- * model, and the expired file is deleted, so the cache doesn't grow without bound.
+ * model, and the expired answer is deleted, so the cache doesn't grow without bound.
  */
 export const cacheMaxAgeMs = 30 * 24 * 60 * 60 * 1000
-// Deleting expired answers walks the whole cache, so a run does it at most once a day.
-const pruneIntervalMs = 24 * 60 * 60 * 1000
+
+/** The answer cache's SQLite database, in the cache directory. */
+const cacheFile = "answers.sqlite"
+// A run that finds the database locked by another run's write waits this long before failing.
+const cacheBusyTimeoutMs = 10_000
 
 const Noul = Schema.Struct({
   noul: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))
@@ -136,54 +140,42 @@ export const planItemRequests = (policy: Policy, items: ReadonlyArray<Item>) =>
   pack(itemState(policy), items.map((_, index) => index), (index, taken) => serialize(`i${taken.size}`, itemQuestion(policy, items[index]!)))
 
 /**
- * Answers kept on disk, one file per question, keyed by the model, the request text, and the question
- * (not its id or the other questions in the request), so unchanged questions aren't sent again. An answer
- * older than `cacheMaxAgeMs` at `now` is a miss.
+ * Answers kept on disk in one SQLite database, one row per question, keyed by the model, the request text,
+ * and the question (not its id or the other questions in the request), so unchanged questions aren't sent
+ * again. Opening it deletes answers older than `cacheMaxAgeMs` at `now`, so they are asked again.
  */
-const answerCache = (directory: string, now: number) => {
-  const path = (state: string, question: object) => {
-    const key = new Bun.CryptoHasher("sha256").update(`${model}\0${state}\0${JSON.stringify(question)}`).digest("hex")
-    return join(directory, key.slice(0, 2), key)
-  }
-  const fresh = (file: string) => {
-    const stats = statSync(file, { throwIfNoEntry: false })
-    return stats !== undefined && now - stats.mtimeMs < cacheMaxAgeMs
-  }
+const openAnswerCache = (directory: string, now: number) => {
+  mkdirSync(directory, { recursive: true })
+  const db = new Database(join(directory, cacheFile))
+  // Concurrent runs share the file: in WAL mode they read while another writes, and writers take turns.
+  db.run(`PRAGMA busy_timeout = ${cacheBusyTimeoutMs}`)
+  db.run("PRAGMA journal_mode = WAL")
+  // A row holds only a probability (the CHECK), so an edited database can't hand back a non-answer.
+  db.run(`CREATE TABLE IF NOT EXISTS answers (
+    key BLOB PRIMARY KEY,
+    noul REAL NOT NULL CHECK (noul BETWEEN 0 AND 1),
+    answered INTEGER NOT NULL
+  ) STRICT, WITHOUT ROWID`)
+  db.run("CREATE INDEX IF NOT EXISTS answers_answered ON answers (answered)")
+  db.run("DELETE FROM answers WHERE answered <= ?", [now - cacheMaxAgeMs])
+  const select = db.query<{ noul: number }, [Uint8Array]>("SELECT noul FROM answers WHERE key = ?")
+  const upsert = db.query("INSERT OR REPLACE INTO answers (key, noul, answered) VALUES (?, ?, ?)")
+  const key = (state: string, question: object): Uint8Array =>
+    new Bun.CryptoHasher("sha256").update(`${model}\0${state}\0${JSON.stringify(question)}`).digest()
+  // One transaction per request's answers: a run stopped later keeps every answer it received.
+  const insert = db.transaction((state: string, answers: ReadonlyArray<{ readonly question: object; readonly noul: number }>) => {
+    const answered = Date.now()
+    for (const { question, noul } of answers) upsert.run(key(state, question), noul, answered)
+  })
+  const failed = (error: unknown) =>
+    new ClefError({ message: `answer cache ${join(directory, cacheFile)}: ${error instanceof Error ? error.message : String(error)}` })
   return {
-    get: (state: string, question: object): number | undefined => {
-      const file = path(state, question)
-      if (!fresh(file)) return undefined
-      // Anything but a number in [0, 1] is a miss, never an answer: `Number("")` is 0, a pass.
-      const text = readFileSync(file, "utf8").trim()
-      const noul = Number(text)
-      return text !== "" && noul >= 0 && noul <= 1 ? noul : undefined
-    },
-    set: (state: string, question: object, noul: number) => {
-      const file = path(state, question)
-      mkdirSync(dirname(file), { recursive: true })
-      // Written whole beside the answer and renamed over it, so no run ever reads a partly written answer.
-      const temporary = `${file}.${process.pid}.tmp`
-      writeFileSync(temporary, String(noul))
-      renameSync(temporary, file)
-    },
-    /**
-     * Deletes expired answers (and temporary files a crashed run left), unless the `pruned` marker says a
-     * run already did within `pruneIntervalMs`.
-     */
-    prune: () => {
-      if (statSync(directory, { throwIfNoEntry: false }) === undefined) return
-      const marker = join(directory, "pruned")
-      const last = statSync(marker, { throwIfNoEntry: false })
-      if (last !== undefined && now - last.mtimeMs < pruneIntervalMs) return
-      for (const shard of readdirSync(directory)) {
-        if (!/^[0-9a-f]{2}$/.test(shard)) continue
-        for (const name of readdirSync(join(directory, shard))) {
-          const file = join(directory, shard, name)
-          if (!fresh(file)) rmSync(file, { force: true })
-        }
-      }
-      writeFileSync(marker, "")
-    }
+    /** Each question's cached answer, or `undefined` when it has none. */
+    get: (state: string, questions: ReadonlyArray<object>) =>
+      Effect.try({ try: () => questions.map((question) => select.get(key(state, question))?.noul), catch: failed }),
+    set: (state: string, answers: ReadonlyArray<{ readonly question: object; readonly noul: number }>) =>
+      Effect.try({ try: () => insert(state, answers), catch: failed }),
+    close: () => db.close()
   }
 }
 
@@ -245,8 +237,8 @@ export class Clef extends Context.Service<Clef, {
   readonly stats: Effect.Effect<ReadonlyMap<string, Usage>>
 }>()("lint-anything/Clef") {
   /**
-   * Clef on Workers AI; with `cacheDirectory`, answers are cached there per question across runs, and
-   * answers older than `cacheMaxAgeMs` are asked again and deleted.
+   * Clef on Workers AI; with `cacheDirectory`, answers are cached in a database there per question across
+   * runs, and answers older than `cacheMaxAgeMs` are deleted and asked again.
    */
   static readonly layer = (cacheDirectory?: string) =>
     Layer.effect(
@@ -273,8 +265,14 @@ export class Clef extends Context.Service<Clef, {
           HttpClient.retryTransient({ schedule: Schedule.exponential(500), times: attemptRetries })
         )
 
-        const cache = cacheDirectory === undefined ? undefined : answerCache(cacheDirectory, Date.now())
-        if (cache !== undefined) yield* Effect.sync(cache.prune)
+        const cache = cacheDirectory === undefined ? undefined : yield* Effect.acquireRelease(
+          Effect.try({
+            try: () => openAnswerCache(cacheDirectory, Date.now()),
+            catch: (error) =>
+              new ClefError({ message: `cannot open the answer cache in ${cacheDirectory}: ${error instanceof Error ? error.message : String(error)}` })
+          }),
+          (cache) => Effect.sync(cache.close)
+        )
         const permits = yield* Semaphore.make(maxConcurrentRequests)
         const usage = yield* Ref.make<ReadonlyMap<string, Usage>>(new Map())
         const record = (policy: string, added: Partial<Usage>) =>
@@ -316,20 +314,19 @@ export class Clef extends Context.Service<Clef, {
         ) {
           const answers: Array<{ readonly value: A; readonly noul: number }> = []
           const misses: Array<A> = []
-          for (const value of values) {
-            const noul = cache?.get(state, question(value))
+          const cached = cache === undefined ? [] : yield* cache.get(state, values.map(question))
+          values.forEach((value, index) => {
+            const noul = cached[index]
             if (noul === undefined) misses.push(value)
             else answers.push({ value, noul })
-          }
+          })
           if (answers.length > 0) yield* record(policy, { cached: answers.length })
           const { requests, oversized } = plan(misses)
           // `permits` bounds requests in flight across the run. Each request's answers are cached as it
           // returns, so a run that fails later keeps every answer it received.
           const sent = yield* Effect.forEach(requests, (request) =>
             send(policy, request).pipe(Effect.tap((received) =>
-              Effect.sync(() => {
-                for (const { value, noul } of received) cache?.set(state, question(value), noul)
-              })
+              cache === undefined ? Effect.void : cache.set(state, received.map(({ value, noul }) => ({ question: question(value), noul })))
             )), { concurrency: "unbounded" })
           answers.push(...sent.flat())
           return { answers, oversized }

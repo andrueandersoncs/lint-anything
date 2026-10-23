@@ -11,7 +11,7 @@ echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
 bun index.ts
 ```
 
-The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the `clef` model and printed as text. Clef's answers are cached in `.lint-anything/cache` (add it to `.gitignore`). Effect CLI also provides its global flags (`--help`, `--version`, `--wizard`, `--completions`, `--log-level`); they are expected and stay.
+The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the `clef` model and printed as text. Clef's answers are cached in `.lint-anything/cache/answers.sqlite` (add `.lint-anything/cache` to `.gitignore`). Effect CLI also provides its global flags (`--help`, `--version`, `--wizard`, `--completions`, `--log-level`); they are expected and stay.
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
@@ -56,7 +56,7 @@ Policies are meant to be written and tuned by a coding agent: give it the rule y
 
 ### Selectors
 
-- The selector runs once per lint run with `sh -c`, from the current directory, with no arguments, an empty stdin, and the CLI's environment (`.env` included). It finds what it checks itself: the example above searches the `.ts` and `.tsx` files under the current directory (`rg` skips what `.gitignore` ignores). A selector can select things that aren't files (`git log`, an API, a database), or facts derived from them.
+- The selector runs once per lint run with `sh -c`, from the current directory, with no arguments, an empty stdin, and the CLI's environment (`.env` included) without any variable whose name starts with `CLOUDFLARE_`, so a policy's shell never sees the API token. It finds what it checks itself: the example above searches the `.ts` and `.tsx` files under the current directory (`rg` skips what `.gitignore` ignores). A selector can select things that aren't files (`git log`, an API, a database), or facts derived from them.
 - It must print JSONL, one item per line, with these fields and no others:
 
   | Field | Required | Meaning |
@@ -112,9 +112,9 @@ A request holds at most 64 questions (Clef's limit) and 64,000 bytes. Items that
 
 An attempt that hasn't returned its whole response within 60 seconds counts as a transient failure. Transient HTTP failures (timeouts, network errors, 408, 429, 5xx) are retried up to 3 times with exponential backoff, waiting at least as long as a `Retry-After` header asks. A request that still fails stops the run (exit 2) with the HTTP status and Cloudflare's error, or the network error.
 
-Answers are cached on disk in `.lint-anything/cache`, one file per question, keyed by the model, the request's text (the policy body), and the question (item text and criteria). Only questions whose inputs changed are sent: re-running when nothing changed sends nothing, and editing a policy re-asks only that policy. Each request's answers are cached as it returns, so a run stopped by a failed request keeps the answers it already received. Delete the directory to judge everything afresh.
+Answers are cached on disk in one SQLite database, `.lint-anything/cache/answers.sqlite`, one row per question, keyed by the model, the request's text (the policy body), and the question (item text and criteria). Only questions whose inputs changed are sent: re-running when nothing changed sends nothing, and editing a policy re-asks only that policy. Each request's answers are written in one transaction as it returns, so a run stopped by a failed request keeps the answers it already received, and a crash can't leave a partial answer. Runs can share the cache at once (WAL mode; a writer waits up to 10 seconds for another's lock). A cache that can't be opened (for example, a file that isn't a SQLite database) stops the run (exit 2). Delete the directory to judge everything afresh.
 
-A cached answer stands for 30 days; after that, its question is asked again, so answers follow updates to the model. At most once a day (the `pruned` file there records when), a run deletes expired answers, so the cache doesn't grow without bound. A cache file that doesn't hold a probability (cut short by a crash, or edited) is a miss, never an answer; answers are written to a temporary file and renamed into place, so a crash can't cut one short.
+A cached answer stands for 30 days; each run starts by deleting older answers, so their questions are asked again, answers follow updates to the model, and the cache doesn't grow without bound. A row can only hold a probability between 0 and 1. With 50,000 cached answers the database is 5.5 MB, and a run that takes every answer from it reads them in under half a second.
 
 Clef's answer to one question shifts a little with the other questions in its request (see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers; with the cache, an edit in one file also leaves the verdicts of every other file as they were.
 

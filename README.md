@@ -29,6 +29,8 @@ There are no built-in policies, and the CLI adds nothing to what a policy asks. 
 - the **`select`** command decides what is judged: which files, which parts of them, and what context goes with each part. Each item it emits is one yes/no question;
 - the optional **`criteria`** say what a yes and a no mean.
 
+The CLI reads Clef's yes as "this item violates the rule", so the policy must say that: in the body ("Decide whether it breaks the rule below"), in `criteria.true`, or both. A body that only states the rule leaves the question open, and Clef may answer whether the item *follows* it, which inverts every verdict. With only `Rule: every TODO must reference a tracking issue like #123.` as the body and no criteria, `// TODO(#12): tracked` scored 0.94 (`violation`) and `// TODO: fix this later` scored 0.02 (`pass`). The example below's body and criteria scored them 0.10 and 0.94.
+
 ````md
 ---
 select: |

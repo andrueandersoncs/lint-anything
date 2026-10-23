@@ -4,6 +4,12 @@ globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
 alwaysApply: false
 ---
 
+## Original Idea
+
+- Use "Decision Models" to check arbitrary rules, in order to enforce "semantic rules" that would be difficult or impossible with traditional static analysis
+- These rules are defined as English language prose in markdown files
+- The target users are coding agents; they write the rules, run the linter, and address the violations
+
 ## User experience is fixed
 
 lint-anything is a CLI; its interface is its user experience. You are FORBIDDEN from changing the user experience without the user's explicit permission. That includes:

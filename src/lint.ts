@@ -104,6 +104,51 @@ const itemLocation = (item: Item) => ({
 const byLocation = (a: Item, b: Item) =>
   (a.path ?? "").localeCompare(b.path ?? "") || (a.lines?.[0] ?? 0) - (b.lines?.[0] ?? 0) || a.id.localeCompare(b.id)
 
+/**
+ * Select stage: runs `policy.select` from `cwd` (default: the current directory) and returns its items in
+ * the order they are judged. With `runs`, policies with the same selector run it once.
+ */
+export const select = Effect.fn("select")(function*(
+  policy: Policy,
+  cwd?: string,
+  runs?: SelectorRuns
+) {
+  // Answers depend on how items are packed into requests, and tools like rg emit matches in varying
+  // order; sorting makes the packing, and so the verdicts, repeatable.
+  const items = (yield* runSelector(policy, cwd, runs)).toSorted(byLocation)
+  const pathless = items.find((item) => item.path === undefined)
+  if (policy.limit?.per === "file" && pathless !== undefined) {
+    return yield* new SelectorError({
+      message: `${policy.name}: item ${pathless.id} has no path, and limit per file counts items by path; give every item a path or use per: run`
+    })
+  }
+  return items
+})
+
+/**
+ * Judge stage: asks Clef whether each item violates `policy`, under the policy body. Results follow
+ * `items` order: the probability that the item violates the rule, or `RequestTooLarge`.
+ */
+export const judge = Effect.fn("judge")(function*(policy: Policy, items: ReadonlyArray<Item>) {
+  const clef = yield* Clef
+  return yield* clef.ask(policy.name, policy.body, items.map((item) => itemQuestion(policy, item)))
+})
+
+/**
+ * Decide stage: the findings for `items` given their `answers` (from `judge`, in the same order), under
+ * `threshold`; with `policy.limit`, the items' findings counted against it.
+ */
+export const decide = (
+  policy: Policy,
+  items: ReadonlyArray<Item>,
+  answers: ReadonlyArray<Result.Result<number, RequestTooLarge>>,
+  threshold: number
+): Array<Finding> => {
+  const found = Arr.zipWith(items, answers, (item, violates) =>
+    toFinding(violates, { policy: policy.name, ...itemLocation(item) }, policy, threshold))
+  return policy.limit === undefined ? found : aggregate(policy.name, policy.limit, found)
+}
+
 // Policies judged at once. Clef bounds requests in flight across the run, so this only lets one policy's
 // selector run, and its requests fill slots, while another's are in flight. Each policy's requests are
 // packed alone, so concurrency changes no answer.
@@ -117,31 +162,12 @@ export const lint = Effect.fn("lint")(function*(
   policies: ReadonlyArray<Policy>,
   threshold: number
 ) {
-  const clef = yield* Clef
   // Policies with the same selector run it once in this run.
   const runs: SelectorRuns = new Map()
   const findings = yield* Effect.forEach(policies, (policy) =>
-    runSelector(policy, undefined, runs).pipe(
-      // Answers depend on how items are packed into requests, and tools like rg emit matches in varying
-      // order; sorting makes the packing, and so the verdicts, repeatable.
-      Effect.map((items) => items.toSorted(byLocation)),
-      Effect.tap((items) => {
-        const pathless = items.find((item) => item.path === undefined)
-        return policy.limit?.per === "file" && pathless !== undefined
-          ? Effect.fail(new SelectorError({
-            message: `${policy.name}: item ${pathless.id} has no path, and limit per file counts items by path; give every item a path or use per: run`
-          }))
-          : Effect.void
-      }),
-      Effect.flatMap((items) =>
-        clef.ask(policy.name, policy.body, items.map((item) => itemQuestion(policy, item))).pipe(
-          Effect.map((answers) => {
-            const found = Arr.zipWith(items, answers, (item, violates) =>
-              toFinding(violates, { policy: policy.name, ...itemLocation(item) }, policy, threshold))
-            return policy.limit === undefined ? found : aggregate(policy.name, policy.limit, found)
-          })
-        )
-      )
-    ), { concurrency: policyConcurrency })
+    Effect.gen(function*() {
+      const items = yield* select(policy, undefined, runs)
+      return decide(policy, items, yield* judge(policy, items), threshold)
+    }), { concurrency: policyConcurrency })
   return findings.flat()
 })

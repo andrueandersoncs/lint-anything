@@ -1,6 +1,6 @@
 # Decomposing lint-anything: selecting, rules, judging
 
-Design notes (2026-10-26). Step 1 of the suggested order (decoupling `Clef` from `Policy`) is done; the rest is not implemented. Anything that changes CLI surface, output, side effects, or the policy file format needs explicit user approval (`AGENTS.md`).
+Design notes (2026-10-26). Steps 1 and 2 of the suggested order are done in the repo; publishing the stages from the npm package is undecided, and the rest is not implemented. Anything that changes CLI surface, output, side effects, or the policy file format needs explicit user approval (`AGENTS.md`).
 
 ## Where the seams are today
 
@@ -113,7 +113,12 @@ Needs explicit approval first:
 
 ## Suggested order
 
-1. Internal refactor: `Clef` takes questions, not `Policy`. No user-visible change; verify with `bunx tsc --noEmit` and a CLI run.
-2. Program API: export the select, judge, and decide stages so evals and other tools call them instead of the CLI.
+1. Done: internal refactor. `Clef` takes questions, not `Policy`. No user-visible change; verified with `bunx tsc --noEmit` and a CLI run.
+2. Done in the repo: `src/lint.ts` exports the stages, and `lint` is their composition per policy.
+   - `select(policy, cwd?, runs?)`: runs the selector, sorts items, checks paths for `limit: per file`.
+   - `judge(policy, items)`: the `Clef` service's probabilities.
+   - `decide(policy, items, answers, threshold)`: pure; findings and `limit` aggregation.
+   - `evals/counts.ts` uses `decide` instead of rebuilding findings; its output is unchanged.
+   - Open: the npm package ships only the bundled CLI (`dist/cli.js`). Exporting the stages to other tools needs a library entry in `package.json` and a choice about Effect (bundled or a peer dependency), since the stages return Effects.
 3. Ask for approval: explanations for violations, or deterministic judging. Both change what users see.
 4. Separately: finding rules from review history, as its own tool. It builds on `evals/mine.ts` and doesn't touch the lint CLI.

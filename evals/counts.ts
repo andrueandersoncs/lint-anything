@@ -6,8 +6,8 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { Effect } from "effect"
-import { aggregate, defaultThreshold, type Finding, reviewFloor, verdictOf } from "../src/lint.ts"
+import { Effect, Result } from "effect"
+import { decide, defaultThreshold, reviewFloor, verdictOf } from "../src/lint.ts"
 import type { Policy } from "../src/policy.ts"
 import { runSelector } from "../src/select.ts"
 import { makeClient } from "./client.ts"
@@ -85,11 +85,10 @@ try {
 
   // B: each TODO judged against the item rule, then counted against the limit.
   const run = await judge(items)
-  const findings: Array<Finding> = run.scored.map((scored) => {
-    const entry = entryOf(scored)
-    return { policy: items.name, path: entry.path!, item: entry.id, verdict: verdictOf(scored.score ?? 0, reviewFloor, defaultThreshold) }
-  })
-  const counted = new Map(aggregate(items.name, items.limit!, findings).map((finding) => [finding.path!, finding]))
+  const counted = new Map(
+    decide(items, run.scored.map(entryOf), run.scored.map((scored) => Result.succeed(scored.score ?? 0)), defaultThreshold)
+      .map((finding) => [finding.path!, finding])
+  )
 
   const rows = files.map((file) => {
     const aggregateFinding = counted.get(file.path)

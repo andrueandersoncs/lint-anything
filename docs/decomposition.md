@@ -71,10 +71,7 @@ Shape: a `Judge` interface, `(state, questions) → probabilities`. Clef is one 
 Unlocks:
 
 - **Mechanical and semantic rules in one run.** A rule whose selector is an ast-grep or regex match is a violation at p=1, with no model call. Control rules already hit item AUROC 1.0, so paying Clef for them is waste.
-- **Explanations, not just probabilities.** Today a finding's reason is just `criteria.true`, because Clef returns only a number.
-  - A second judge could run only on `violation`/`review` items and write a specific explanation and fix hint.
-  - This is the biggest gain for coding agents, the target user.
-  - It is cheap: it touches only the ~13–30% of items that don't pass.
+- **Explanations: rejected (2026-10-26).** A second LLM writing a reason for each non-passing finding would only move LLM cost into the tool. The consumer is a coding agent that is itself an LLM and reads the item to fix it anyway. Findings keep `criteria.true` as their reason.
 - **Comparing judges.** The eval harness could score Clef against other models on the same 10,623 cases. That makes it easier to switch vendors.
 - **Cascades.** A cheap judge first, with Clef only for uncertain items. Caveat: the `ask` routing pre-filter failed (commit `a4caa7c`: more false alarms, fewer violations caught). A cascade needs its own eval first.
 - **A general batched yes/no classifier.** The packer, the content-addressed SQLite cache, retries, and sorted packing for stable answers make a generic way to ask N yes/no questions under shared context. Uses beyond lint: issue triage, routing PRs to reviewers, labeling commits or changelogs, data labeling.
@@ -120,7 +117,9 @@ Needs explicit approval first:
    - `decide(policy, items, answers, threshold)`: pure; findings and `limit` aggregation.
    - `evals/counts.ts` uses `decide` instead of rebuilding findings; its output is unchanged.
    - Library (2026-10-26, after briefly deciding against it): the package exports the stages as an Effect API, with `effect` as an optional peer dependency (`src/lib.ts`, `exports` in `package.json`, `dist/lib.js` + `dist/types`). The CLI bundle is unchanged and still self-contained. The SIGHUP handler moved from `src/select.ts` into `index.ts`, so importing the library installs no signal handlers. README, "Library".
-3. Ask for approval: explanations for violations, or deterministic judging. Both change what users see.
+3. Deterministic judging only (explanations rejected; see Seam 2). Parked until real policies need it. Two shapes, both need approval:
+   - A, judge-less policy: no body and no `criteria.false`; every item is a violation with reason `criteria.true`.
+   - B, pre-judged items (preferred): an optional item field such as `"violates": true/false`; items without it go to Clef. This lets a selector decide what it computes exactly (ages, counts, history) and leave the rest to Clef.
 4. Separately: finding rules from review history, as its own tool. It builds on `evals/mine.ts` and doesn't touch the lint CLI.
 
 ## Stages as processes (not pursued)

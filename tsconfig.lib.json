@@ -1,0 +1,14 @@
+{
+  // Declarations for the library entry (src/lib.ts); the JS is bundled by `bun build`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "src",
+    "outDir": "dist/types"
+  },
+  "include": ["src/lib.ts"],
+  "exclude": []
+}

@@ -1,6 +1,6 @@
 # Decomposing lint-anything: selecting, rules, judging
 
-Design notes (2026-10-26). Steps 1 and 2 of the suggested order are done in the repo; publishing the stages from the npm package is undecided, and the rest is not implemented. Anything that changes CLI surface, output, side effects, or the policy file format needs explicit user approval (`AGENTS.md`).
+Design notes (2026-10-26). Steps 1 and 2 of the suggested order are done, including a published library entry; steps 3 and 4 are not implemented. Anything that changes CLI surface, output, side effects, or the policy file format needs explicit user approval (`AGENTS.md`).
 
 ## Where the seams are today
 
@@ -119,11 +119,13 @@ Needs explicit approval first:
    - `judge(policy, items)`: the `Clef` service's probabilities.
    - `decide(policy, items, answers, threshold)`: pure; findings and `limit` aggregation.
    - `evals/counts.ts` uses `decide` instead of rebuilding findings; its output is unchanged.
-   - Decided against a library (2026-10-26): lint-anything is a *tool*. Users should not need TypeScript, but wiring sources and streams in shell is expected. The TS stage exports stay as internal structure; nothing is added to `package.json`. See "Tool, not library" below.
+   - Library (2026-10-26, after briefly deciding against it): the package exports the stages as an Effect API, with `effect` as an optional peer dependency (`src/lib.ts`, `exports` in `package.json`, `dist/lib.js` + `dist/types`). The CLI bundle is unchanged and still self-contained. The SIGHUP handler moved from `src/select.ts` into `index.ts`, so importing the library installs no signal handlers. README, "Library".
 3. Ask for approval: explanations for violations, or deterministic judging. Both change what users see.
 4. Separately: finding rules from review history, as its own tool. It builds on `evals/mine.ts` and doesn't touch the lint CLI.
 
-## Tool, not library
+## Stages as processes (not pursued)
+
+Recorded when the plan was "a tool, not a library"; superseded by the library, kept as an option.
 
 The unit of composition is a process speaking JSONL, not a TypeScript function. Selectors already work this way: any shell pipeline that prints items. The same shape could apply to the other stages, without flags, because every line carries what that stage needs:
 

@@ -38,18 +38,15 @@ const killGroup = (pid: number) => {
 
 // Each selector runs in its own process group, so a timeout can kill a whole pipeline rather than just
 // `sh`. That also keeps a terminal's Ctrl-C, or its hangup, from reaching it, so the groups still running
-// when the CLI exits (a failed run, an interrupt) are killed here. SIGINT and SIGTERM interrupt the run
-// and end in `exit`; SIGHUP (the terminal closed) would kill the CLI without it, so it kills the groups
-// and then dies of SIGHUP as it would have.
+// when the process exits (a failed run, an interrupt) are killed here. SIGINT and SIGTERM interrupt the run
+// and end in `exit`. SIGHUP kills the process without `exit`; signal handling is the host's, so the CLI
+// installs its SIGHUP handler itself (`killRunningSelectors`).
 const running = new Set<number>()
-const killRunning = () => {
+/** Kills every selector process group still running. */
+export const killRunningSelectors = () => {
   for (const pid of running) killGroup(pid)
 }
-process.on("exit", killRunning)
-process.once("SIGHUP", () => {
-  killRunning()
-  process.kill(process.pid, "SIGHUP")
-})
+process.on("exit", killRunningSelectors)
 
 const start = async (select: string, cwd: string | undefined): Promise<SelectorOutput> => {
   const child = Bun.spawn(["sh", "-c", select], {

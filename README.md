@@ -163,12 +163,40 @@ An error that stops the run (exit `2`) is printed to stderr as one line, `error:
 bun install
 bunx tsc --noEmit
 bun index.ts              # run from source
-bun run build             # bundle to dist/cli.js, the published `lint-anything` bin
-bun pm pack               # the tarball npm would get: dist/cli.js, skills/, README, LICENSE
+bun run build             # dist/cli.js (the `lint-anything` bin), dist/lib.js and dist/types (the library)
+bun pm pack               # the tarball npm would get: dist/cli.js, dist/lib.js, dist/types, skills/, README, LICENSE
 npm publish               # runs prepublishOnly (type check, build) first; the package is public
 ```
 
-The bundle includes every dependency, so the published package installs nothing else. The version printed by `--version` is `package.json`'s, inlined at build time.
+The CLI bundle includes every dependency, so installing the package for the CLI installs nothing else. The version printed by `--version` is `package.json`'s, inlined at build time.
+
+## Library
+
+The package also exports the stages a run composes as an [Effect](https://effect.website) library (Bun only). `effect` 4.x is an optional peer dependency: install it to use the library.
+
+| Export | What it does |
+| --- | --- |
+| `select(policy, cwd?, runs?)` | Runs a policy's selector; returns its items, sorted as they are judged |
+| `judge(policy, items)` | Each item's violation probability, or `RequestTooLarge` (needs `Clef`) |
+| `decide(policy, items, answers, threshold)` | Findings from those answers, `limit` included; pure |
+| `lint(policies, threshold)` | All three for every policy, as the CLI runs them |
+| `Clef.ask(source, state, questions)` | Yes/no questions under a shared state, packed, cached, retried; no policy needed |
+| `Clef.layer(cacheDirectory?)` | The `Clef` service; reads the environment variables above |
+| `loadPolicies(directory)`, `parsePolicy(name, source)` | Policies from Markdown (`loadPolicies` needs `FileSystem` and `Path`, e.g. `BunServices.layer` from `@effect/platform-bun`) |
+
+```ts
+import { BunServices } from "@effect/platform-bun"
+import { Effect, Layer } from "effect"
+import { Clef, decide, defaultThreshold, judge, loadPolicies, select } from "@andrueandersoncs/lint-anything"
+
+const findings = await Effect.runPromise(Effect.gen(function*() {
+  const [policy] = yield* loadPolicies(".lint-anything/rules")
+  const items = yield* select(policy!)
+  return decide(policy!, items, yield* judge(policy!, items), defaultThreshold)
+}).pipe(Effect.provide(Layer.mergeAll(Clef.layer(".lint-anything/cache"), BunServices.layer))))
+```
+
+Selectors still run in their own process groups and are killed when the process exits. The library installs no signal handlers: a host that wants selectors killed on SIGHUP calls `killRunningSelectors()` from its own handler, as the CLI does.
 
 ## Evals
 

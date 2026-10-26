@@ -14,8 +14,16 @@
   "bin": {
     "lint-anything": "dist/cli.js"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/types/lib.d.ts",
+      "import": "./dist/lib.js"
+    }
+  },
   "files": [
     "dist/cli.js",
+    "dist/lib.js",
+    "dist/types",
     "skills"
   ],
   "engines": {
@@ -25,8 +33,16 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build index.ts --target=bun --minify --outfile dist/cli.js",
+    "build": "bun build index.ts --target=bun --minify --outfile dist/cli.js && bun build src/lib.ts --target=bun --external effect --external 'effect/*' --outfile dist/lib.js && rm -rf dist/types && tsc -p tsconfig.lib.json",
     "prepublishOnly": "bunx tsc --noEmit && bun run build"
+  },
+  "peerDependencies": {
+    "effect": "^4.0.5"
+  },
+  "peerDependenciesMeta": {
+    "effect": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@ast-grep/cli": "^0.51.0",

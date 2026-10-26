@@ -5,7 +5,15 @@ import { CliError, Command, Flag } from "effect/cli"
 import { Clef, inputTokenPrice, noUsage, sumUsage, type Usage } from "./src/clef.ts"
 import { defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
 import { loadPolicies, type Policy } from "./src/policy.ts"
+import { killRunningSelectors } from "./src/select.ts"
 import { version } from "./package.json" with { type: "json" }
+
+// SIGHUP (the terminal closed) kills the CLI without `exit`, so it kills running selectors first and then
+// dies of SIGHUP as it would have.
+process.once("SIGHUP", () => {
+  killRunningSelectors()
+  process.kill(process.pid, "SIGHUP")
+})
 
 class ViolationsFound extends Schema.TaggedError<ViolationsFound>()("ViolationsFound", {
   count: Schema.Number

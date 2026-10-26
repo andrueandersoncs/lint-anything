@@ -77,6 +77,7 @@ Clear semantic violations per policy:
 | H20 | correctness | Selectors still beat whole-file judging on the grown corpus | supported for comments (0.85 → 0.95 dev, 0.79 → 0.94 test); refuted for magic values (its selector reaches 2/3 of the gold violation lines); test names mixed (16–20 violations) |
 | H21 | correctness | Every policy judged through a selector built for its rule beats judging every rule against the same excerpts | supported on test: file AUROC 0.913 → 0.930 [+0.006, +0.028]; at 14% false alarms 69% caught vs. 55%; loses for no-flag-parameters and names-match-behavior; reworded rules lose 0.04–0.07 through selectors built for other text |
 | H22 | correctness | With nothing added by the CLI, a policy can reproduce the excerpt CLI (H19) exactly in score, so a rule's own selector has it as a floor | supported: excerpt policies 0.918 / 0.914 vs. H19 0.914 / 0.913 (dev / test, intervals include 0); rule selectors beat them by +0.016 to +0.019 pooled; per rule, no-flag-parameters loses on test |
+| H23 | completeness | Clustering review comments rediscovers a repo's documented code norms (rule mining, step 4) | partly: 38% of documented norms reviewers invoked come back as a theme (20% in the top 20); 59% of themes share no norm; ~2.5 undocumented norms per repo from ≥ 2 reviewers. Clustering raw prose is the bottleneck |
 
 Order of work: H1 (sizes every later sample), H2 (gates any labeling at scale), then H3/H4, H5, H7, H6,
 H9, H8. Corpus growth (2026-10-21): H10, H11 while labeling new files, H12 while planting, then H13, H14, H15
@@ -893,6 +894,58 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   it; selectors built per rule beat it pooled. Per-rule regressions (no-flag-parameters) are selector
   quality, found only on held-out data; the excerpt policy is the fallback a tuning agent compares against.
 
+## H23: mining review comments rediscovers documented norms
+
+- **Context**: step 4 of `docs/decomposition.md`, a separate product that mines PR review comments for the
+  norms a team enforces, so a coding agent can turn them into policies. Before building it: does it find
+  rules the team wrote down? Exploratory, no prediction written.
+- **Repos**: the 12 of the 45 mined repos (`mine.ts` cache: the latest 1,000 review comments each) with
+  in-repo norm docs of ≥ 75 norm-like lines and ≥ 200 human top-level comments on source files: airflow,
+  django, scikit-learn, opentelemetry-collector, pandas, zulip, saleor, gitea, angular, wagtail, cilium,
+  telegraf. Docs (≤ 6 files per repo: AGENTS.md, contributing and style guides) pinned by commit in
+  `evals/.cache/research/discover/docs/`. Windows run from 5 days (airflow) to 10 months (wagtail).
+- **Pipeline** (`evals/discover.ts`, the tool's mechanical half; thresholds fixed before scoring):
+  4,397 human top-level comments on source files → Clef keeps those that invoke a general norm
+  (p ≥ 0.5: 2,466, 56%) → bge-m3 embeddings of the comment prose → average-linkage clusters at cosine
+  0.6 → themes of ≥ 2 comments (555), ranked by distinct reviewers. The agent's half, in the kernel:
+  Claude names each theme's shared norm, or says it has none.
+- **Ground truth** (kernel): Claude extracted every norm from each doc file (chunks of 40 KB) and tagged
+  it code-semantic, code-mechanical, docs, or process; code norms deduped at cosine 0.9: **1,001**. A
+  norm is *invoked* when ≥ 2 comments ask for a change because of it: each norm's 12 nearest comments by
+  embedding, judged by the batch judge (12,012 pairs; a lower bound, since retrieval can miss comments).
+  A norm is *found* when a named theme's rule matches it (judge over each theme's 6 nearest norms).
+- **Result**:
+
+  | | Count |
+  |---|---|
+  | Documented code norms | 1,001 (251 + 18 of them invoked: semantic + mechanical) |
+  | Invoked in the window | 269 (27%) |
+  | Invoked and found as a theme | **101 (38%)**; 53 (20%) in each repo's top 20 themes |
+  | Invoked by ≥ 2 reviewers / found / found in a theme with ≥ 2 reviewers | 211 / 77 / 31 |
+  | Comments invoking a documented norm that Clef kept | 509 of 654 (78%; 56% of all comments kept) |
+  | Invoked norms with ≥ 2 of their comments in one theme | 92 (34%) |
+  | Themes / sharing a norm / of those from ≥ 2 reviewers | 555 / 225 (41%) / 70 |
+  | Shared-norm themes not in any doc norm (code, docs, or process) | 111; **30 from ≥ 2 reviewers** |
+
+  - Per repo, found / invoked: saleor 32/63, angular 12/22, pandas 10/18, telegraf 10/19, airflow 11/28,
+    otel-collector 7/24, zulip 6/31, django 4/16, scikit-learn 4/23, gitea 2/12, wagtail 2/5, cilium 1/8.
+  - Undocumented norms from ≥ 2 reviewers are mostly real and project-specific (spot check): django's
+    f-strings over %-formatting and existing `django.utils` helpers, scikit-learn's `pytest.mark.parametrize`
+    over loops, zulip's `util.the` over `[0]`, wagtail's test placement. Some are process (cilium's commit
+    messages with benchmarks).
+  - 69% of shared-norm themes come from one reviewer, often the same remark repeated across one PR.
+  - Cost: Clef 1.58M input tokens (about $0.38); embeddings negligible; the eval's judge $0.34; 555
+    theme-naming and 65 doc-extraction completions.
+- **Conclusion**: partly. Mining finds real norms, including about 2–3 undocumented ones per repo seen by
+  more than one reviewer, but it returns well under half of the documented norms reviewers enforce, and
+  most themes are noise. The keep step is not the loss (78% retained); clustering is: only a third of
+  invoked norms have two of their comments in one theme, because comments enforcing the same norm are
+  worded differently. Next test, if this goes on: abstract each kept comment into a one-line rule before
+  clustering, and rank themes by distinct reviewers only.
+- **Caveats**: one judge model scored evidence and matches (spot-checked: 12 undocumented themes, 6
+  matches); one Claude pass extracted the norms; windows differ tenfold between repos; thresholds not
+  tuned (0.5 keep, 0.6 clustering, 0.9 dedupe).
+
 ---
 
 ## Run log
@@ -958,5 +1011,10 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   --category semantic` re-run on dev and test: 0 new cache entries (every request body unchanged) and
   every number as before. README's test file AUROC corrected from 0.931 to 0.930, as `run.ts` prints it
   and as the excerpt comparison table already gave it.
+- 2026-10-26: rule mining (H23). `evals/discover.ts` written; norm docs for 45 repos fetched by a
+  subagent (about 130 `gh api` requests). Clef: 1.58M input tokens (about $0.38) for the keep step;
+  bge-m3 embeddings for 4,397 comments, 1,001 norms and 225 theme rules. Kernel: 65 Claude extraction
+  and 555 theme-naming completions, 14,142 batch-judge items ($0.34). Outputs and kernel code in
+  `evals/.cache/research/discover/`.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

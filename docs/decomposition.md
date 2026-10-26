@@ -119,6 +119,11 @@ Needs explicit approval first:
    - Library (2026-10-26, after briefly deciding against it): the package exports the stages as an Effect API, with `effect` as an optional peer dependency (`src/lib.ts`, `exports` in `package.json`, `dist/lib.js` + `dist/types`). The CLI bundle is unchanged and still self-contained. The SIGHUP handler moved from `src/select.ts` into `index.ts`, so importing the library installs no signal handlers. README, "Library".
 3. Rejected (2026-10-26): explanations (see Seam 2), and deterministic judging, which belongs in the selector (see Seam 2). No policy-format or item-contract change.
 4. Separately: finding rules from review history, as its own tool. It builds on `evals/mine.ts` and doesn't touch the lint CLI.
+   - Tested before building (2026-10-26, `evals/discover.ts`, `evals/RESEARCH.md` H23). Twelve repos, their latest ~400 human review comments each, against 1,001 code norms from their own docs.
+   - Of the documented norms reviewers invoked in that window, 38% came back as a theme (20% in each repo's top 20).
+   - 59% of themes share no norm. About 2.5 real undocumented norms per repo were raised by two or more reviewers.
+   - Clef's keep step is not where norms are lost (78% of the relevant comments kept); clustering raw comment prose is.
+   - Not worth building as tested. Next test if pursued: abstract each kept comment into a one-line rule before clustering.
 
 ## Stages as processes (not pursued)
 

@@ -26,7 +26,7 @@ const policies = rules.map((rule, index) => adHocPolicy(`shared/${index}`, selec
 
 // Every judgment scores 0.1; this eval measures the steps, not Clef.
 const stub = Layer.succeed(Clef, Clef.of({
-  judgeItems: (_, items) => Effect.succeed(items.map(() => Result.succeed({ violates: 0.1 }))),
+  ask: (_, __, questions) => Effect.succeed(questions.map(() => Result.succeed(0.1))),
   stats: Effect.succeed(new Map())
 }))
 

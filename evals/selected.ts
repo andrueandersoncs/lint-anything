@@ -2,8 +2,9 @@
 // requests through the cached client, and the file-level view of item scores.
 import { availableParallelism } from "node:os"
 import { Effect } from "effect"
-import { inputTokenPrice, planItemRequests } from "../src/clef.ts"
+import { inputTokenPrice, planRequests } from "../src/clef.ts"
 import type { Item } from "../src/item.ts"
+import { itemQuestion } from "../src/lint.ts"
 import { parsePolicy, type Policy } from "../src/policy.ts"
 import { runSelector } from "../src/select.ts"
 import type { makeClient } from "./client.ts"
@@ -115,7 +116,7 @@ export type Plan = (policy: Policy, entries: ReadonlyArray<Item>) => {
 
 /** What the CLI sends for a selector's items. */
 export const productionPlan: Plan = (policy, entries) => {
-  const planned = planItemRequests(policy, entries)
+  const planned = planRequests(policy.body, entries.map((entry) => itemQuestion(policy, entry)))
   return {
     requests: planned.requests.map(({ body, questions }) => ({ body, questions: questions.map(({ id, value }) => ({ id, index: value })) })),
     oversized: planned.oversized.map(({ value }) => value)

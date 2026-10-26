@@ -1,0 +1,119 @@
+# Decomposing lint-anything: selecting, rules, judging
+
+Design notes (2026-10-26). Step 1 of the suggested order (decoupling `Clef` from `Policy`) is done; the rest is not implemented. Anything that changes CLI surface, output, side effects, or the policy file format needs explicit user approval (`AGENTS.md`).
+
+## Where the seams are today
+
+Most of the seams already exist:
+
+- The JSONL item contract (`src/item.ts`) separates selecting from judging.
+- `Clef` is an Effect service, and evals already stub it (`evals/shared.ts`).
+
+One thing is still coupled: the `Policy` type (`src/policy.ts`) bundles selector, rule, cut-offs, and `limit`.
+
+`src/clef.ts` no longer knows what a lint policy is (2026-10-26):
+
+- `Clef.ask(source, state, questions)` takes `Question`s (`{instructions, criteria}`) and returns, in order, the probability of yes or `RequestTooLarge`.
+- `source` only keys `stats` (the CLI passes the policy name).
+- `planRequests(state, questions)` replaces `planItemRequests(policy, items)`.
+- The rule-to-question mapping is `itemQuestion(policy, item)` in `src/lint.ts`, with state `policy.body`.
+- Request bodies and cache keys are byte-identical to before: plans for all 21 corpus policies matched the old code, and existing caches still hit.
+
+```mermaid
+flowchart LR
+  P[Policy .md] -->|select| S[sh -c selector]
+  S -->|JSONL Item id/text/path/lines| Q[question = item.text + criteria]
+  P -->|body, criteria| Q
+  Q -->|packed ≤64, ≤64KB| C[Clef + SQLite cache]
+  C -->|p violates| V[verdictOf 0.5/0.65]
+  V --> A[aggregate limit]
+  A --> O[stdout findings]
+```
+
+| Stage | Contract | Where it lives now |
+| --- | --- | --- |
+| Select | `() → Item[]` | `src/select.ts`, `src/item.ts` |
+| Rule | `{body, criteria}` + `Item → Question` | `src/lint.ts` (`itemQuestion`) |
+| Judge | `(source, state, Question[]) → p[]` | `Clef.ask`, `planRequests` (`src/clef.ts`) |
+| Decide | `p → Verdict`, then `aggregate` | `src/lint.ts` (`verdictOf`, `aggregate`) |
+| Report | `Finding[] →` text | `index.ts` |
+
+Done: `Clef` takes questions instead of `Policy`. The judge, its cache, and its packer know nothing about linting.
+
+## Seam 1: selectors apart from rules
+
+Shape: a library of named selectors (functions, tests, error handlers, commits, PRs), each emitting items, with rules referencing them.
+
+Some of this works today by convention:
+
+- `select: sh .lint-anything/lib/functions.sh`.
+- Identical commands already run once per lint run (`evals/shared.ts`: 6 runs → 1).
+
+What's missing is metadata: what kind of unit a selector emits, and which rules use it.
+
+Unlocks:
+
+- **Cross-language rules.** One rule ("no flag parameters") with a TS, Go, and Python selector each.
+- **Selectors as a product.** "Semantic units plus computed facts" is useful beyond linting: picking review targets, chunking for RAG or embeddings, finding test gaps. `evals/steps/` (`functions.ts`, `blame.ts`, `duplicates.ts`, `present.ts`) already is that library, hidden in evals.
+- **Coverage view.** A rules × selectors matrix shows which units no rule covers, and which rules can't reach where their violations happen.
+
+Measured risk: a selector belongs to its rule.
+
+- Reworded rules sent through selectors built for the polished wording lost 0.03–0.05 AUROC.
+- Those selectors also reached fewer gold ranges (87–95% vs 98%). See README, "Rule wording".
+
+So share a selector only for the unit cut (the function, the test). Keep per-rule facts (`--flags`, call sites, age in days) with the rule. Those facts carry the accuracy: 76% → 99% in `evals/history.ts`.
+
+## Seam 2: rules apart from the judge
+
+Shape: a `Judge` interface, `(state, questions) → probabilities`. Clef is one backend; others could be a deterministic judge, another LLM, or a human.
+
+Unlocks:
+
+- **Mechanical and semantic rules in one run.** A rule whose selector is an ast-grep or regex match is a violation at p=1, with no model call. Control rules already hit item AUROC 1.0, so paying Clef for them is waste.
+- **Explanations, not just probabilities.** Today a finding's reason is just `criteria.true`, because Clef returns only a number.
+  - A second judge could run only on `violation`/`review` items and write a specific explanation and fix hint.
+  - This is the biggest gain for coding agents, the target user.
+  - It is cheap: it touches only the ~13–30% of items that don't pass.
+- **Comparing judges.** The eval harness could score Clef against other models on the same 10,623 cases. That makes it easier to switch vendors.
+- **Cascades.** A cheap judge first, with Clef only for uncertain items. Caveat: the `ask` routing pre-filter failed (commit `a4caa7c`: more false alarms, fewer violations caught). A cascade needs its own eval first.
+- **A general batched yes/no classifier.** The packer, the content-addressed SQLite cache, retries, and sorted packing for stable answers make a generic way to ask N yes/no questions under shared context. Uses beyond lint: issue triage, routing PRs to reviewers, labeling commits or changelogs, data labeling.
+
+## Seam 3: deciding apart from judging
+
+`verdictOf` and `aggregate` are pure functions over probabilities. As a separate layer:
+
+- `limit` can grow into ratios, trends across runs, and per-directory budgets. Counting in code beats asking Clef to count (100% vs 92%, `evals/counts.ts`).
+- Probabilities stay comparable across judges, so calibration can be checked per backend.
+- Per-policy cut-offs were measured and rejected (surfaced violations 72% → 52%, `evals/cutoffs.ts`). This layer should not become per-rule tuning.
+
+## Components with standalone value
+
+| Component | Standalone use |
+| --- | --- |
+| `evals/corpus` (623 files, 10,623 labeled cases, two-model labeling protocol) | Public benchmark for semantic code rules; scores any judge or rule wording |
+| `evals/mine.ts` (violations mined from PR review comments) | **Finding rules from review history:** mine a repo's review comments for rules the team already enforces informally, then draft policies |
+| `evals/steps/*` | The selector library (Seam 1) |
+| `evals/sample.ts`, `evals/wordings.ts` | A tuning loop for any rule an agent writes, not just this corpus |
+| Answer cache + packer (`src/clef.ts`) | The batched yes/no classifier (Seam 2) |
+
+## Constraints
+
+Fine without approval:
+
+- Internal refactors (decoupling `Clef` from `Policy`).
+- Programmatic exports of the select, judge, and decide stages.
+- Moving `evals/steps` into a selectors package.
+
+Needs explicit approval first:
+
+- New CLI flags, subcommands, output, side effects, or env vars.
+- Policy format changes (a `selector:` reference, a `judge:` key).
+- Changing what `reason` prints.
+
+## Suggested order
+
+1. Internal refactor: `Clef` takes questions, not `Policy`. No user-visible change; verify with `bunx tsc --noEmit` and a CLI run.
+2. Program API: export the select, judge, and decide stages so evals and other tools call them instead of the CLI.
+3. Ask for approval: explanations for violations, or deterministic judging. Both change what users see.
+4. Separately: finding rules from review history, as its own tool. It builds on `evals/mine.ts` and doesn't touch the lint CLI.

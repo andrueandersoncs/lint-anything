@@ -1,5 +1,5 @@
 import { Array as Arr, Effect, Result } from "effect"
-import { Clef, type Judgment, type RequestTooLarge } from "./clef.ts"
+import { Clef, type Question, type RequestTooLarge } from "./clef.ts"
 import type { Item } from "./item.ts"
 import type { Policy } from "./policy.ts"
 import { runSelector, SelectorError, type SelectorRuns } from "./select.ts"
@@ -74,17 +74,23 @@ export const defaultThreshold = 0.65
 export const verdictOf = (violates: number, floor: number, threshold: number): Verdict =>
   violates <= floor ? "pass" : violates >= threshold ? "violation" : "review"
 
+// Nothing is added to what the policy says: the request's text is the policy body, each question is an
+// item's text, and the policy's criteria say what yes (violates) and no mean. Packing a policy's items as
+// questions of one request won the eval suite's sweep (README, Evals); one request per item cost 2.5×.
+/** The question that judges `item` against `policy`, asked under the policy body. */
+export const itemQuestion = (policy: Policy, item: Item): Question => ({ instructions: item.text, criteria: policy.criteria })
+
 const toFinding = (
-  judgment: Result.Result<Judgment, RequestTooLarge>,
+  violates: Result.Result<number, RequestTooLarge>,
   base: Omit<Finding, "verdict" | "violates" | "reason">,
   policy: Policy,
   threshold: number
 ): Finding =>
-  Result.match(judgment, {
-    onSuccess: (judgment): Finding => {
-      const verdict = verdictOf(judgment.violates, reviewFloor, threshold)
+  Result.match(violates, {
+    onSuccess: (violates): Finding => {
+      const verdict = verdictOf(violates, reviewFloor, threshold)
       // Clef answers only with a probability, so a finding's reason is what the policy says a violation is.
-      return { ...base, verdict, ...judgment, ...(verdict === "pass" ? {} : { reason: policy.criteria.true }) }
+      return { ...base, verdict, violates, ...(verdict === "pass" ? {} : { reason: policy.criteria.true }) }
     },
     onFailure: ({ bytes }): Finding => ({ ...base, verdict: "inconclusive", reason: `request is ${bytes} bytes; Clef would truncate it` })
   })
@@ -128,10 +134,10 @@ export const lint = Effect.fn("lint")(function*(
           : Effect.void
       }),
       Effect.flatMap((items) =>
-        clef.judgeItems(policy, items).pipe(
-          Effect.map((judgments) => {
-            const found = Arr.zipWith(items, judgments, (item, judgment) =>
-              toFinding(judgment, { policy: policy.name, ...itemLocation(item) }, policy, threshold))
+        clef.ask(policy.name, policy.body, items.map((item) => itemQuestion(policy, item))).pipe(
+          Effect.map((answers) => {
+            const found = Arr.zipWith(items, answers, (item, violates) =>
+              toFinding(violates, { policy: policy.name, ...itemLocation(item) }, policy, threshold))
             return policy.limit === undefined ? found : aggregate(policy.name, policy.limit, found)
           })
         )

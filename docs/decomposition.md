@@ -119,6 +119,22 @@ Needs explicit approval first:
    - `judge(policy, items)`: the `Clef` service's probabilities.
    - `decide(policy, items, answers, threshold)`: pure; findings and `limit` aggregation.
    - `evals/counts.ts` uses `decide` instead of rebuilding findings; its output is unchanged.
-   - Open: the npm package ships only the bundled CLI (`dist/cli.js`). Exporting the stages to other tools needs a library entry in `package.json` and a choice about Effect (bundled or a peer dependency), since the stages return Effects.
+   - Decided against a library (2026-10-26): lint-anything is a *tool*. Users should not need TypeScript, but wiring sources and streams in shell is expected. The TS stage exports stay as internal structure; nothing is added to `package.json`. See "Tool, not library" below.
 3. Ask for approval: explanations for violations, or deterministic judging. Both change what users see.
 4. Separately: finding rules from review history, as its own tool. It builds on `evals/mine.ts` and doesn't touch the lint CLI.
+
+## Tool, not library
+
+The unit of composition is a process speaking JSONL, not a TypeScript function. Selectors already work this way: any shell pipeline that prints items. The same shape could apply to the other stages, without flags, because every line carries what that stage needs:
+
+| Stage as a process | stdin (JSONL) | stdout (JSONL) |
+| --- | --- | --- |
+| select | (none; the user's pipeline) | `{id, text, path?, lines?}` |
+| ask (judge) | `{id, state, instructions, criteria}` | `{id, p}` or `{id, error}`; batched, packed, cached as today |
+| decide | `{id, p, path?, lines?, criteria}` + cut-offs/limit | findings |
+
+An `ask` process makes Clef's batched, cached yes/no judgment usable from any pipeline: triage, commit checks, data labeling. `lint-anything` stays the one fixed command that composes all three from policy files.
+
+Shipping selectors as shell scripts in the package (as `skills/` ships today) fits this too, with no new command surface.
+
+New commands or bins are CLI surface: none ships without explicit approval of its name and line formats.

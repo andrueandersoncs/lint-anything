@@ -66,7 +66,11 @@ interface Match {
   readonly file: string
   readonly ruleId: string
   readonly text: string
-  readonly range: { readonly start: { readonly line: number }; readonly end: { readonly line: number } }
+  readonly range: {
+    readonly byteOffset: { readonly start: number; readonly end: number }
+    readonly start: { readonly line: number }
+    readonly end: { readonly line: number }
+  }
 }
 
 const maxItem = 25
@@ -190,7 +194,11 @@ if (paths.length > 0) {
     process.exit(2)
   }
   const stream = run.stdout.toString()
+  // ast-grep streams matches in no fixed order, and the first match at a line wins below; sort them so the
+  // output never depends on it (as tests.ts does).
   const matches = stream.split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line) as Match)
+    .sort((a, b) => a.file.localeCompare(b.file) || a.range.byteOffset.start - b.range.byteOffset.start ||
+      a.range.byteOffset.end - b.range.byteOffset.end || a.ruleId.localeCompare(b.ruleId))
   const span = (match: Match) => [match.range.start.line + 1, match.range.end.line + 1] as const
   const tries = matches.filter((match) => match.ruleId === "try")
   const handlers = matches.filter((match) => match.ruleId === "handler")

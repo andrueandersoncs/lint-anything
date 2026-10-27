@@ -290,7 +290,7 @@ The same rules as the earlier excerpt CLI (`evals/RESEARCH.md`, H19), as excerpt
 - Selectors built for each rule beat it: +0.016 to +0.019 AUROC, and at the same false-alarm rate they find 10–12 points more violations. At the CLI's cut-offs they catch 69% of test violations and surface 85%, with 13% false alarms (the excerpt CLI: 55%, 78%, 14%), for $14–16 per 1,000 files (excerpt CLI: $20–22).
 - Per rule, a selector can still lose to the floor, and with 3–70 violations per rule and split the evidence is thin. Picking per rule on dev (custom selector only where its dev gain over the excerpt policy is outside noise) keeps every rule on the excerpt policy and gives up the pooled gain. On test, no-flag-parameters loses to its excerpt policy outside noise (0.977 → 0.915), although dev favored the selector (0.961 → 0.976): its selector only shows functions with a positional boolean, and Clef flags most of them. A coding agent tuning a policy should keep the excerpt policy as its baseline and hold out data to check.
 - Control rules on test: 0.93 for Go errors, 1.0 for the other three.
-- File size still matters a little. Real test files: AUROC 0.919 under 4 KB, 0.898 at 4–9 KB, 0.917 above 9 KB.
+- File size still matters a little. Real test files: AUROC 0.919 under 4 KB, 0.897 at 4–9 KB, 0.917 above 9 KB.
 - Measured with earlier request shapes (`evals/RESEARCH.md`): hand-picked files are harder than random ones (semantic AUROC 0.804 curated, 0.882 sampled, 0.845 mined, H10–H11); Clef doesn't score famous or older code better (H14); LLM plants run slightly easier than real violations of the same policies, within noise (+0.033 [−0.020, +0.085], H12).
 
 Rule wording, each set scored against gold labeled for its own text, through the corpus selectors (`wordings.ts --origin real`, real files):
@@ -299,10 +299,10 @@ Rule wording, each set scored against gold labeled for its own text, through the
 | --- | --- | --- | --- | --- | --- |
 | terse (one line per rule) | dev | 611 → 809 | 0.937 → 0.890 [−0.061, −0.033] | 13.0% → 26.6% | 68% → 77% |
 | | test | 537 → 677 | 0.930 → 0.886 [−0.060, −0.030] | 13.3% → 26.8% | 69% → 74% |
-| style-guide passages | dev | 611 → 755 | 0.937 → 0.909 [−0.040, −0.016] | 13.0% → 16.6% | 68% → 65% |
-| | test | 537 → 658 | 0.930 → 0.900 [−0.044, −0.015] | 13.3% → 16.7% | 69% → 63% |
-| AGENTS.md rules (16 policies) | dev | 591 → 834 | 0.939 → 0.895 [−0.060, −0.030] | 12.4% → 20.4% | 68% → 71% |
-| | test | 524 → 735 | 0.933 → 0.882 [−0.068, −0.035] | 12.2% → 20.5% | 69% → 68% |
+| style-guide passages | dev | 611 → 755 | 0.937 → 0.909 [−0.040, −0.016] | 13.0% → 16.7% | 68% → 65% |
+| | test | 537 → 658 | 0.930 → 0.900 [−0.044, −0.014] | 13.3% → 16.7% | 69% → 63% |
+| AGENTS.md rules (16 policies) | dev | 591 → 834 | 0.939 → 0.895 [−0.060, −0.029] | 12.4% → 20.4% | 68% → 71% |
+| | test | 524 → 735 | 0.933 → 0.882 [−0.069, −0.035] | 12.2% → 20.5% | 69% → 68% |
 
 - A selector belongs to its rule. The corpus selectors were built for the polished rules, and a reworded rule means something different: its gold has 23–41% more violations, and the polished rules' selectors reach fewer of them (dev: 98% of gold ranges for the polished rules, 87–95% for the reworded ones). Through selectors built for other text, reworded rules lose 0.03–0.05 AUROC and raise false alarms. A rule needs a selector written for it.
 

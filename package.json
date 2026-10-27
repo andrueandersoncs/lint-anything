@@ -33,7 +33,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build index.ts --target=bun --minify --outfile dist/cli.js && bun build src/lib.ts --target=bun --external effect --external 'effect/*' --outfile dist/lib.js && rm -rf dist/types && tsc -p tsconfig.lib.json",
+    "build": "bun build index.ts --target=bun --minify --outfile dist/cli.js && bun build score.ts --target=bun --minify --outfile skills/lint-anything/scripts/score.js && bun build src/lib.ts --target=bun --external effect --external 'effect/*' --outfile dist/lib.js && rm -rf dist/types && tsc -p tsconfig.lib.json",
     "prepublishOnly": "bunx tsc --noEmit && bun run build"
   },
   "peerDependencies": {

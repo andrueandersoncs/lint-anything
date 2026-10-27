@@ -10,6 +10,9 @@
  * retried. `Clef.layer(cacheDirectory?)` reads `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_AUTH_TOKEN` (and
  * optionally `CLOUDFLARE_API_BASE_URL`) from the environment. `loadPolicies` needs `FileSystem` and `Path`,
  * for example from `BunServices.layer` in `@effect/platform-bun`.
+ *
+ * `scorePolicy` measures a policy against labeled code (`loadLabels`: `.lint-anything/labels/<policy>.jsonl`),
+ * with the metrics and bootstrap intervals the evals use; the skill's score script is built on it.
  */
 export {
   cacheMaxAgeMs,
@@ -40,3 +43,35 @@ export {
 } from "./lint.ts"
 export { loadPolicies, parsePolicy, type Policy, PolicyError } from "./policy.ts"
 export { killRunningSelectors, runSelector, SelectorError, type SelectorRuns, selectorTimeoutMinutes } from "./select.ts"
+export {
+  auroc,
+  bootstrapInterval,
+  brier,
+  caught,
+  cliThresholds,
+  concordance,
+  falseAlarms,
+  itemLabel,
+  itemsOf,
+  type Label,
+  LabelError,
+  type LabelRecord,
+  loadLabels,
+  pairedInterval,
+  parseLabels,
+  type PolicyScore,
+  type Quality,
+  quality,
+  type Range,
+  reachedRanges,
+  type Scored,
+  scorePolicy,
+  type ScoreVerdict,
+  type Split,
+  targetKey,
+  targetScore,
+  type Thresholds,
+  tuneThresholds,
+  verdict,
+  verdictF1
+} from "./score.ts"

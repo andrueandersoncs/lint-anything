@@ -56,9 +56,20 @@ Rule: every `TODO` or `FIXME` comment must reference a tracking issue, written a
 
 A missing rules directory, one with no `.md` files, or an invalid policy stops the run.
 
-Policies are meant to be written and tuned by a coding agent: give it the rule you want, files that break and follow it, and `evals/` as the way to measure, and let it iterate on the selector, the body, and the criteria together. Because the CLI adds nothing, any way of asking Clef that a request can express is available to a policy. `evals/corpus/selectors-excerpts/` is the earlier CLI's whole-file judging written as policies: its selector cuts files into 1,000-byte excerpts, and its body and criteria are that CLI's own words.
+Policies are meant to be written and tuned by a coding agent: give it the rule you want and let it iterate on the selector, the body, and the criteria together, measured against labeled code (below). Because the CLI adds nothing, any way of asking Clef that a request can express is available to a policy. `evals/corpus/selectors-excerpts/` is the earlier CLI's whole-file judging written as policies: its selector cuts files into 1,000-byte excerpts, and its body and criteria are that CLI's own words.
 
-`skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, writing and tuning policies, and the pitfalls selectors run into. It ships in the package (`node_modules/@andrueandersoncs/lint-anything/skills/lint-anything/`); copy that directory into a coding agent's skills directory.
+`skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, writing and tuning policies, and the pitfalls selectors run into. It ships in the package (`node_modules/@andrueandersoncs/lint-anything/skills/lint-anything/`) with its score script; copy that directory into a coding agent's skills directory.
+
+### Tuning against labels
+
+A policy's labels live in `.lint-anything/labels/<policy>.jsonl`, next to the rules and committed with them; the CLI never reads them. Each line labels one file (`path`, or `item` for items without a path) as `violates` (with the line ranges of its violations), `complies`, or `ambiguous`, and puts it in the `dev` or `test` split. The skill's script scores a policy against them from the project root, judging only items in labeled files:
+
+```sh
+bun <skill directory>/scripts/score.js <policy>                  # per split: reach, AUROC [95%], caught, surfaced, false alarms
+bun <skill directory>/scripts/score.js <policy> candidate.md     # and candidate − current, paired intervals
+```
+
+An item counts as a violation when its lines overlap a labeled violation, and a file scores its highest item score, so labels stay valid when the selector changes. It lists dev mistakes and unreached violations; test is only summarized, and a change is adopted when test improves outside noise. The skill asks for labels from two or three different models, with the user settling their disagreements. The evals score the corpus with the same code (`src/score.ts`).
 
 ### Selectors
 
@@ -163,8 +174,8 @@ An error that stops the run (exit `2`) is printed to stderr as one line, `error:
 bun install
 bunx tsc --noEmit
 bun index.ts              # run from source
-bun run build             # dist/cli.js (the `lint-anything` bin), dist/lib.js and dist/types (the library)
-bun pm pack               # the tarball npm would get: dist/cli.js, dist/lib.js, dist/types, skills/, README, LICENSE
+bun run build             # dist/cli.js (the `lint-anything` bin), skills/lint-anything/scripts/score.js (the skill's score script), dist/lib.js and dist/types (the library)
+bun pm pack               # the tarball npm would get: dist/cli.js, dist/lib.js, dist/types, skills/ (with score.js), README, LICENSE
 npm publish               # runs prepublishOnly (type check, build) first; the package is public
 ```
 
@@ -183,6 +194,8 @@ The package also exports the stages a run composes as an [Effect](https://effect
 | `Clef.ask(source, state, questions)` | Yes/no questions under a shared state, packed, cached, retried; no policy needed |
 | `Clef.layer(cacheDirectory?)` | The `Clef` service; reads the environment variables above |
 | `loadPolicies(directory)`, `parsePolicy(name, source)` | Policies from Markdown (`loadPolicies` needs `FileSystem` and `Path`, e.g. `BunServices.layer` from `@effect/platform-bun`) |
+| `loadLabels(policy)`, `scorePolicy(policy, labels, cwd?)` | A policy scored against `.lint-anything/labels/<policy>.jsonl`: per labeled file and item, with reach |
+| `quality`, `auroc`, `pairedInterval`, `bootstrapInterval`, … | The metrics and 95% bootstrap intervals the evals and the score script report |
 
 ```ts
 import { BunServices } from "@effect/platform-bun"
@@ -200,7 +213,7 @@ Selectors still run in their own process groups and are killed when the process 
 
 ## Evals
 
-`evals/` scores policies (body, selector, criteria) and request shapes against a hand-labeled corpus, so changes can be measured instead of guessed. It is also the loop a coding agent uses to write and tune a policy.
+`evals/` scores policies (body, selector, criteria) and request shapes against a hand-labeled corpus, so changes can be measured instead of guessed. Its item labeling, file scores, metrics, and intervals are `src/score.ts`, the same code the skill's score script reports with.
 
 ```sh
 bun evals/validate.ts                      # check the corpus, print label counts per policy and origin

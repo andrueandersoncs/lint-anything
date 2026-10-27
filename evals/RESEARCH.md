@@ -1016,5 +1016,6 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   bge-m3 embeddings for 4,397 comments, 1,001 norms and 225 theme rules. Kernel: 65 Claude extraction
   and 555 theme-naming completions, 14,142 batch-judge items ($0.34). Outputs and kernel code in
   `evals/.cache/research/discover/`.
+- 2026-10-27: evals moved onto `src/score.ts` (labels, item labeling, file scores, reach, metrics, intervals), shared with the skill's score script; `evals/metrics.ts` keeps only `pairAccuracy`. Replayed from cache with selector output pinned: `run.ts` (dev, test, test real semantic), `cutoffs.ts`, `history.ts`, `examples.ts`, `counts.ts` print identically; on identical scored items (48,960 dev, 42,775 test) every metric and interval matches. Found on the way: the `preserve-error-context` selector (`errors.ts` step) is not deterministic (14 of 1,096 dev items differed between two selections of the same code), so its requests can miss the cache; 16 real requests were sent before the API was pointed at a dead address for the replays. `wordings.ts` not replayed (cache misses from that selector).
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

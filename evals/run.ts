@@ -19,14 +19,17 @@ import {
   bootstrapInterval,
   brier,
   concordance,
+  cliThresholds,
+  type Label,
   pairedInterval,
-  productionThresholds,
   quality,
+  reachedRanges,
   type Scored,
   type Thresholds,
   tuneThresholds,
   verdictF1
-} from "./metrics.ts"
+} from "../src/score.ts"
+import { pairAccuracy } from "./metrics.ts"
 import {
   corpusSelectorSet,
   costPerThousand,
@@ -64,7 +67,7 @@ const category = flag("--category", "all")
 const concurrency = Number(flag("--concurrency", "8"))
 const wording = flag("--wording", "")
 const selectorDirectories = flags("--selectors")
-const [floor, threshold] = flag("--thresholds", `${productionThresholds.floor},${productionThresholds.threshold}`)
+const [floor, threshold] = flag("--thresholds", `${cliThresholds.floor},${cliThresholds.threshold}`)
   .split(",")
   .map(Number)
 if (floor === undefined || threshold === undefined || !(0 <= floor && floor < threshold && threshold <= 1)) {
@@ -138,9 +141,9 @@ interface Run {
   readonly name: string
   readonly items: ReadonlyArray<ItemCase>
   /** Item scores, items of ambiguous file cases included. */
-  readonly scored: ReadonlyArray<Scored>
+  readonly scored: ReadonlyArray<Scored<ItemCase>>
   /** File case scores: each case's highest item score. */
-  readonly files: ReadonlyArray<Scored>
+  readonly files: ReadonlyArray<Scored<Case>>
   readonly requests: number
   readonly inputTokens: number
 }
@@ -161,11 +164,11 @@ const baseline = runs[0]!
 const fixed = (value: number) => (Number.isNaN(value) ? "–" : value.toFixed(3))
 const percent = (value: number) => (Number.isNaN(value) ? "–" : `${(value * 100).toFixed(0)}%`)
 const signed = (value: number) => (Number.isNaN(value) ? "–" : `${value >= 0 ? "+" : ""}${value.toFixed(3)}`)
-const delta = (base: ReadonlyArray<Scored>, other: ReadonlyArray<Scored>, metric: (cases: ReadonlyArray<Scored>) => number) => {
+const delta = (base: ReadonlyArray<Scored<unknown>>, other: ReadonlyArray<Scored<unknown>>, metric: (cases: ReadonlyArray<Scored<unknown>>) => number) => {
   const [low, high] = pairedInterval(base, other, metric)
   return ` [${signed(low)}, ${signed(high)}]`
 }
-const clearItems = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => entry.item.gold.label !== "ambiguous")
+const clearItems = (scored: ReadonlyArray<Scored<ItemCase>>) => scored.filter((entry) => entry.label !== "ambiguous")
 const caseKey = (item: Case) => `${item.file.id}\0${item.policy.name}`
 const sameItems = (run: Run) =>
   run.items.length === baseline.items.length && run.items.every((item, index) => item.id === baseline.items[index]!.id)
@@ -173,18 +176,17 @@ const sameItems = (run: Run) =>
 const reached = (run: Run, fileCases: ReadonlyArray<Case>) => {
   const byCase = new Map<string, Array<ItemCase>>()
   for (const item of run.items) byCase.set(caseKey(item), [...(byCase.get(caseKey(item)) ?? []), item])
-  const ranges = fileCases.filter((item) => item.gold.label === "violates").flatMap((item) => (item.gold.lines ?? []).map((range) => [item, range] as const))
-  const hit = ranges.filter(([item, [start, end]]) =>
-    (byCase.get(caseKey(item)) ?? []).some(({ entry }) => entry.lines![0] <= end && start <= entry.lines![1])).length
-  return `${hit}/${ranges.length}`
+  const violating = fileCases.filter((item) => item.gold.label === "violates")
+  const hit = violating.reduce((sum, item) =>
+    sum + reachedRanges(item.gold.lines ?? [], (byCase.get(caseKey(item)) ?? []).map(({ entry }) => entry)), 0)
+  return `${hit}/${violating.reduce((sum, item) => sum + (item.gold.lines ?? []).length, 0)}`
 }
-const count = (scored: ReadonlyArray<Scored>, label: (gold: string) => boolean) => scored.filter((entry) => label(entry.item.gold.label)).length
-const isClean = (label: string) => label === "complies" || label === "not-applicable"
+const count = (scored: ReadonlyArray<Scored<Case>>, label: Label) => scored.filter((entry) => entry.label === label).length
 
 const baseItems = clearItems(baseline.scored)
-console.log(`\n${scope}: ${cases.length} cases in ${fileCount} files: ${count(baseline.files, (label) => label === "violates")} violating, ` +
-  `${count(baseline.files, (label) => label === "ambiguous")} ambiguous; ${baseline.name} judges ${baseline.items.length} items ` +
-  `(${count(baseItems, (label) => label === "violates")} violating, ${baseline.scored.length - baseItems.length} in ambiguous cases, ` +
+console.log(`\n${scope}: ${cases.length} cases in ${fileCount} files: ${count(baseline.files, "violates")} violating, ` +
+  `${count(baseline.files, "ambiguous")} ambiguous; ${baseline.name} judges ${baseline.items.length} items ` +
+  `(${count(baseItems, "violates")} violating, ${baseline.scored.length - baseItems.length} in ambiguous cases, ` +
   `left out of item metrics). A case scores its highest item score (0 without items); verdicts at item cut-offs ` +
   `${floor} / ${threshold}; "tuned" re-picks both on these same cases (in-sample: tune on dev, then pass them to test ` +
   `with --thresholds). Intervals: 95% paired bootstrap vs ${baseline.name}, resampling files. Cost covers the ` +
@@ -196,13 +198,13 @@ console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|--
 for (const run of runs) {
   const q = quality(run.files, thresholds)
   const tuned = tuneThresholds(run.files)
-  const files = (metric: (cases: ReadonlyArray<Scored>) => number) => run === baseline ? "" : delta(baseline.files, run.files, metric)
-  const items = (metric: (cases: ReadonlyArray<Scored>) => number) =>
+  const files = (metric: (cases: ReadonlyArray<Scored<unknown>>) => number) => run === baseline ? "" : delta(baseline.files, run.files, metric)
+  const items = (metric: (cases: ReadonlyArray<Scored<unknown>>) => number) =>
     run === baseline || !sameItems(run) ? "" : delta(baseItems, clearItems(run.scored), metric)
   console.log(`| ${run.name} | ${fixed(q.auroc)}${files(auroc)} | ${fixed(q.concordance)}${files(concordance)} | ` +
     `${fixed(q.brier)}${files(brier)} | ${fixed(q.f1)} | ${percent(q.caught)} | ${percent(q.surfaced)} | ` +
     `${percent(q.ambiguousToReview)} | ${percent(q.falseAlarms)} | ${tuned.floor}/${tuned.threshold} → ` +
-    `${fixed(verdictF1(run.files, tuned))} | ${percent(q.pairs)} | ${fixed(auroc(clearItems(run.scored)))}${items(auroc)} | ` +
+    `${fixed(verdictF1(run.files, tuned))} | ${percent(pairAccuracy(run.files))} | ${fixed(auroc(clearItems(run.scored)))}${items(auroc)} | ` +
     `${fixed(brier(clearItems(run.scored)))}${items(brier)} | ${reached(run, cases)} | ${run.items.length} ` +
     `(${run.scored.filter((entry) => entry.score === null).length}) | ${run.requests} | ` +
     `$${costPerThousand(run.inputTokens, fileCount).toFixed(3)} |`)
@@ -217,16 +219,16 @@ const breakdown = (title: string, groups: ReadonlyArray<readonly [string, (item:
     `Items (violating) | Item AUROC | Gold ranges reached |${others.map((run) => ` ${run.name} file AUROC |`).join("")}`)
   console.log(`|---|---|---|---|---|---|---|---|---|---|${others.map(() => "---|").join("")}`)
   for (const [name, member] of groups) {
-    const of = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => member(entry.item))
+    const of = <A extends Case>(scored: ReadonlyArray<Scored<A>>) => scored.filter((entry) => member(entry.subject))
     const files = of(baseline.files)
     if (files.length === 0) continue
     const items = clearItems(of(baseline.scored))
     const q = quality(files, thresholds)
     const [low, high] = bootstrapInterval(files, auroc)
-    console.log(`| ${name} | ${count(files, (label) => label === "violates")} | ${count(files, isClean)} | ` +
-      `${count(files, (label) => label === "ambiguous")} | ${fixed(q.auroc)} [${fixed(low)}, ${fixed(high)}] | ${percent(q.caught)} | ` +
-      `${percent(q.falseAlarms)} | ${items.length} (${count(items, (label) => label === "violates")}) | ${fixed(auroc(items))} | ` +
-      `${reached(baseline, files.map((entry) => entry.item))} |` +
+    console.log(`| ${name} | ${count(files, "violates")} | ${count(files, "complies")} | ` +
+      `${count(files, "ambiguous")} | ${fixed(q.auroc)} [${fixed(low)}, ${fixed(high)}] | ${percent(q.caught)} | ` +
+      `${percent(q.falseAlarms)} | ${items.length} (${count(items, "violates")}) | ${fixed(auroc(items))} | ` +
+      `${reached(baseline, files.map((entry) => entry.subject))} |` +
       others.map((run) => ` ${fixed(auroc(of(run.files)))}${delta(files, of(run.files), auroc)} |`).join(""))
   }
 }

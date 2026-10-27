@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { parsePolicy, type Policy } from "../src/policy.ts"
+import type { Label as ScoreLabel } from "../src/score.ts"
 
 export const corpusDirectory = `${import.meta.dir}/corpus`
 
@@ -13,6 +14,9 @@ process.env.PATH = `${import.meta.dir}/../node_modules/.bin:${process.env.PATH}`
  * ideal verdict is `review`; excluded from AUROC and from item labels.
  */
 export type Label = "violates" | "complies" | "not-applicable" | "ambiguous"
+
+/** The scoring label of a gold label: `not-applicable` scores as `complies`. */
+export const scoreLabel = (label: Label): ScoreLabel => (label === "not-applicable" ? "complies" : label)
 /** `semantic` policies are the intended use; `control` policies are mechanical, kept for comparison. */
 export type Category = "semantic" | "control"
 

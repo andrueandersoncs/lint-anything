@@ -8,8 +8,8 @@ import { itemQuestion } from "../src/lint.ts"
 import { parsePolicy, type Policy } from "../src/policy.ts"
 import { runSelector } from "../src/select.ts"
 import type { makeClient } from "./client.ts"
-import { type Case, type Corpus, corpusDirectory, ruleText } from "./corpus.ts"
-import type { Scored } from "./metrics.ts"
+import { itemLabel, reachedRanges, type Scored, targetScore } from "../src/score.ts"
+import { type Case, type Corpus, corpusDirectory, ruleText, scoreLabel } from "./corpus.ts"
 
 /** Policies whose selectors pick the items to judge, each standing in for the corpus policy `original`. */
 export interface SelectorSet {
@@ -51,8 +51,6 @@ export interface ItemCase extends Case {
   readonly entry: Item
 }
 
-const overlaps = (lines: readonly [number, number], [start, end]: readonly [number, number]) => lines[0] <= end && start <= lines[1]
-
 /** Calls `use` on every value with at most `limit` calls in flight; results follow `values` order. */
 const pooled = async <A, B>(values: ReadonlyArray<A>, limit: number, use: (value: A) => Promise<B>): Promise<Array<B>> => {
   const results: Array<B> = []
@@ -91,17 +89,26 @@ export const selectItems = async (
   let goldRanges = 0
   let coveredRanges = 0
   for (const { fileCase, selected, policy } of selections) {
+    const target = { label: scoreLabel(fileCase.gold.label), ...(fileCase.gold.lines === undefined ? {} : { lines: fileCase.gold.lines }) }
     const gold = fileCase.gold.label === "violates" ? fileCase.gold.lines ?? [] : []
     for (const entry of selected) {
       if (entry.lines === undefined) throw new Error(`${policy.name}: eval selectors must emit lines (${entry.id})`)
-      const label = fileCase.gold.label === "ambiguous" ? "ambiguous" : gold.some((range) => overlaps(entry.lines!, range)) ? "violates" : "complies"
+      const label = itemLabel(target, entry)
       items.push({ id: `${fileCase.id}:${entry.id}`, file: fileCase.file, policy, gold: { label, note: "" }, entry })
     }
     goldRanges += gold.length
-    coveredRanges += gold.filter((range) => selected.some((entry) => entry.lines !== undefined && overlaps(entry.lines, range))).length
+    coveredRanges += reachedRanges(gold, selected)
   }
   return { fileCases, items, goldRanges, coveredRanges }
 }
+
+/** A corpus case (file or item) with its score, labelled for scoring and resampled by file. */
+export const scored = <A extends Case>(subject: A, score: number | null): Scored<A> => ({
+  subject,
+  label: scoreLabel(subject.gold.label),
+  group: subject.file.id,
+  score
+})
 
 /** A request to send for a group of items; questions answer items by index into the group. */
 export interface Planned {
@@ -124,7 +131,7 @@ export const productionPlan: Plan = (policy, entries) => {
 }
 
 export interface ItemRun {
-  readonly scored: ReadonlyArray<Scored>
+  readonly scored: ReadonlyArray<Scored<ItemCase>>
   readonly requests: number
   /** Input tokens per policy name. */
   readonly inputTokens: ReadonlyMap<string, number>
@@ -161,28 +168,26 @@ export const scoreItems = async (ask: ReturnType<typeof makeClient>, items: Read
       }
     }))
   }))
-  return { scored: items.map((item) => ({ item, score: scores.get(item) ?? null })), requests, inputTokens, ms }
+  return { scored: items.map((item) => scored(item, scores.get(item) ?? null)), requests, inputTokens, ms }
 }
 
 /**
  * The file-level view of item scores, as the CLI reports a file: each file case scores its highest item
  * score, 0 when the selector found nothing in the file, and `null` when every item was too large to send.
  */
-export const fileScores = (fileCases: ReadonlyArray<Case>, scored: ReadonlyArray<Scored>): Array<Scored> => {
+export const fileScores = (fileCases: ReadonlyArray<Case>, items: ReadonlyArray<Scored<ItemCase>>): Array<Scored<Case>> => {
   const byCase = new Map<string, Array<number | null>>()
-  for (const { item, score } of scored) {
+  for (const { subject: item, score } of items) {
     const key = `${item.file.id}\0${item.policy.name}`
     byCase.set(key, [...(byCase.get(key) ?? []), score])
   }
   return fileCases.map((item) => {
-    const scores = byCase.get(`${item.file.id}\0${item.policy.name}`) ?? []
-    const answered = scores.filter((score) => score !== null)
-    return { item, score: scores.length > 0 && answered.length === 0 ? null : Math.max(0, ...answered) }
+    return scored(item, targetScore(byCase.get(`${item.file.id}\0${item.policy.name}`) ?? []))
   })
 }
 
 /** USD per 1,000 units (items or files) for `tokens` input tokens spent on `count` of them. */
 export const costPerThousand = (tokens: number, count: number) => (tokens * inputTokenPrice * 1000) / count
 
-export const writeScores = (path: string, scored: ReadonlyArray<Scored>) =>
-  Bun.write(path, `${scored.map(({ item, score }) => JSON.stringify({ case: item.id, label: item.gold.label, score })).join("\n")}\n`)
+export const writeScores = (path: string, scored: ReadonlyArray<Scored<Case>>) =>
+  Bun.write(path, `${scored.map(({ subject: item, score }) => JSON.stringify({ case: item.id, label: item.gold.label, score })).join("\n")}\n`)

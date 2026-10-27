@@ -11,7 +11,7 @@ import { defaultThreshold, reviewFloor } from "../src/lint.ts"
 import { runSelector } from "../src/select.ts"
 import { makeClient } from "./client.ts"
 import { adHocPolicy, type Case } from "./corpus.ts"
-import { auroc, brier, pairedInterval, quality, type Scored } from "./metrics.ts"
+import { auroc, brier, pairedInterval, quality, type Scored } from "../src/score.ts"
 import { costPerThousand, type ItemCase, productionPlan, scoreItems } from "./selected.ts"
 
 const args = Bun.argv.slice(2)
@@ -145,17 +145,17 @@ try {
 
 // --- Report ---------------------------------------------------------------------------------------
 
-const ageOf = (scored: Scored) => truth.get((scored.item as ItemCase).entry.id)!
-const near = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => Math.abs(ageOf(entry).age - 90) <= 5)
-const youngWithoutIssue = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => ageOf(entry).age <= 90 && !ageOf(entry).issue)
+const ageOf = (scored: Scored<ItemCase>) => truth.get(scored.subject.entry.id)!
+const near = (scored: ReadonlyArray<Scored<ItemCase>>) => scored.filter((entry) => Math.abs(ageOf(entry).age - 90) <= 5)
+const youngWithoutIssue = (scored: ReadonlyArray<Scored<ItemCase>>) => scored.filter((entry) => ageOf(entry).age <= 90 && !ageOf(entry).issue)
 // Binary accuracy at the CLI's item threshold: `violation` vs. anything else.
-const accuracy = (scored: ReadonlyArray<Scored>) =>
-  scored.filter((entry) => ((entry.score ?? 0) >= defaultThreshold) === (entry.item.gold.label === "violates")).length / scored.length
-const flagged = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => (entry.score ?? 0) > reviewFloor).length / scored.length
+const accuracy = (scored: ReadonlyArray<Scored<unknown>>) =>
+  scored.filter((entry) => ((entry.score ?? 0) >= defaultThreshold) === (entry.label === "violates")).length / scored.length
+const flagged = (scored: ReadonlyArray<Scored<ItemCase>>) => scored.filter((entry) => (entry.score ?? 0) > reviewFloor).length / scored.length
 const fixed = (value: number) => (Number.isNaN(value) ? "–" : value.toFixed(3))
 const percent = (value: number) => `${(value * 100).toFixed(0)}%`
 const baseline = results[0]!
-const delta = (scored: ReadonlyArray<Scored>, metric: (cases: ReadonlyArray<Scored>) => number) => {
+const delta = (scored: ReadonlyArray<Scored<ItemCase>>, metric: (cases: ReadonlyArray<Scored<unknown>>) => number) => {
   if (scored === baseline.run.scored) return ""
   const [low, high] = pairedInterval(baseline.run.scored, scored, metric)
   return ` [${low >= 0 ? "+" : ""}${low.toFixed(3)}, ${high >= 0 ? "+" : ""}${high.toFixed(3)}]`

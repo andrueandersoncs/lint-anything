@@ -6,8 +6,8 @@
 //   bun evals/wordings.ts [--split dev|test|all] [--origin all|real|planted|synthetic] [--concurrency 8] [set ...]
 import { makeClient } from "./client.ts"
 import { type Case, type Corpus, loadCorpus, loadWordings } from "./corpus.ts"
-import { auroc, pairedInterval, productionThresholds, quality, type Scored } from "./metrics.ts"
-import { corpusSelectorSet, fileScores, productionPlan, scoreItems, selectItems } from "./selected.ts"
+import { auroc, cliThresholds, type Label, pairedInterval, quality, type Scored } from "../src/score.ts"
+import { corpusSelectorSet, fileScores, type ItemCase, productionPlan, scoreItems, selectItems } from "./selected.ts"
 
 const args = Bun.argv.slice(2)
 const flag = (name: string, fallback: string) => {
@@ -32,8 +32,8 @@ const polished = await loadCorpus()
 const fixed = (value: number) => (Number.isNaN(value) ? "–" : value.toFixed(3))
 const percent = (value: number) => (Number.isNaN(value) ? "–" : `${(value * 100).toFixed(1)}%`)
 const signed = (value: number) => (Number.isNaN(value) ? "–" : `${value >= 0 ? "+" : ""}${value.toFixed(3)}`)
-const clear = (cases: ReadonlyArray<Scored>, label: string) => cases.filter((scored) => scored.item.gold.label === label).length
-const clearItems = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => entry.item.gold.label !== "ambiguous")
+const clear = (cases: ReadonlyArray<Scored<Case>>, label: Label) => cases.filter((scored) => scored.label === label).length
+const clearItems = (scored: ReadonlyArray<Scored<ItemCase>>) => scored.filter((entry) => entry.label !== "ambiguous")
 
 /** Judges `cases` through their policies' selectors; returns file case scores, item scores, and requests. */
 const judge = async (corpus: Corpus, cases: ReadonlyArray<Case>) => {
@@ -54,8 +54,8 @@ for (const set of sets) {
   const ids = new Set(theirs.map((item) => item.id))
   const ours = polished.cases.filter((item) => ids.has(item.id))
   const [base, candidate] = await Promise.all([judge(polished, ours), judge(corpus, theirs)])
-  const q0 = quality(base.files, productionThresholds)
-  const q1 = quality(candidate.files, productionThresholds)
+  const q0 = quality(base.files, cliThresholds)
+  const q1 = quality(candidate.files, cliThresholds)
   const [low, high] = pairedInterval(base.files, candidate.files, auroc)
   const files = new Set(theirs.map((item) => item.file.id)).size
   rows.push(`| ${set} | ${reworded.size} | ${files} | ${clear(base.files, "violates")} → ${clear(candidate.files, "violates")} | ` +
@@ -64,11 +64,11 @@ for (const set of sets) {
     `${percent(q0.falseAlarms)} → ${percent(q1.falseAlarms)} | ${percent(q0.caught)} → ${percent(q1.caught)} | ` +
     `${base.requests + candidate.requests} |`)
   for (const name of [...reworded].sort()) {
-    const of = (scored: ReadonlyArray<Scored>) => scored.filter((entry) => entry.item.policy.name === name)
+    const of = <A extends Case>(scored: ReadonlyArray<Scored<A>>) => scored.filter((entry) => entry.subject.policy.name === name)
     const [a, b] = [of(base.files), of(candidate.files)]
     perPolicy.push(`| ${set} | ${name} | ${clear(a, "violates")} → ${clear(b, "violates")} | ${fixed(auroc(a))} → ${fixed(auroc(b))} | ` +
       `${fixed(auroc(of(base.items)))} → ${fixed(auroc(of(candidate.items)))} | ` +
-      `${percent(quality(a, productionThresholds).falseAlarms)} → ${percent(quality(b, productionThresholds).falseAlarms)} |`)
+      `${percent(quality(a, cliThresholds).falseAlarms)} → ${percent(quality(b, cliThresholds).falseAlarms)} |`)
   }
 }
 

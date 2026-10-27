@@ -3,11 +3,10 @@
 // its own selector from the other split appended to its body as examples, and the split's items are
 // scored with and without them.
 //   bun evals/examples.ts [--concurrency 8] [policy name substring ...]
-import { defaultThreshold, reviewFloor } from "../src/lint.ts"
 import type { Policy } from "../src/policy.ts"
 import { makeClient } from "./client.ts"
 import { loadCorpus } from "./corpus.ts"
-import { auroc, brier, pairedInterval, quality, type Scored } from "./metrics.ts"
+import { auroc, brier, cliThresholds, pairedInterval, quality, type Scored } from "../src/score.ts"
 import { corpusSelectorSet, costPerThousand, type ItemCase, productionPlan, scoreItems, selectItems } from "./selected.ts"
 
 const args = Bun.argv.slice(2)
@@ -26,8 +25,8 @@ const baseline = {
 // --- Examples ---------------------------------------------------------------------------------------
 
 /** An item's own code: its text after the `item:` heading present.ts writes, without location or context. */
-const codeOf = (scored: Scored) => {
-  const text = (scored.item as ItemCase).entry.text
+const codeOf = (scored: Scored<ItemCase>) => {
+  const text = scored.subject.entry.text
   const heading = text.lastIndexOf("\n\nitem:\n")
   return (heading === -1 ? text : text.slice(heading + "\n\nitem:\n".length)).trim()
 }
@@ -37,11 +36,11 @@ const codeOf = (scored: Scored) => {
  * the two clean items the baseline scored highest.
  */
 const pickExamples = (policy: string, split: "dev" | "test") => {
-  const own = baseline[split].scored.filter((scored) => scored.item.policy.name === policy && codeOf(scored).split("\n").length <= 12)
-  const distinct = (scored: ReadonlyArray<Scored>) =>
+  const own = baseline[split].scored.filter((scored) => scored.subject.policy.name === policy && codeOf(scored).split("\n").length <= 12)
+  const distinct = (scored: ReadonlyArray<Scored<ItemCase>>) =>
     scored.filter((entry, index) => scored.findIndex((other) => codeOf(other) === codeOf(entry)) === index)
-  const violating = distinct(own.filter((scored) => scored.item.gold.label === "violates").sort((a, b) => a.item.id.localeCompare(b.item.id))).slice(0, 2)
-  const clean = distinct(own.filter((scored) => scored.item.gold.label !== "violates").sort((a, b) => (b.score ?? 0) - (a.score ?? 0))).slice(0, 2)
+  const violating = distinct(own.filter((scored) => scored.label === "violates").sort((a, b) => a.subject.id.localeCompare(b.subject.id))).slice(0, 2)
+  const clean = distinct(own.filter((scored) => scored.label !== "violates").sort((a, b) => (b.score ?? 0) - (a.score ?? 0))).slice(0, 2)
   return [...violating.map((scored) => ({ violates: true, code: codeOf(scored) })), ...clean.map((scored) => ({ violates: false, code: codeOf(scored) }))]
 }
 
@@ -64,11 +63,11 @@ const withExamples = (policy: Policy, examples: ReadonlyArray<{ violates: boolea
 
 const fixed = (value: number) => (Number.isNaN(value) ? "–" : value.toFixed(3))
 const percent = (value: number) => (Number.isNaN(value) ? "–" : `${(value * 100).toFixed(1)}%`)
-const delta = (base: ReadonlyArray<Scored>, other: ReadonlyArray<Scored>, metric: (cases: ReadonlyArray<Scored>) => number) => {
+const delta = (base: ReadonlyArray<Scored<unknown>>, other: ReadonlyArray<Scored<unknown>>, metric: (cases: ReadonlyArray<Scored<unknown>>) => number) => {
   const [low, high] = pairedInterval(base, other, metric)
   return ` [${low >= 0 ? "+" : ""}${low.toFixed(3)}, ${high >= 0 ? "+" : ""}${high.toFixed(3)}]`
 }
-const thresholds = { floor: reviewFloor, threshold: defaultThreshold }
+const thresholds = cliThresholds
 
 console.log("\n(a) Few-shot: 2 violating + 2 hardest clean examples from the other split, in an examples section of the policy body.")
 console.log("| Split | Policy | Items (violating) | AUROC | Brier | Caught / surfaced / false alarms | $ / 1k items |")
@@ -79,14 +78,14 @@ for (const split of ["dev", "test"] as const) {
   const items = splits[split].items.map((item): ItemCase => ({ ...item, policy: shots.get(item.policy.name)! }))
   const shot = await scoreItems(ask, items, productionPlan)
   for (const name of [...set.policies.map(({ policy }) => policy.name), "all"]) {
-    const own = (scored: ReadonlyArray<Scored>) => (name === "all" ? scored : scored.filter((entry) => entry.item.policy.name === name))
+    const own = (scored: ReadonlyArray<Scored<ItemCase>>) => (name === "all" ? scored : scored.filter((entry) => entry.subject.policy.name === name))
     const base = own(baseline[split].scored)
     const withShots = own(shot.scored)
     const tokens = (run: typeof shot) => name === "all" ? [...run.inputTokens.values()].reduce((sum, value) => sum + value, 0) : run.inputTokens.get(name) ?? 0
     for (const [label, scored, run] of [["without", base, baseline[split]], ["with examples", withShots, shot]] as const) {
       const q = quality(scored, thresholds)
       const isBase = scored === base
-      console.log(`| ${split} | ${name.replace(/^(semantic|control)\//, "")} ${label} | ${scored.length} (${scored.filter((s) => s.item.gold.label === "violates").length}) | ` +
+      console.log(`| ${split} | ${name.replace(/^(semantic|control)\//, "")} ${label} | ${scored.length} (${scored.filter((s) => s.label === "violates").length}) | ` +
         `${fixed(auroc(scored))}${isBase ? "" : delta(base, scored, auroc)} | ${fixed(brier(scored))}${isBase ? "" : delta(base, scored, brier)} | ` +
         `${percent(q.caught)} / ${percent(q.surfaced)} / ${percent(q.falseAlarms)} | $${costPerThousand(tokens(run), scored.length).toFixed(3)} |`)
     }

@@ -12,7 +12,7 @@ import type { Policy } from "../src/policy.ts"
 import { runSelector } from "../src/select.ts"
 import { makeClient } from "./client.ts"
 import { adHocPolicy, type Case } from "./corpus.ts"
-import { auroc, type Scored } from "./metrics.ts"
+import { auroc, type Scored } from "../src/score.ts"
 import { costPerThousand, type ItemCase, productionPlan, scoreItems } from "./selected.ts"
 
 const concurrencyIndex = Bun.argv.indexOf("--concurrency")
@@ -76,7 +76,7 @@ const judge = async (policy: Policy) => {
   }))
   return scoreItems(ask, itemCases, productionPlan)
 }
-const entryOf = (scored: Scored) => (scored.item as ItemCase).entry
+const entryOf = (scored: Scored<ItemCase>) => scored.subject.entry
 
 try {
   // A: the count rule asked about each whole file.
@@ -105,8 +105,8 @@ try {
   const near = rows.filter(({ file }) => file.issueless === limit || file.issueless === limit + 1)
   const accuracy = (subset: typeof rows, says: (row: (typeof rows)[number]) => boolean) =>
     `${((100 * subset.filter((row) => says(row) === row.violates).length) / subset.length).toFixed(0)}% (${subset.filter((row) => says(row) === row.violates).length}/${subset.length})`
-  const asScored = (score: (row: (typeof rows)[number]) => number): Array<Scored> =>
-    rows.map((row) => ({ item: { id: row.file.path, file: { id: row.file.path }, gold: { label: row.violates ? "violates" : "complies" } } as unknown as Case, score: score(row) }))
+  const asScored = (score: (row: (typeof rows)[number]) => number): Array<Scored<string>> =>
+    rows.map((row) => ({ subject: row.file.path, label: row.violates ? "violates" : "complies", group: row.file.path, score: score(row) }))
   const tokens = (judged: typeof run) => [...judged.inputTokens.values()].reduce((sum, value) => sum + value, 0)
   console.log(`\n${files.length} files, ${rows.filter((row) => row.violates).length} with more than ${limit} issue-less TODOs; ${near.length} with exactly ${limit} or ${limit + 1}.`)
   console.log("| Approach | Accuracy | At the limit (3 or 4) | AUROC | $ / 1k files |\n|---|---|---|---|---|")

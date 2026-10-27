@@ -2,38 +2,37 @@
 // stored for dev and test (run `bun evals/run.ts --split dev` and `--split test` with the same filters
 // first); sends no requests. Items of ambiguous file cases are left out.
 //   bun evals/cutoffs.ts [scope suffix, e.g. real.semantic]
-import { defaultThreshold, reviewFloor } from "../src/lint.ts"
-import type { Case } from "./corpus.ts"
-import { type Scored, type Thresholds, tuneThresholds, verdict } from "./metrics.ts"
+import { cliThresholds, type Scored, type Thresholds, tuneThresholds, verdict } from "../src/score.ts"
+import { type Label, scoreLabel } from "./corpus.ts"
 
 const suffix = Bun.argv[2] === undefined ? "" : `.${Bun.argv[2]}`
-const global: Thresholds = { floor: reviewFloor, threshold: defaultThreshold }
+const global: Thresholds = cliThresholds
 
-/** Stored item scores; an item's case id is `<file>:<policy>:<item>`. */
-const load = async (split: string): Promise<Array<Scored>> =>
+/** Stored item scores, each with its policy; an item's case id is `<file>:<policy>:<item>`. */
+const load = async (split: string): Promise<Array<Scored<string>>> =>
   (await Bun.file(`${import.meta.dir}/results/${split}${suffix}/production.items.jsonl`).text()).trim().split("\n").flatMap((line) => {
-    const row = JSON.parse(line) as { case: string; label: Case["gold"]["label"]; score: number | null }
+    const row = JSON.parse(line) as { case: string; label: Label; score: number | null }
     if (row.label === "ambiguous") return []
     const [file, policy] = row.case.split(":")
-    return [{ item: { id: row.case, file: { id: file }, policy: { name: policy }, gold: { label: row.label } } as unknown as Case, score: row.score }]
+    return [{ subject: policy!, label: scoreLabel(row.label), group: file!, score: row.score }]
   })
 const dev = await load("dev")
 const test = await load("test")
 
 // Tune each policy on its dev items; a policy with no violating dev item keeps the global cut-offs.
 const tuned = new Map<string, Thresholds>()
-for (const policy of new Set(dev.map((scored) => scored.item.policy.name))) {
-  const own = dev.filter((scored) => scored.item.policy.name === policy)
-  tuned.set(policy, own.some((scored) => scored.item.gold.label === "violates") ? tuneThresholds(own) : global)
+for (const policy of new Set(dev.map((scored) => scored.subject))) {
+  const own = dev.filter((scored) => scored.subject === policy)
+  tuned.set(policy, own.some((scored) => scored.label === "violates") ? tuneThresholds(own) : global)
 }
 
 type Gold = "pass" | "violation"
-const goldOf = (scored: Scored): Gold => (scored.item.gold.label === "violates" ? "violation" : "pass")
+const goldOf = (scored: Scored<string>): Gold => (scored.label === "violates" ? "violation" : "pass")
 const percent = (count: number, total: number) => (total === 0 ? "–" : `${((100 * count) / total).toFixed(1)}%`)
 const summarize = (name: string, cutoffs: (policy: string) => Thresholds) => {
-  const judged = test.map((scored) => ({ gold: goldOf(scored), got: verdict(scored.score ?? 0, cutoffs(scored.item.policy.name)) }))
+  const judged = test.map((scored) => ({ gold: goldOf(scored), got: verdict(scored.score ?? 0, cutoffs(scored.subject)) }))
   const of = (gold: Gold) => judged.filter((entry) => entry.gold === gold)
-  // Macro F1 over the verdict classes present in gold or predictions, as metrics.verdictF1 computes it.
+  // Macro F1 over the verdict classes present in gold or predictions, as verdictF1 computes it.
   const f1s = (["pass", "review", "violation"] as const).flatMap((kind) => {
     const tp = judged.filter((entry) => entry.got === kind && entry.gold === kind).length
     const fp = judged.filter((entry) => entry.got === kind && entry.gold !== kind).length

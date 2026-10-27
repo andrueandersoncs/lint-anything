@@ -14,7 +14,7 @@ import { Clef } from "../src/clef.ts"
 import { defaultThreshold, type Finding, lint, reviewFloor, verdictOf } from "../src/lint.ts"
 import { makeClient } from "./client.ts"
 import { loadCorpus } from "./corpus.ts"
-import { auroc, brier, pairedInterval } from "./metrics.ts"
+import { auroc, brier, pairedInterval } from "../src/score.ts"
 import { corpusSelectorSet, productionPlan, scoreItems, selectItems } from "./selected.ts"
 
 const corpus = await loadCorpus({ requireSplits: true })

@@ -198,17 +198,50 @@ Write the rule about a single item ("every TODO references an issue") and put th
 
 ## Testing and tuning a policy
 
+Tune against labeled code, not against findings you happen to see. A policy tuned until it fits the cases you looked at gets worse on the ones you didn't: on the evals, one rule's selector improved on the tuning half and lost 0.06 AUROC on the held-out half.
+
 1. **Run the selector by hand** from the project root and read its items. This is the only way to see what Clef will be asked, and the only way to catch a selector that silently emits nothing:
    ```sh
    sh -c "$(bun -e 'const [, fm] = (await Bun.file(process.argv[1]).text()).match(/^---\r?\n(.*?)\r?\n---/s); console.log(Bun.YAML.parse(fm).select)' .lint-anything/rules/<name>.md)" < /dev/null | head
    ```
-   The `< /dev/null` matters: without it, `rg` and similar tools search stdin instead of the directory. Count the items with `| wc -l`, and check that the known violations appear among them.
-2. **Check direction and calibration** on items you know: at least one clear violation (it should come out `violation`) and one clean item (it should be absent from the output, counted under `pass`). If the clean one is flagged and the violating one isn't, your criteria are inverted.
-3. **Iterate on selector, body, and criteria together.** Narrow the selector to the units the rule governs, add the context it turns on, and state exemptions in the rule. Re-run after each change; `--debug` shows what each run cost.
-4. **Hold some examples back.** A policy tuned until it fits the cases you've looked at gets worse on the ones you haven't. Check a change on items you didn't tune on.
-5. Scores for unchanged items stay fixed while they're cached. Items are sorted before they're packed, so a fresh run on the same items gives the same answers.
+   The `< /dev/null` matters: without it, `rg` and similar tools search stdin instead of the directory. Count the items with `| wc -l`.
+2. **Label code** in `.lint-anything/labels/<name>.jsonl` (the policy's name, subdirectories included). Commit it with the policy. See "Labels" below.
+3. **Score** the policy from the project root with the script in this skill's directory:
+   ```sh
+   bun <this skill's directory>/scripts/score.js <name>
+   ```
+   It runs the selector, judges only the items in labeled files (answers share the CLI's cache), and prints per split: labels, violations reached by some item, AUROC with a 95% interval, caught, surfaced, false alarms, and ambiguous files given `review`. Then it lists the **dev** files the policy gets wrong and the labeled violations no item contains. Test files are summarized but never listed: they are held out.
+4. **Change a copy, compare, then replace.** Edit a candidate copy outside the rules directory and score both:
+   ```sh
+   cp .lint-anything/rules/<name>.md /tmp/<name>.candidate.md   # edit the copy
+   bun <this skill's directory>/scripts/score.js <name> /tmp/<name>.candidate.md
+   ```
+   The comparison gives candidate − current per split with paired 95% intervals. Look at dev to decide what to try; adopt the candidate only if **test** improves outside noise (the interval excludes 0) and nothing else on test gets worse outside noise. Copy it over the policy when it does.
+5. **Fix reach first.** A labeled violation in no item can't be found by any wording; change the selector until "violations reached" is complete.
+6. Intervals are wide with few labels. With fewer than about 10 violating and 10 clean files per split, most differences are within noise: label more instead of reading meaning into decimals.
 
-The lint-anything repository has worked examples: 21 policies in `evals/corpus/policies/` and the scripts their selectors call in `evals/steps/`. Its evals (`bun evals/run.ts`, see its README) score policies against a labeled corpus. `$EVAL_STEPS` exists only inside those evals; copy a script into your project before using it.
+### Labels
+
+One JSON object per line, one per labeled file:
+
+```jsonl
+{"path": "src/orders/export.ts", "label": "violates", "lines": [[41, 58]], "split": "dev", "note": "flag parameter `dryRun` switches behavior"}
+{"path": "src/orders/quota.ts", "label": "complies", "split": "test"}
+{"path": "src/legacy/sync.ts", "label": "ambiguous", "split": "dev", "note": "models split; user: depends on whether retries count"}
+{"item": "9acebc18", "label": "violates", "split": "test", "note": "for items without a path (commits): their id"}
+```
+
+- `label` is `violates`, `complies`, or `ambiguous`. A violating file gives `lines`: the 1-based inclusive range of each violation in it. An item of that file counts as a violation when its lines overlap one of the ranges, and as clean otherwise; so labels stay valid when the selector changes.
+- A file's score is its highest item score, as a lint run reports it; a file with no items scores 0.
+- `split` is `dev` (tune on it) or `test` (held out; decide with it). Split by file, about half each, with violations on both sides.
+- Label real code the selector covers: a sample of files, plus files you know violate. Planted violations (code edited to break the rule) are easier to catch than real ones; use them only to check reach, and say so in `note`.
+
+**How to label.** Label each file independently with **two or three different models** (for example subagents running models from different families), each given the rule and the file and asked for a label and the violating line ranges.
+- Where they agree, record the label.
+- Where they disagree, or any of them calls it ambiguous, **ask the user** about that file, showing the rule, the code, and each model's reasoning. Record what the user decides; if the user says reasonable reviewers could disagree, record `ambiguous`. Ambiguous files are left out of AUROC and counted as right when they land in `review`.
+- One model alone labels with its own reading of the rule, and tuning against those labels only makes the policy agree with that reading.
+
+The lint-anything repository has worked examples: 21 policies in `evals/corpus/policies/` and the scripts their selectors call in `evals/steps/`. Its evals score them the same way, against a labeled corpus. `$EVAL_STEPS` exists only inside those evals; copy a script into your project before using it.
 
 ## Cache and cost
 
@@ -226,4 +259,4 @@ The lint-anything repository has worked examples: 21 policies in `evals/corpus/p
 - [ ] `criteria.true` describes a **violation**, specifically. `criteria.false` covers compliant items **and** items the rule doesn't govern.
 - [ ] The body holds only what Clef should read: a one-line framing, then `Rule:` and a precise rule with exemptions.
 - [ ] Facts are computed in the selector, not left for Clef to derive. Counts go in `limit`.
-- [ ] A known violation comes out `violation`, and a known-clean item passes.
+- [ ] `.lint-anything/labels/<name>.jsonl` labels files on both splits (labels from two or three models, disagreements settled by the user), `score.js` reaches every labeled violation, and changes were adopted on test, not dev.

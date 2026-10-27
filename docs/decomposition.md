@@ -91,8 +91,18 @@ Unlocks:
 | `evals/corpus` (623 files, 10,623 labeled cases, two-model labeling protocol) | Public benchmark for semantic code rules; scores any judge or rule wording |
 | `evals/mine.ts` (violations mined from PR review comments) | **Finding rules from review history:** mine a repo's review comments for rules the team already enforces informally, then draft policies |
 | `evals/steps/*` | The selector library (Seam 1) |
-| `evals/sample.ts`, `evals/wordings.ts` | A tuning loop for any rule an agent writes, not just this corpus |
+| `evals/sample.ts`, `evals/wordings.ts` | A tuning loop for any rule an agent writes, not just this corpus. Built 2026-10-27: see "Policy tuning loop" |
 | Answer cache + packer (`src/clef.ts`) | The batched yes/no classifier (Seam 2) |
+
+## Policy tuning loop (built 2026-10-27)
+
+Option A of the design discussion: a skill script on a shared scoring module, with no CLI change.
+
+- **Labels**: `.lint-anything/labels/<policy>.jsonl`, committed next to the rules; the CLI never reads them. Each line labels a file (`path`) or a pathless item (`item`) as `violates` (with violation line ranges), `complies`, or `ambiguous`, in split `dev` or `test`. Labels name code locations, so they survive selector changes: an item is a violation when its lines overlap a labeled range, and a file scores its highest item.
+- **Who labels**: two or three different models independently; files where they disagree, or any calls ambiguous, go to the user; the user's call is recorded, and "reviewers could disagree" stays `ambiguous` (owner decision).
+- **Code**: `src/score.ts` holds label parsing, item labeling, file scores, reach, every metric, and the bootstrap intervals. It is exported from the library (`scorePolicy`, `loadLabels`, metrics).
+- **Script**: `score.ts` is bundled to `skills/lint-anything/scripts/score.js`, which is gitignored and shipped. `bun score.js <policy> [candidate.md]` judges only items in labeled files, sharing the CLI's cache. Per split it prints reach, AUROC with a 95% interval, caught, surfaced, false alarms, and ambiguous → review. A candidate gets paired deltas. Dev mistakes and unreached violations are listed; test is only summarized. The rule: adopt on test, outside noise.
+- **Dogfooding**: the evals label, aggregate, and score the corpus with `src/score.ts`. Their judging path (cached client, request shapes, unsorted item order) stays their own, because sorting would reorder 21% of item groups and invalidate the eval cache.
 
 ## Constraints
 

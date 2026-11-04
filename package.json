@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git+https://github.com/andrueandersoncs/lint-anything.git"
   },
-  "homepage": "https://github.com/andrueandersoncs/lint-anything#readme",
+  "homepage": "https://lint-anything.dev",
   "bugs": "https://github.com/andrueandersoncs/lint-anything/issues",
   "type": "module",
   "bin": {

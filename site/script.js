@@ -402,7 +402,7 @@ if (prefersReducedMotion || !("IntersectionObserver" in window)) {
   }
 }
 
-// Pointer-driven effects: card spotlight, magnetic buttons, tilting panels
+// Pointer-driven effects: card spotlight and tilting panels
 const visible = new Set();
 const visibilityObserver = new IntersectionObserver((entries) => {
   for (const entry of entries) {
@@ -415,27 +415,12 @@ const visibilityObserver = new IntersectionObserver((entries) => {
 });
 
 const spotlights = [...document.querySelectorAll(".spotlight")];
-const magnets = [...document.querySelectorAll(".magnetic")];
 const tilts = [...document.querySelectorAll(".tilt")];
-const magnetOffsets = new WeakMap();
 
 const updateSpotlight = (element, x, y) => {
   const rect = element.getBoundingClientRect();
   element.style.setProperty("--mx", `${x - rect.left}px`);
   element.style.setProperty("--my", `${y - rect.top}px`);
-};
-
-const updateMagnet = (element, x, y) => {
-  const rect = element.getBoundingClientRect();
-  const [offsetX, offsetY] = magnetOffsets.get(element) ?? [0, 0];
-  const dx = x - (rect.left - offsetX + rect.width / 2);
-  const dy = y - (rect.top - offsetY + rect.height / 2);
-  const near =
-    Math.abs(dx) < rect.width / 2 + 36 && Math.abs(dy) < rect.height / 2 + 36;
-  const next = near ? [dx * 0.22, dy * 0.32] : [0, 0];
-  magnetOffsets.set(element, next);
-  element.style.setProperty("--tx", `${next[0]}px`);
-  element.style.setProperty("--ty", `${next[1]}px`);
 };
 
 const updateTilt = (element, x, y) => {
@@ -453,11 +438,6 @@ const updateTilt = (element, x, y) => {
 };
 
 const resetPointerEffects = () => {
-  for (const element of magnets) {
-    magnetOffsets.set(element, [0, 0]);
-    element.style.setProperty("--tx", "0px");
-    element.style.setProperty("--ty", "0px");
-  }
   for (const element of tilts) {
     element.style.setProperty("--rx", "0deg");
     element.style.setProperty("--ry", "0deg");
@@ -466,7 +446,7 @@ const resetPointerEffects = () => {
 };
 
 if (finePointer && !prefersReducedMotion) {
-  for (const element of [...spotlights, ...magnets, ...tilts]) {
+  for (const element of [...spotlights, ...tilts]) {
     visibilityObserver.observe(element);
   }
 
@@ -479,9 +459,6 @@ if (finePointer && !prefersReducedMotion) {
     for (const element of visible) {
       if (element.classList.contains("spotlight")) {
         updateSpotlight(element, pointerX, pointerY);
-      }
-      if (element.classList.contains("magnetic")) {
-        updateMagnet(element, pointerX, pointerY);
       }
       if (element.classList.contains("tilt")) {
         updateTilt(element, pointerX, pointerY);

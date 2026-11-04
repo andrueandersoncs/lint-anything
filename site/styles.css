@@ -473,15 +473,6 @@ main,
   border-color: var(--muted-foreground);
 }
 
-.magnetic {
-  transform: translate3d(var(--tx, 0), var(--ty, 0), 0);
-  transition:
-    transform 0.35s var(--ease-out),
-    background-color 0.2s,
-    border-color 0.2s,
-    box-shadow 0.3s;
-}
-
 /* Tilt panels */
 .tilt {
   position: relative;

@@ -37,7 +37,7 @@
     "prepublishOnly": "bunx tsc --noEmit && bun run build"
   },
   "peerDependencies": {
-    "effect": "^4.0.5"
+    "effect": "^4.1.2"
   },
   "peerDependenciesMeta": {
     "effect": {
@@ -46,9 +46,9 @@
   },
   "devDependencies": {
     "@ast-grep/cli": "^0.51.0",
-    "@effect/platform-bun": "4.0.5",
+    "@effect/platform-bun": "4.1.2",
     "@types/bun": "latest",
-    "effect": "4.0.5",
+    "effect": "4.1.2",
     "typescript": "^7"
   },
   "trustedDependencies": [

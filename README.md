@@ -183,7 +183,7 @@ The CLI bundle includes every dependency, so installing the package for the CLI 
 
 ## Library
 
-The package also exports the stages a run composes as an [Effect](https://effect.website) library (Bun only). `effect` 4.x is an optional peer dependency: install it to use the library.
+The package also exports the stages a run composes as an [Effect](https://effect.website) library (Bun only). `effect` 4.1 or later (`^4.1.2`) is an optional peer dependency: install it to use the library.
 
 | Export | What it does |
 | --- | --- |

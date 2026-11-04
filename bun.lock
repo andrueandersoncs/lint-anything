@@ -6,11 +6,17 @@
       "name": "lint-anything",
       "devDependencies": {
         "@ast-grep/cli": "^0.51.0",
-        "@effect/platform-bun": "4.0.5",
+        "@effect/platform-bun": "4.1.2",
         "@types/bun": "latest",
-        "effect": "4.0.5",
+        "effect": "4.1.2",
         "typescript": "^7",
       },
+      "peerDependencies": {
+        "effect": "^4.1.2",
+      },
+      "optionalPeers": [
+        "effect",
+      ],
     },
   },
   "trustedDependencies": [
@@ -33,9 +39,9 @@
 
     "@ast-grep/cli-win32-x64-msvc": ["@ast-grep/cli-win32-x64-msvc@0.51.0", "", { "os": "win32", "cpu": "x64" }, "sha512-lYsKBG0Wn/vk8Zbeo60l+Lms317mL1xpW6Dvv68k3F57vqlMHkWR2tuNcyWC3OVJXbas8dFMoe1R+6wkofIC+g=="],
 
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.5", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.5" }, "peerDependencies": { "effect": "^4.0.5" } }, "sha512-tB/GapZ/bVoCbwRgnojGP4TwopvkMoFoSCipXT1sf0guvG/2oRVhWzJW/1vkrYFEdLM7XyRnVVLrSJyqdok7DA=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.1.2", "", { "dependencies": { "@effect/platform-node-shared": "4.1.2" }, "peerDependencies": { "effect": "^4.1.2" } }, "sha512-waEAa84CITqjctgw9VdhlL9PyXRHICG3KAWTFRDPUE2XL/pfMPhO7V9oFdfx22dbAhhUzV+MHs0d9hnmy/DQ7w=="],
 
-    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.5", "", { "dependencies": { "@types/ws": "^8.18.2", "ws": "^8.22.0" }, "peerDependencies": { "effect": "^4.0.5" } }, "sha512-a8rCdEkfZBGe9C6bsIjxVZuRp73svIyK5IHwHdDAVsvZXjrbkxusfI+rZ8WlX31RP1mKizwI/E72GQTNfdMWHw=="],
+    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.1.2", "", { "dependencies": { "@types/ws": "^8.18.2", "ws": "^8.22.1" }, "peerDependencies": { "effect": "^4.1.2" } }, "sha512-wSwl9A/G1hcVvF8nLI+YfB3EyOIDvWS6+lsTZBkmgDnPBL7m8YWZF+1HD+mdEsb52SUGfukip46Q3gRwSdk3QA=="],
 
     "@types/bun": ["@types/bun@1.4.3", "", { "dependencies": { "bun-types": "1.4.3" } }, "sha512-N67Pqy8JXbAY/j0tNraS3V5mubGvc6rrrNDmDCtZLlFzccbUJPDb0tvgUBC5q4m8ybkP93Jcn1QB+RYQ6PvBhw=="],
 
@@ -87,13 +93,13 @@
 
     "detect-libc": ["detect-libc@2.1.2", "", {}, "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="],
 
-    "effect": ["effect@4.0.5", "", {}, "sha512-BY4/28NlpOd99yzmV741xbVGmp+1U7tks4oB7F/Png64bTa5tm5eCA6W0RiXsnuLDDoJpjfVSo4Dnq4BZb/89Q=="],
+    "effect": ["effect@4.1.2", "", {}, "sha512-d3Oah1WyKxFLFh19yWheS5IXIVaITzxZ71JkE1rkUozq/6EcJSU5nPk5bF2QrSygZ3SQoiNQB8TsxFriyMeMaQ=="],
 
     "typescript": ["typescript@7.0.2", "", { "optionalDependencies": { "@typescript/typescript-aix-ppc64": "7.0.2", "@typescript/typescript-darwin-arm64": "7.0.2", "@typescript/typescript-darwin-x64": "7.0.2", "@typescript/typescript-freebsd-arm64": "7.0.2", "@typescript/typescript-freebsd-x64": "7.0.2", "@typescript/typescript-linux-arm": "7.0.2", "@typescript/typescript-linux-arm64": "7.0.2", "@typescript/typescript-linux-loong64": "7.0.2", "@typescript/typescript-linux-mips64el": "7.0.2", "@typescript/typescript-linux-ppc64": "7.0.2", "@typescript/typescript-linux-riscv64": "7.0.2", "@typescript/typescript-linux-s390x": "7.0.2", "@typescript/typescript-linux-x64": "7.0.2", "@typescript/typescript-netbsd-arm64": "7.0.2", "@typescript/typescript-netbsd-x64": "7.0.2", "@typescript/typescript-openbsd-arm64": "7.0.2", "@typescript/typescript-openbsd-x64": "7.0.2", "@typescript/typescript-sunos-x64": "7.0.2", "@typescript/typescript-win32-arm64": "7.0.2", "@typescript/typescript-win32-x64": "7.0.2" }, "bin": { "tsc": "bin/tsc" } }, "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA=="],
 
     "undici-types": ["undici-types@8.12.3", "", {}, "sha512-EXE4ydL3S76dFb27UFjNVZHTyv/TLdATj/KUe29ptdcg6qXL48J2tZ3126E5kICj5jn781OR+XlVH1N6Mz8jbA=="],
 
-    "ws": ["ws@8.22.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="],
+    "ws": ["ws@8.22.1", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g=="],
 
     "@types/node/undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
   }

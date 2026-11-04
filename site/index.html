@@ -1,0 +1,946 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>lint-anything — Lint what static analysis can't</title>
+    <meta
+      name="description"
+      content="Check code, commits, and anything a shell command can select against rules written in plain English, judged one yes-or-no question at a time by Cloudflare's Clef decision model."
+    >
+    <meta name="theme-color" content="#09090b">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://lint-anything.dev/">
+    <meta property="og:title" content="lint-anything — If you can say it, you can lint it">
+    <meta
+      property="og:description"
+      content="Plain-English lint rules for coding agents, judged by Cloudflare's Clef decision model."
+    >
+    <meta
+      property="og:image"
+      content="https://lint-anything.dev/assets/og.png"
+    >
+    <meta name="twitter:card" content="summary_large_image">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    >
+    <link rel="stylesheet" href="styles.css">
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%23c4b5fd'/><stop offset='1' stop-color='%238b5cf6'/></linearGradient></defs><rect width='32' height='32' rx='8' fill='url(%23g)'/><path d='M5 18c2.75 0 2.75-5 5.5-5s2.75 5 5.5 5 2.75-5 5.5-5 2.75 5 5.5 5' fill='none' stroke='%2309090b' stroke-width='3' stroke-linecap='round'/></svg>"
+    >
+    <script>
+    "use strict";
+    document.documentElement.classList.add("js");
+    </script>
+    <script type="module" src="field.js"></script>
+    <script type="module" src="script.js"></script>
+  </head>
+  <body>
+    <canvas class="field" aria-hidden="true"></canvas>
+    <div class="vignette" aria-hidden="true"></div>
+    <div class="noise" aria-hidden="true"></div>
+
+    <nav class="nav">
+      <div class="nav-content">
+        <a href="#top" class="logo" aria-label="lint-anything home">
+          <span class="logo-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <path
+                d="M2 14c2.5 0 2.5-4 5-4s2.5 4 5 4 2.5-4 5-4 2.5 4 5 4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.6"
+                stroke-linecap="round"
+              />
+            </svg>
+          </span>
+          <span class="logo-text">lint-anything</span>
+        </a>
+        <div class="nav-links">
+          <a href="#policy">Policies</a>
+          <a href="#selectors">Selectors</a>
+          <a href="#how">How it works</a>
+          <a href="#evals">Evals</a>
+          <a href="#agents">Agents</a>
+          <a href="#start">Get started</a>
+          <a
+            href="https://github.com/andrueandersoncs/lint-anything"
+            target="_blank"
+            rel="noopener"
+            class="nav-github"
+          >
+            <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path
+                d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"
+              />
+            </svg>
+            GitHub
+          </a>
+        </div>
+        <button
+          type="button"
+          class="mobile-menu-btn"
+          aria-label="Toggle menu"
+          aria-expanded="false"
+          aria-controls="mobile-menu"
+        >
+          <span></span>
+          <span></span>
+          <span></span>
+        </button>
+      </div>
+      <div class="mobile-menu" id="mobile-menu">
+        <a href="#policy">Policies</a>
+        <a href="#selectors">Selectors</a>
+        <a href="#how">How it works</a>
+        <a href="#evals">Evals</a>
+        <a href="#agents">Agents</a>
+        <a href="#start">Get started</a>
+        <a href="https://github.com/andrueandersoncs/lint-anything" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </nav>
+
+    <main id="top">
+      <header class="hero">
+        <div class="hero-content">
+          <a class="hero-badge" href="#agents">
+            <span class="pulse-dot" aria-hidden="true"></span>
+            v0.2.0 — tune policies against your labels
+            <span aria-hidden="true">→</span>
+          </a>
+          <h1 class="hero-title">
+            If you can say it,<br><span class="shine">you can <span class="squiggle">lint</span> it.</span>
+          </h1>
+          <p class="hero-description">
+            lint-anything checks code, commits, and anything else a shell command
+            can select against rules written in plain English. Cloudflare's Clef
+            decision model judges every item as a yes-or-no question.
+          </p>
+          <div class="hero-actions">
+            <a href="#start" class="btn btn-primary magnetic">
+              Get started
+              <span aria-hidden="true">→</span>
+            </a>
+            <a
+              href="https://github.com/andrueandersoncs/lint-anything"
+              target="_blank"
+              rel="noopener"
+              class="btn btn-secondary magnetic"
+              >View on GitHub</a
+            >
+          </div>
+
+          <div class="hero-stage">
+            <figure class="hero-window tilt" aria-label="A lint-anything policy and the findings of a real run">
+              <div class="tilt-sheen" aria-hidden="true"></div>
+              <div class="window-bar">
+                <span class="code-dot"></span>
+                <span class="code-dot"></span>
+                <span class="code-dot"></span>
+                <span class="window-title" data-hero-file>.lint-anything/rules/todo-has-issue.md</span>
+              </div>
+              <pre class="hero-policy"><code data-hero-policy data-highlight="policy">---
+select: |
+  rg --json -w 'TODO|FIXME' -g '*.ts' |
+    jq -c 'select(.type == "match") | .data |
+      {id: "\(.path.text):\(.line_number)", path: .path.text,
+       lines: [.line_number, .line_number],
+       text: "comment in \(.path.text):\n\(.lines.text)"}'
+criteria:
+  "true": "The comment has no tracking issue."
+  "false": "The comment references a tracking issue, or isn't a TODO or FIXME."
+---
+Each question shows one comment. Decide whether it breaks the rule below.
+
+Rule: every `TODO` or `FIXME` comment must reference a tracking issue, written as `#123`, `ABC-123`, or a full issue URL.</code></pre>
+              <div class="hero-terminal">
+                <div class="terminal-bar">
+                  <span class="terminal-label">terminal</span>
+                  <span class="terminal-path">~/shop</span>
+                </div>
+                <pre class="terminal-pre"><code data-hero-terminal data-highlight="output">$ bunx lint-anything
+violation     0.95   src/billing.ts:3-3  todo-has-issue  The comment has no tracking issue.
+violation     0.97   src/currency.ts:3-3  todo-has-issue  The comment has no tracking issue.
+violation     0.94   src/report.ts:6-6  todo-has-issue  The comment has no tracking issue.
+4 checks: 3 violation, 0 review, 0 inconclusive, 1 pass</code></pre>
+                <div class="verdict-meter" data-hero-meter aria-hidden="true">
+                  <span class="meter-bar">
+                    <span class="meter-seg is-violation" style="--n: 3"></span>
+                    <span class="meter-seg is-review" style="--n: 0"></span>
+                    <span class="meter-seg is-inconclusive" style="--n: 0"></span>
+                    <span class="meter-seg is-pass" style="--n: 1"></span>
+                  </span>
+                  <span class="meter-exit" data-hero-exit>exit 1</span>
+                </div>
+              </div>
+            </figure>
+          </div>
+          <p class="hero-hint">
+            Real policies, real output from Clef. The background is a field of
+            items waiting to be judged: hover to inspect one, click to judge a few.
+          </p>
+        </div>
+      </header>
+
+      <section class="marquee" aria-label="Rules people write, and commands that select what they judge">
+        <div class="marquee-row">
+          <div class="marquee-track">
+            <span>"Names reveal intent"</span><span>"No flag parameters"</span
+            ><span>"Comments explain why"</span><span>"Errors keep their context"</span
+            ><span>"Decisions stay separate from I/O"</span><span>"Entry points stay thin"</span
+            ><span>"One level of abstraction per function"</span><span>"Magic values get names"</span
+            ><span>"Tests check behavior, not implementation"</span><span>"Modules are cohesive"</span
+            ><span>"Every TODO has an issue"</span><span>"Commit messages say why"</span>
+          </div>
+          <div class="marquee-track" aria-hidden="true">
+            <span>"Names reveal intent"</span><span>"No flag parameters"</span
+            ><span>"Comments explain why"</span><span>"Errors keep their context"</span
+            ><span>"Decisions stay separate from I/O"</span><span>"Entry points stay thin"</span
+            ><span>"One level of abstraction per function"</span><span>"Magic values get names"</span
+            ><span>"Tests check behavior, not implementation"</span><span>"Modules are cohesive"</span
+            ><span>"Every TODO has an issue"</span><span>"Commit messages say why"</span>
+          </div>
+        </div>
+        <div class="marquee-row marquee-reverse">
+          <div class="marquee-track">
+            <span>rg --json</span><span>ast-grep scan</span><span>git log</span><span>jq -c</span
+            ><span>gh pr list</span><span>git diff</span><span>curl -s</span><span>sqlite3 -json</span
+            ><span>find . -name</span><span>bun select.ts</span><span>git blame</span
+            ><span>kubectl get -o json</span>
+          </div>
+          <div class="marquee-track" aria-hidden="true">
+            <span>rg --json</span><span>ast-grep scan</span><span>git log</span><span>jq -c</span
+            ><span>gh pr list</span><span>git diff</span><span>curl -s</span><span>sqlite3 -json</span
+            ><span>find . -name</span><span>bun select.ts</span><span>git blame</span
+            ><span>kubectl get -o json</span>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="section features">
+        <div class="section-header reveal">
+          <span class="section-badge">Semantic rules</span>
+          <h2 class="section-title">Lint the rules a parser can't see</h2>
+          <p class="section-description">
+            Naming, design, readability, architecture: rules that take judgment.
+            Write them the way you'd explain them to a reviewer.
+          </p>
+        </div>
+        <div class="features-grid spotlight-group">
+          <article class="feature-card spotlight reveal">
+            <div class="feature-icon">
+              <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="4 7 4 4 20 4 20 7"></polyline>
+                <line x1="9" y1="20" x2="15" y2="20"></line>
+                <line x1="12" y1="4" x2="12" y2="20"></line>
+              </svg>
+            </div>
+            <h3>Rules in plain English</h3>
+            <p>
+              A policy's body is sent to Clef exactly as written. No DSL, no
+              plugin API, no AST visitors: the rule, plus whatever framing and
+              examples help.
+            </p>
+          </article>
+          <article class="feature-card spotlight reveal">
+            <div class="feature-icon">
+              <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="4 17 10 11 4 5"></polyline>
+                <line x1="12" y1="19" x2="20" y2="19"></line>
+              </svg>
+            </div>
+            <h3>Select anything</h3>
+            <p>
+              A selector is a shell command that prints JSON lines. Comments from
+              <code>rg</code>, functions from <code>ast-grep</code>, commits from
+              <code>git log</code>, records from an API: if a command can print
+              it, Clef can judge it.
+            </p>
+          </article>
+          <article class="feature-card spotlight reveal">
+            <div class="feature-icon">
+              <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 14l4-4"></path>
+                <path d="M3.34 19a10 10 0 1 1 17.32 0"></path>
+              </svg>
+            </div>
+            <h3>A decision model, not a chat</h3>
+            <p>
+              Clef answers each item with a violation probability. At or below
+              0.5 it passes, at 0.65 or above it's a violation, and the uncertain
+              middle goes to review.
+            </p>
+          </article>
+          <article class="feature-card spotlight reveal">
+            <div class="feature-icon">
+              <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="10" rx="2"></rect>
+                <circle cx="12" cy="5" r="2"></circle>
+                <path d="M12 7v4"></path>
+                <line x1="8" y1="16" x2="8" y2="16"></line>
+                <line x1="16" y1="16" x2="16" y2="16"></line>
+              </svg>
+            </div>
+            <h3>Made for coding agents</h3>
+            <p>
+              Agents write the policies, run the linter, and fix what it finds.
+              The package ships a skill that covers all three, and a script that
+              scores a policy against labeled code.
+            </p>
+          </article>
+          <article class="feature-card spotlight reveal">
+            <div class="feature-icon">
+              <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+              </svg>
+            </div>
+            <h3>Cached and cheap</h3>
+            <p>
+              Answers are cached in SQLite, keyed by the question. A re-run with
+              nothing changed sends nothing; editing one policy re-asks only that
+              policy.
+            </p>
+          </article>
+          <article class="feature-card spotlight reveal">
+            <div class="feature-icon">
+              <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="12" y1="20" x2="12" y2="10"></line>
+                <line x1="18" y1="20" x2="18" y2="4"></line>
+                <line x1="6" y1="20" x2="6" y2="16"></line>
+              </svg>
+            </div>
+            <h3>Measured, not guessed</h3>
+            <p>
+              The CLI's design comes from experiments on 623 labeled files, 462
+              of them copied from 149 open-source projects. Tune your own
+              policies the same way.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="policy" class="section anatomy">
+        <div class="section-header reveal">
+          <span class="section-badge">One Markdown file</span>
+          <h2 class="section-title">A policy asks one question of every item</h2>
+          <p class="section-description">
+            The frontmatter says what to judge and what a violation is. The body
+            is the rule. The CLI adds nothing to what a policy asks.
+          </p>
+        </div>
+        <div class="anatomy-layout" data-anatomy>
+          <figure class="anatomy-file reveal" aria-label="An annotated policy file">
+            <div class="window-bar">
+              <span class="code-dot"></span>
+              <span class="code-dot"></span>
+              <span class="code-dot"></span>
+              <span class="window-title">.lint-anything/rules/todo-has-issue.md</span>
+            </div>
+            <div class="anatomy-part" data-part="select">
+              <pre><code data-highlight="policy">---
+select: |
+  rg --json -w 'TODO|FIXME' -g '*.ts' |
+    jq -c 'select(.type == "match") | .data |
+      {id: "\(.path.text):\(.line_number)", path: .path.text,
+       lines: [.line_number, .line_number],
+       text: "comment in \(.path.text):\n\(.lines.text)"}'</code></pre>
+            </div>
+            <div class="anatomy-part" data-part="criteria">
+              <pre><code data-highlight="frontmatter">criteria:
+  "true": "The comment has no tracking issue."
+  "false": "The comment references a tracking issue, or isn't a TODO or FIXME."
+---</code></pre>
+            </div>
+            <div class="anatomy-part" data-part="body">
+              <pre><code data-highlight="body">Each question shows one comment. Decide whether it breaks the rule below.
+
+Rule: every `TODO` or `FIXME` comment must reference a tracking issue,
+written as `#123`, `ABC-123`, or a full issue URL.</code></pre>
+            </div>
+          </figure>
+          <ol class="anatomy-notes">
+            <li class="anatomy-note reveal" data-part="select" tabindex="0">
+              <span class="note-key">select</span>
+              <h3>What gets judged</h3>
+              <p>
+                A shell command, run once per lint run from the project root. It
+                prints one JSON item per line: an <code>id</code>, the
+                <code>text</code> Clef reads, and optionally a <code>path</code>
+                and <code>lines</code>. Each item is one yes-or-no question.
+              </p>
+            </li>
+            <li class="anatomy-note reveal" data-part="criteria" tabindex="0">
+              <span class="note-key">criteria</span>
+              <h3>What yes and no mean</h3>
+              <p>
+                <code>"true"</code> describes an item that breaks the rule,
+                <code>"false"</code> one that follows it. The true criterion is
+                also the reason printed on every finding.
+              </p>
+            </li>
+            <li class="anatomy-note reveal" data-part="body" tabindex="0">
+              <span class="note-key">body</span>
+              <h3>The rule itself</h3>
+              <p>
+                The text of every request, sent exactly as written. Say what to
+                decide, then state the rule. Add framing or examples if they help
+                Clef judge it.
+              </p>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="selectors" class="section selectors">
+        <div class="section-header reveal">
+          <span class="section-badge">Select anything</span>
+          <h2 class="section-title">If a command can print it, Clef can judge it</h2>
+          <p class="section-description">
+            Selectors cut out exactly what a rule is about, and put the context
+            it needs into each item. Every finding below came from running these
+            policies.
+          </p>
+        </div>
+        <div class="selectors-grid spotlight-group">
+          <article class="selector-card spotlight reveal">
+            <div class="selector-head">
+              <h3>Comments</h3>
+              <span class="tool-chip">rg + jq</span>
+            </div>
+            <p>Each <code>TODO</code> or <code>FIXME</code> line, with its file.</p>
+            <div class="code-block">
+              <pre><code data-highlight="policy">select: |
+  rg --json -w 'TODO|FIXME' -g '*.ts' |
+    jq -c 'select(.type == "match") | .data |
+      {id: "\(.path.text):\(.line_number)", path: .path.text,
+       lines: [.line_number, .line_number],
+       text: "comment in \(.path.text):\n\(.lines.text)"}'</code></pre>
+            </div>
+            <div class="finding"><code data-highlight="output">violation     0.95   src/billing.ts:3-3  todo-has-issue  The comment has no tracking issue.</code></div>
+          </article>
+          <article class="selector-card spotlight reveal">
+            <div class="selector-head">
+              <h3>Functions</h3>
+              <span class="tool-chip">ast-grep</span>
+            </div>
+            <p>Every function declaration, cut out by syntax, not by line.</p>
+            <div class="code-block">
+              <pre><code data-highlight="policy">select: |
+  ast-grep scan --json=stream --inline-rules \
+    '{id: fn, language: TypeScript, rule: {kind: function_declaration}}' src |
+    jq -c '{id: "\(.file):\(.range.start.line + 1)", path: .file,
+      lines: [.range.start.line + 1, .range.end.line + 1],
+      text: "function in \(.file):\n\(.text)"}'</code></pre>
+            </div>
+            <div class="finding"><code data-highlight="output">violation     0.96   src/report.ts:7-14  no-flag-parameters  The function takes a boolean that switches it between different jobs.</code></div>
+          </article>
+          <article class="selector-card spotlight reveal">
+            <div class="selector-head">
+              <h3>Commits</h3>
+              <span class="tool-chip">git log</span>
+            </div>
+            <p>History has no file or line: an item needs only an <code>id</code>.</p>
+            <div class="code-block">
+              <pre><code data-highlight="policy">select: |
+  git log -n 20 --format=%h | while read -r hash; do
+    git log -1 --format=%B "$hash" |
+      jq -Rsc --arg id "$hash" '{id: $id, text: ("commit message:\n" + .)}'
+  done</code></pre>
+            </div>
+            <div class="finding"><code data-highlight="output">violation     0.97   76b76a5  commits-say-why  The commit message doesn't say why.</code></div>
+          </article>
+          <article class="selector-card spotlight reveal">
+            <div class="selector-head">
+              <h3>Error messages</h3>
+              <span class="tool-chip">rg -U</span>
+            </div>
+            <p>Multi-line matches keep their full line range.</p>
+            <div class="code-block">
+              <pre><code data-highlight="policy">select: |
+  rg --json -U 'new Error\([^)]*\)' -g '*.ts' |
+    jq -c 'select(.type == "match") | .data |
+      (.lines.text | rtrimstr("\n") | split("\n") | length) as $n |
+      {id: "\(.path.text):\(.line_number)", path: .path.text,
+       lines: [.line_number, .line_number + $n - 1],
+       text: "error in \(.path.text):\n\(.lines.text)"}'</code></pre>
+            </div>
+            <div class="finding"><code data-highlight="output">violation     0.98   src/report.ts:18-18  errors-say-what-to-do  The message doesn't say what went wrong or what to do about it.</code></div>
+          </article>
+          <article class="selector-card spotlight reveal">
+            <div class="selector-head">
+              <h3>Counting</h3>
+              <span class="tool-chip">limit</span>
+            </div>
+            <p>
+              Judge each item, then report once per file or per run when more
+              than <code>max</code> items violate.
+            </p>
+            <div class="code-block">
+              <pre><code data-highlight="policy">select: |
+  ast-grep scan --json=stream --inline-rules \
+    '{id: fn, language: TypeScript, rule: {kind: function_declaration}}' src |
+    jq -c '…'
+limit: { max: 1, per: run }</code></pre>
+            </div>
+            <div class="finding"><code data-highlight="output">violation     -        flag-budget  3 of 6 items violate the rule (at most 1 allowed): src/billing.ts:4-12, src/currency.ts:12-17, src/report.ts:7-14</code></div>
+          </article>
+          <article class="selector-card spotlight reveal">
+            <div class="selector-head">
+              <h3>Third-party services</h3>
+              <span class="tool-chip">gh</span>
+            </div>
+            <p>
+              Selectors run without any <code>CLOUDFLARE_</code> variable, so a
+              policy's shell never sees your API token.
+            </p>
+            <div class="code-block">
+              <pre><code data-highlight="policy">select: |
+  gh pr list --json number,title,body |
+    jq -c '.[] | {id: "#\(.number)",
+      text: "pull request #\(.number): \(.title)\n\n\(.body)"}'
+criteria:
+  "true": "The description doesn't say how the change was tested."
+  "false": "The description says how the change was tested."</code></pre>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="how" class="section how">
+        <div class="section-header reveal">
+          <span class="section-badge">How it works</span>
+          <h2 class="section-title">From shell output to verdicts</h2>
+          <p class="section-description">
+            Up to 8 policies run at once, with at most 8 requests in flight
+            across the run. Findings print in policy order.
+          </p>
+        </div>
+        <ol class="pipeline spotlight-group">
+          <li class="pipe-step spotlight reveal">
+            <span class="pipe-index">01</span>
+            <h3>Select</h3>
+            <p>
+              Each policy's selector runs once and prints its items. Policies
+              with the same command share one run.
+            </p>
+          </li>
+          <li class="pipe-step spotlight reveal">
+            <span class="pipe-index">02</span>
+            <h3>Pack</h3>
+            <p>
+              Items are sorted by path, line, and id, then packed up to 64
+              questions and 64,000 bytes per request.
+            </p>
+          </li>
+          <li class="pipe-step spotlight reveal">
+            <span class="pipe-index">03</span>
+            <h3>Cache</h3>
+            <p>
+              Questions answered in the last 30 days come from SQLite. Only new
+              or changed ones are sent.
+            </p>
+          </li>
+          <li class="pipe-step spotlight reveal">
+            <span class="pipe-index">04</span>
+            <h3>Judge</h3>
+            <p>
+              Clef returns a violation probability per question. Transient
+              failures are retried with backoff.
+            </p>
+          </li>
+          <li class="pipe-step spotlight reveal">
+            <span class="pipe-index">05</span>
+            <h3>Decide</h3>
+            <p>
+              Probabilities become verdicts, and <code>limit</code> policies
+              count them per file or per run.
+            </p>
+          </li>
+        </ol>
+
+        <div class="scale-card reveal">
+          <div class="scale-head">
+            <h3>Every item gets a probability. Two cut-offs make it a verdict.</h3>
+            <p>
+              The 19 items from the policies above, as Clef answered them. Hover
+              or tap a point to see which item it is.
+            </p>
+          </div>
+          <div class="scale" data-scale>
+            <div class="scale-zones" aria-hidden="true">
+              <span class="zone is-pass"><b>pass</b> ≤ 0.5</span>
+              <span class="zone is-review"><b>review</b></span>
+              <span class="zone is-violation"><b>violation</b> ≥ 0.65</span>
+            </div>
+            <div class="scale-track" data-scale-track>
+              <!-- Probabilities from the demo run's answer cache, via the library's select + judge. -->
+              <button type="button" class="scale-dot is-pass" style="--p: 0.0316" data-label="src/billing.ts:15-22 · no-flag-parameters · 0.03"></button>
+              <button type="button" class="scale-dot is-pass" style="--p: 0.0391" data-label="src/report.ts:16-21 · no-flag-parameters · 0.04"></button>
+              <button type="button" class="scale-dot is-pass" style="--p: 0.0402" data-label="e33ee57 · commits-say-why · 0.04"></button>
+              <button type="button" class="scale-dot is-pass" style="--p: 0.0405" data-label="src/billing.ts:14-14 · todo-has-issue · 0.04"></button>
+              <button type="button" class="scale-dot is-pass" style="--p: 0.0489" data-label="src/billing.ts:17-19 · errors-say-what-to-do · 0.05"></button>
+              <button type="button" class="scale-dot is-pass" style="--p: 0.0608" data-label="src/currency.ts:4-10 · no-flag-parameters · 0.06"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.7634" data-label="src/currency.ts:12-17 · no-flag-parameters · 0.76"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.8247" data-label="49554c5 · commits-say-why · 0.82"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.8726" data-label="src/currency.ts:7-7 · errors-say-what-to-do · 0.87"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9075" data-label="src/billing.ts:4-12 · no-flag-parameters · 0.91"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9144" data-label="src/billing.ts:6-6 · errors-say-what-to-do · 0.91"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9375" data-label="src/report.ts:6-6 · todo-has-issue · 0.94"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9476" data-label="src/billing.ts:3-3 · todo-has-issue · 0.95"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9501" data-label="4c19fe8 · commits-say-why · 0.95"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9626" data-label="a8e0ffc · commits-say-why · 0.96"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9637" data-label="src/report.ts:7-14 · no-flag-parameters · 0.96"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9730" data-label="src/currency.ts:3-3 · todo-has-issue · 0.97"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9737" data-label="76b76a5 · commits-say-why · 0.97"></button>
+              <button type="button" class="scale-dot is-violation" style="--p: 0.9770" data-label="src/report.ts:18-18 · errors-say-what-to-do · 0.98"></button>
+            </div>
+            <div class="scale-axis" aria-hidden="true">
+              <span style="--p: 0">0</span>
+              <span style="--p: 0.5">0.5</span>
+              <span style="--p: 0.65">0.65</span>
+              <span style="--p: 1">1</span>
+            </div>
+            <p class="scale-readout" data-scale-readout aria-live="polite">&nbsp;</p>
+          </div>
+        </div>
+
+        <div class="output-layout">
+          <div class="output-copy reveal">
+            <h3>Output an agent can act on</h3>
+            <p>
+              One line per finding that didn't pass: verdict, probability,
+              location, policy, and reason. Then a count per verdict. Only a
+              <code>violation</code> fails the run.
+            </p>
+            <table class="exit-table">
+              <thead>
+                <tr><th>Exit</th><th>Meaning</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>0</code></td><td>No violations</td></tr>
+                <tr><td><code>1</code></td><td>At least one violation</td></tr>
+                <tr><td><code>2</code></td><td>A policy, selector, configuration, or Clef API error stopped the run</td></tr>
+                <tr><td><code>130</code></td><td>Interrupted; answers already received stay cached</td></tr>
+              </tbody>
+            </table>
+            <p class="output-note">
+              This run came after one new file and one new commit: 5 new
+              questions were sent and the other 14 answers came from the cache.
+              <code>--debug</code> prints the cost table to stderr.
+            </p>
+          </div>
+          <figure class="output-terminal tilt reveal" aria-label="A full lint-anything run with --debug">
+            <div class="tilt-sheen" aria-hidden="true"></div>
+            <div class="window-bar">
+              <span class="code-dot"></span>
+              <span class="code-dot"></span>
+              <span class="code-dot"></span>
+              <span class="window-title">~/shop</span>
+            </div>
+            <pre><code data-highlight="output">$ bunx lint-anything --debug
+violation     0.82   49554c5  commits-say-why  The commit message doesn't say why.
+violation     0.95   4c19fe8  commits-say-why  The commit message doesn't say why.
+violation     0.97   76b76a5  commits-say-why  The commit message doesn't say why.
+violation     0.96   a8e0ffc  commits-say-why  The commit message doesn't say why.
+violation     0.91   src/billing.ts:6-6  errors-say-what-to-do  The message doesn't say what went wrong or what to do about it.
+violation     0.87   src/currency.ts:7-7  errors-say-what-to-do  The message doesn't say what went wrong or what to do about it.
+violation     0.98   src/report.ts:18-18  errors-say-what-to-do  The message doesn't say what went wrong or what to do about it.
+violation     0.91   src/billing.ts:4-12  no-flag-parameters  The function takes a boolean that switches it between different jobs.
+violation     0.76   src/currency.ts:12-17  no-flag-parameters  The function takes a boolean that switches it between different jobs.
+violation     0.96   src/report.ts:7-14  no-flag-parameters  The function takes a boolean that switches it between different jobs.
+violation     0.95   src/billing.ts:3-3  todo-has-issue  The comment has no tracking issue.
+violation     0.97   src/currency.ts:3-3  todo-has-issue  The comment has no tracking issue.
+violation     0.94   src/report.ts:6-6  todo-has-issue  The comment has no tracking issue.
+19 checks: 13 violation, 0 review, 0 inconclusive, 6 pass
+policy                 requests  cached  input tokens  cost (USD)
+commits-say-why               1       4           189     $0.0000
+errors-say-what-to-do         1       3           209     $0.0001
+no-flag-parameters            1       4           409     $0.0001
+todo-has-issue                1       3           215     $0.0001
+total                         4      14          1022     $0.0002</code></pre>
+          </figure>
+        </div>
+      </section>
+
+      <section id="evals" class="section evals">
+        <div class="section-header reveal">
+          <span class="section-badge">Evals</span>
+          <h2 class="section-title">Measured on code nobody wrote for it</h2>
+          <p class="section-description">
+            17 semantic rules on the test split: real files, copied verbatim
+            from open-source projects and labeled by two model families.
+          </p>
+        </div>
+        <div class="stats-grid spotlight-group">
+          <div class="stat-card spotlight reveal">
+            <span class="stat-value" data-count="0.930" data-decimals="3">0.930</span>
+            <span class="stat-label">file AUROC</span>
+            <p>How well a file's score separates violating files from clean ones.</p>
+          </div>
+          <div class="stat-card spotlight reveal">
+            <span class="stat-value" data-count="85" data-suffix="%">85%</span>
+            <span class="stat-label">of violations surfaced</span>
+            <p>As <code>violation</code> or <code>review</code>; 69% as <code>violation</code> outright.</p>
+          </div>
+          <div class="stat-card spotlight reveal">
+            <span class="stat-value" data-count="13" data-suffix="%">13%</span>
+            <span class="stat-label">false alarms</span>
+            <p>Clean cases that didn't pass. A guide more than a gate: read findings critically.</p>
+          </div>
+          <div class="stat-card spotlight reveal">
+            <span class="stat-value" data-count="13.98" data-decimals="2" data-prefix="$">$13.98</span>
+            <span class="stat-label">per 1,000 files</span>
+            <p>At Clef's input-token price, for all 17 rules together.</p>
+          </div>
+        </div>
+        <div class="evals-detail reveal">
+          <div class="corpus-facts">
+            <div><b data-count="623">623</b><span>labeled files</span></div>
+            <div><b data-count="10623" data-group>10,623</b><span>labeled cases</span></div>
+            <div><b data-count="149">149</b><span>open-source projects</span></div>
+            <div><b data-count="2">2</b><span>model families labeling</span></div>
+          </div>
+          <p>
+            Rule-specific selectors beat judging files in 1,000-byte excerpts:
+            +0.016 AUROC on the test split, and 70% → 80% of violations found at
+            the same 10% false-alarm rate, for less money. Labels come from Claude
+            and GPT, with disagreements adjudicated, and ambiguous cases stay
+            ambiguous. Every hypothesis, method, and result is in the
+            <a href="https://github.com/andrueandersoncs/lint-anything/blob/main/evals/RESEARCH.md" target="_blank" rel="noopener">research notebook</a>.
+          </p>
+        </div>
+      </section>
+
+      <section id="agents" class="section agents">
+        <div class="agents-layout">
+          <div class="agents-copy reveal">
+            <span class="section-badge">Agent skill</span>
+            <h2 class="section-title">Agents write the rules.<br>Agents fix the findings.</h2>
+            <p class="section-description">
+              The package ships a skill that teaches a coding agent to run
+              <span class="nowrap">lint-anything</span>, act on what it finds, and write and tune policies.
+            </p>
+            <ul class="agent-points">
+              <li>
+                <b>No arguments, one flag.</b> Every run checks every policy, so
+                there is no wrong way to call it.
+              </li>
+              <li>
+                <b>Fix, then re-run.</b> Only changed items are asked again, so
+                the loop stays fast and cheap.
+              </li>
+              <li>
+                <b>No ignore comments.</b> No baselines or suppressions either. A
+                policy that keeps raising false alarms is the thing to fix.
+              </li>
+              <li>
+                <b>Tune against labels.</b> <code>score.js</code> reports reach,
+                AUROC with 95% intervals, caught, surfaced, and false alarms, and
+                compares a candidate policy with the current one.
+              </li>
+            </ul>
+          </div>
+          <div class="agents-loop reveal">
+            <div class="loop" aria-hidden="true">
+              <svg class="loop-ring" viewBox="0 0 320 320">
+                <defs>
+                  <linearGradient id="loop-gradient" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="#c4b5fd"></stop>
+                    <stop offset="0.5" stop-color="#f0abfc"></stop>
+                    <stop offset="1" stop-color="#8b5cf6"></stop>
+                  </linearGradient>
+                </defs>
+                <circle cx="160" cy="160" r="128" class="loop-track"></circle>
+                <circle cx="160" cy="160" r="128" class="loop-arc"></circle>
+              </svg>
+              <span class="loop-node" style="--a: 0deg">write</span>
+              <span class="loop-node" style="--a: 90deg">run</span>
+              <span class="loop-node" style="--a: 180deg">fix</span>
+              <span class="loop-node" style="--a: 270deg">tune</span>
+              <span class="loop-center">agent</span>
+            </div>
+            <div class="code-block terminal">
+              <pre><code data-highlight="shell"># copy the skill into your agent's skills directory
+cp -R node_modules/@andrueandersoncs/lint-anything/skills/lint-anything \
+  .claude/skills/
+
+# score a policy against .lint-anything/labels/todo-has-issue.jsonl
+bun .claude/skills/lint-anything/scripts/score.js todo-has-issue
+
+# and a candidate against it, with paired intervals
+bun .claude/skills/lint-anything/scripts/score.js todo-has-issue candidate.md</code></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="start" class="section start">
+        <div class="section-header reveal">
+          <span class="section-badge">Get started</span>
+          <h2 class="section-title">Quick start</h2>
+          <p class="section-description">
+            One package, one directory of policies, no configuration file.
+          </p>
+        </div>
+        <ol class="steps">
+          <li class="step reveal">
+            <div class="step-number">1</div>
+            <div class="step-content">
+              <h3>Install</h3>
+              <p>
+                Needs <a href="https://bun.sh" target="_blank" rel="noopener">Bun</a>
+                1.2.23 or later, plus whatever your selectors call. <code>rg</code>,
+                <code>jq</code>, and <code>ast-grep</code> are common; none are bundled.
+              </p>
+              <div class="code-block terminal">
+                <pre><code data-highlight="shell">bun add -d @andrueandersoncs/lint-anything</code></pre>
+              </div>
+            </div>
+          </li>
+          <li class="step reveal">
+            <div class="step-number">2</div>
+            <div class="step-content">
+              <h3>Connect Workers AI</h3>
+              <p>
+                Your Cloudflare account ID and an API token. Bun loads
+                <code>.env</code> and <code>.env.local</code> on its own.
+              </p>
+              <div class="code-block terminal">
+                <pre><code data-highlight="shell">echo 'CLOUDFLARE_ACCOUNT_ID=...' >> .env
+echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
+echo '.lint-anything/cache' >> .gitignore</code></pre>
+              </div>
+            </div>
+          </li>
+          <li class="step reveal">
+            <div class="step-number">3</div>
+            <div class="step-content">
+              <h3>Write a policy, or ask your agent to</h3>
+              <p>
+                Any Markdown file under <code>.lint-anything/rules</code>. Its
+                name is its path there, without <code>.md</code>.
+              </p>
+              <div class="code-block">
+                <pre><code data-highlight="policy">---
+select: |
+  rg --json -w 'TODO|FIXME' -g '*.ts' |
+    jq -c 'select(.type == "match") | .data |
+      {id: "\(.path.text):\(.line_number)", path: .path.text,
+       lines: [.line_number, .line_number],
+       text: "comment in \(.path.text):\n\(.lines.text)"}'
+criteria:
+  "true": "The comment has no tracking issue."
+  "false": "The comment references a tracking issue, or isn't a TODO or FIXME."
+---
+Each question shows one comment. Decide whether it breaks the rule below.
+
+Rule: every `TODO` or `FIXME` comment must reference a tracking issue.</code></pre>
+              </div>
+            </div>
+          </li>
+          <li class="step reveal">
+            <div class="step-number">4</div>
+            <div class="step-content">
+              <h3>Run it</h3>
+              <p>From the project root, in CI or in your agent's loop.</p>
+              <div class="code-block terminal">
+                <pre><code data-highlight="shell">bunx lint-anything           # every policy, every time
+bunx lint-anything --debug   # plus requests, cache hits, and cost on stderr</code></pre>
+              </div>
+            </div>
+          </li>
+          <li class="step reveal">
+            <div class="step-number">5</div>
+            <div class="step-content">
+              <h3>Or compose it yourself</h3>
+              <p>
+                The stages a run composes are exported as an
+                <a href="https://effect.website" target="_blank" rel="noopener">Effect</a>
+                library. Install <code>effect</code> 4.x to use it.
+              </p>
+              <div class="code-block">
+                <pre><code data-highlight="ts">import { BunServices } from "@effect/platform-bun"
+import { Effect, Layer } from "effect"
+import {
+  Clef, decide, defaultThreshold, judge, loadPolicies, select
+} from "@andrueandersoncs/lint-anything"
+
+const findings = await Effect.runPromise(Effect.gen(function*() {
+  const [policy] = yield* loadPolicies(".lint-anything/rules")
+  const items = yield* select(policy!)
+  return decide(policy!, items, yield* judge(policy!, items), defaultThreshold)
+}).pipe(Effect.provide(Layer.mergeAll(Clef.layer(".lint-anything/cache"), BunServices.layer))))</code></pre>
+              </div>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section class="cta">
+        <div class="cta-content reveal">
+          <h2>Write down the rule you keep repeating in review.</h2>
+          <p>Then let your agent enforce it on every run.</p>
+          <div class="cta-actions">
+            <a
+              href="https://github.com/andrueandersoncs/lint-anything"
+              target="_blank"
+              rel="noopener"
+              class="btn btn-primary magnetic"
+            >
+              <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"
+                />
+              </svg>
+              Star on GitHub
+            </a>
+            <a
+              href="https://github.com/andrueandersoncs/lint-anything/blob/main/README.md"
+              target="_blank"
+              rel="noopener"
+              class="btn btn-secondary magnetic"
+              >Read the docs</a
+            >
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-content">
+        <div class="footer-logo">
+          <span class="logo-text">lint-anything</span>
+          <p>Plain-English policies, judged by Clef.</p>
+        </div>
+        <div class="footer-links">
+          <div class="footer-column">
+            <h4>Resources</h4>
+            <a href="https://github.com/andrueandersoncs/lint-anything/blob/main/README.md" target="_blank" rel="noopener">Documentation</a>
+            <a href="https://github.com/andrueandersoncs/lint-anything/blob/main/skills/lint-anything/SKILL.md" target="_blank" rel="noopener">Agent skill</a>
+            <a href="https://github.com/andrueandersoncs/lint-anything/blob/main/evals/RESEARCH.md" target="_blank" rel="noopener">Research notebook</a>
+            <a href="https://developers.cloudflare.com/workers-ai/models/clef/" target="_blank" rel="noopener">Clef on Workers AI</a>
+          </div>
+          <div class="footer-column">
+            <h4>Package</h4>
+            <a href="https://www.npmjs.com/package/@andrueandersoncs/lint-anything" target="_blank" rel="noopener">npm</a>
+            <a href="#start">Quick start</a>
+            <a href="#selectors">Selector examples</a>
+          </div>
+          <div class="footer-column">
+            <h4>Community</h4>
+            <a href="https://github.com/andrueandersoncs/lint-anything" target="_blank" rel="noopener">GitHub</a>
+            <a href="https://github.com/andrueandersoncs/lint-anything/issues" target="_blank" rel="noopener">Issues</a>
+            <a href="https://lionlang.dev/" target="_blank" rel="noopener">Lion, the JSON-based Lisp</a>
+          </div>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p>Released under the MIT License.</p>
+      </div>
+    </footer>
+  </body>
+</html>

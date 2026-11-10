@@ -9,7 +9,7 @@ Most of the seams already exist:
 - The JSONL item contract (`src/item.ts`) separates selecting from judging.
 - `DecisionModel` (formerly `Clef`) is an Effect service, and evals already stub it (`evals/shared.ts`).
 
-One thing is still coupled: the `Policy` type (`src/policy.ts`) bundles selector, rule, cut-offs, and `limit`.
+One thing is still coupled: the `Policy` type (`src/policy.ts`) bundles selector, rule, and cut-offs.
 
 `src/clef.ts` (now `src/decision-model.ts`) no longer knows what a lint policy is (2026-10-26):
 
@@ -26,8 +26,7 @@ flowchart LR
   P -->|body, criteria| Q
   Q -->|packed ≤64, ≤64KB| C[decision model + SQLite cache]
   C -->|p violates| V[verdictOf 0.5/0.65]
-  V --> A[aggregate limit]
-  A --> O[stdout findings]
+  V --> O[stdout findings]
 ```
 
 | Stage | Contract | Where it lives now |
@@ -35,7 +34,7 @@ flowchart LR
 | Select | `() → Item[]` | `src/select.ts`, `src/item.ts` |
 | Rule | `{body, criteria}` + `Item → Question` | `src/lint.ts` (`itemQuestion`) |
 | Judge | `(source, state, Question[]) → p[]` | `DecisionModel.ask`, `planRequests` (`src/decision-model.ts`) |
-| Decide | `p → Verdict`, then `aggregate` | `src/lint.ts` (`verdictOf`, `aggregate`) |
+| Decide | `p → Verdict` | `src/lint.ts` (`verdictOf`) |
 | Report | `Finding[] →` text | `index.ts` |
 
 Done: `Clef` takes questions instead of `Policy`. The judge, its cache, and its packer know nothing about linting.
@@ -84,9 +83,9 @@ Unlocks:
 
 ## Seam 3: deciding apart from judging
 
-`verdictOf` and `aggregate` are pure functions over probabilities. As a separate layer:
+`verdictOf` is a pure function over probabilities. As a separate layer:
 
-- `limit` can grow into ratios, trends across runs, and per-directory budgets. Counting in code beats asking Clef to count (100% vs 92%, `evals/counts.ts`).
+- Removed (2026-11-10): `limit`, which counted violating items per file or per run against a maximum, as unnecessary. `evals/counts.ts` went with it; both are in the git history.
 - Probabilities stay comparable across judges, so calibration can be checked per backend.
 - Per-policy cut-offs were measured and rejected (surfaced violations 72% → 52%, `evals/cutoffs.ts`). This layer should not become per-rule tuning.
 
@@ -128,10 +127,9 @@ Needs explicit approval first:
 
 1. Done: internal refactor. `Clef` takes questions, not `Policy`. No user-visible change; verified with `bunx tsc --noEmit` and a CLI run.
 2. Done in the repo: `src/lint.ts` exports the stages, and `lint` is their composition per policy.
-   - `select(policy, cwd?, runs?)`: runs the selector, sorts items, checks paths for `limit: per file`.
+   - `select(policy, cwd?, runs?)`: runs the selector and sorts its items.
    - `judge(policy, items)`: the `Clef` service's probabilities.
-   - `decide(policy, items, answers, threshold)`: pure; findings and `limit` aggregation.
-   - `evals/counts.ts` uses `decide` instead of rebuilding findings; its output is unchanged.
+   - `decide(policy, items, answers, threshold)`: pure; one finding per item.
    - Library (2026-10-26, after briefly deciding against it): the package exports the stages as an Effect API, with `effect` as an optional peer dependency (`src/lib.ts`, `exports` in `package.json`, `dist/lib.js` + `dist/types`). The CLI bundle is unchanged and still self-contained. The SIGHUP handler moved from `src/select.ts` into `index.ts`, so importing the library installs no signal handlers. README, "Library".
 3. Rejected (2026-10-26): explanations (see Seam 2), and deterministic judging, which belongs in the selector (see Seam 2). No policy-format or item-contract change.
 4. Separately: finding rules from review history, as its own tool. It builds on `evals/mine.ts` and doesn't touch the lint CLI.
@@ -151,7 +149,7 @@ The unit of composition is a process speaking JSONL, not a TypeScript function. 
 | --- | --- | --- |
 | select | (none; the user's pipeline) | `{id, text, path?, lines?}` |
 | ask (judge) | `{id, state, instructions, criteria}` | `{id, p}` or `{id, error}`; batched, packed, cached as today |
-| decide | `{id, p, path?, lines?, criteria}` + cut-offs/limit | findings |
+| decide | `{id, p, path?, lines?, criteria}` + cut-offs | findings |
 
 An `ask` process makes Clef's batched, cached yes/no judgment usable from any pipeline: triage, commit checks, data labeling. `lint-anything` stays the one fixed command that composes all three from policy files.
 

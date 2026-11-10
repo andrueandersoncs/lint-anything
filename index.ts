@@ -40,9 +40,9 @@ const rulesDirectory = ".lint-anything/rules"
 const cacheDirectory = ".lint-anything/cache"
 const verdicts: ReadonlyArray<Verdict> = ["violation", "review", "inconclusive", "pass"]
 
-/** Where a finding is: an item's `path:start-end`, else the item's id, else (a `limit` group) its path. */
+/** Where a finding is: its item's `path:start-end`, else the item's id. */
 const location = ({ path, item, lines }: Finding) =>
-  path !== undefined && lines !== undefined ? `${path}:${lines[0]}-${lines[1]}` : item ?? path ?? ""
+  path !== undefined && lines !== undefined ? `${path}:${lines[0]}-${lines[1]}` : item
 
 const formatText = (findings: ReadonlyArray<Finding>): string => {
   const lines = findings

@@ -1119,6 +1119,11 @@ pre code {
   padding: 1.5rem;
 }
 
+/* A card alone in the last row takes the whole row. */
+.selector-card:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
 .selector-head {
   display: flex;
   gap: 0.75rem;

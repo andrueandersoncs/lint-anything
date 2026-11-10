@@ -472,24 +472,6 @@ written as `#123`, `ABC-123`, or a full issue URL.</code></pre>
           </article>
           <article class="selector-card spotlight reveal">
             <div class="selector-head">
-              <h3>Counting</h3>
-              <span class="tool-chip">limit</span>
-            </div>
-            <p>
-              Judge each item, then report once per file or per run when more
-              than <code>max</code> items violate.
-            </p>
-            <div class="code-block">
-              <pre><code data-highlight="policy">select: |
-  ast-grep scan --json=stream --inline-rules \
-    '{id: fn, language: TypeScript, rule: {kind: function_declaration}}' src |
-    jq -c '…'
-limit: { max: 1, per: run }</code></pre>
-            </div>
-            <div class="finding"><code data-highlight="output">violation     -        flag-budget  3 of 6 items violate the rule (at most 1 allowed): src/billing.ts:4-12, src/currency.ts:12-17, src/report.ts:7-14</code></div>
-          </article>
-          <article class="selector-card spotlight reveal">
-            <div class="selector-head">
               <h3>Third-party services</h3>
               <span class="tool-chip">gh</span>
             </div>
@@ -557,8 +539,8 @@ criteria:
             <span class="pipe-index">05</span>
             <h3>Decide</h3>
             <p>
-              Probabilities become verdicts, and <code>limit</code> policies
-              count them per file or per run.
+              Probabilities become verdicts: one finding per item, failing
+              the run on any violation.
             </p>
           </li>
         </ol>

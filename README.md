@@ -82,7 +82,7 @@ Each question shows one comment. Decide whether it breaks the rule below.
 Rule: every `TODO` or `FIXME` comment must reference a tracking issue, written as `#123`, `ABC-123`, or a full issue URL.
 ````
 
-- Frontmatter holds `select` and `criteria` (`true` and `false`), all required, and `limit` (below). Any other key is an error.
+- Frontmatter holds `select` and `criteria` (`true` and `false`), both required. Any other key is an error.
 - The body must not be empty.
 - The policy name is its path relative to the rules directory, without `.md` (for example `sub/todo-has-issue`).
 
@@ -125,28 +125,6 @@ An item counts as a violation when its lines overlap a labeled violation, and a 
 - Structural units (functions, classes, handlers, tests) are easiest to select with a syntax-aware tool such as [ast-grep](https://ast-grep.github.io/). The eval corpus's policies (`evals/corpus/policies/`) and their scripts (`evals/steps/`) are worked examples: a selector lists the files it judges (`rg --files -g '*.ts'`) and pipes their paths to a script that cuts out the units.
 - Policies with the same `select` command share one run of it per lint run, so a selector several policies use can live in a script (for example `.lint-anything/lib/functions.sh`) that each calls.
 
-### Counting items: `limit`
-
-A policy can count instead of reporting each item: with `limit`, its items are judged as usual, and then the policy reports one finding per file (or, with `per: run`, one for the whole run) that is a `violation` when more than `max` items are violations. Its reason says where the violating items are: their lines within the file, or (with `per: run`) their `path:lines`, else their ids. A group that isn't over the limit is `inconclusive` when its items that weren't judged (too large, or declined by the model) could put it over; the reason counts them by cause, as `N not judged (request too large)` or `N not judged (declined)`. With `per: file`, every item needs a `path`; an item without one stops the run (exit 2).
-
-````md
----
-select: |
-  rg --json -w 'TODO|FIXME' | jq -c '…'
-criteria:
-  "true": "The comment has no tracking issue."
-  "false": "The comment references a tracking issue."
-limit: { max: 3, per: file }
----
-Rule: every `TODO` or `FIXME` comment must reference a tracking issue.
-````
-
-```
-violation     -      src/many.ts  todos  4 of 4 items violate the rule (at most 3 allowed): 2-2, 9-9, 14-14, 30-30
-```
-
-Write the rule about one item, and put the count in `limit`: Clef judges items well and counts badly (see Evals). Items in `review` are mentioned in the reason but not counted.
-
 ## How it works
 
 Each policy's selector runs from the current directory, then the decision model judges the selected items. Up to 8 policies run at once, and at most 8 requests are in flight across the run. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing. Findings are printed in policy order.
@@ -171,13 +149,12 @@ Clef's answer to one question shifts a little with the other questions in its re
 
 ## Output
 
-The CLI prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the item's `path:start-end`, or its `id` when it has no path and lines. A decision model answers only with a probability, so an item's reason is the policy's `criteria.true`: what the policy says a violation is. A `limit` finding gives its file's path, and its count and the violating items' places as the reason:
+The CLI prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the item's `path:start-end`, or its `id` when it has no path and lines. A decision model answers only with a probability, so an item's reason is the policy's `criteria.true`: what the policy says a violation is.
 
 ```
-violation     -      src/a.ts  todo-limit  2 of 3 items violate the rule (at most 1 allowed): 1-1, 3-3
 violation     0.97   src/a.ts:4-4  todo  The comment has no tracking issue.
 violation     0.97   9acebc18  commits  The commit message doesn't say why.
-3 checks: 3 violation, 0 review, 0 inconclusive, 0 pass
+2 checks: 2 violation, 0 review, 0 inconclusive, 0 pass
 ```
 
 Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`.
@@ -222,7 +199,7 @@ The package also exports the stages a run composes as an [Effect](https://effect
 | --- | --- |
 | `select(policy, cwd?, runs?)` | Runs a policy's selector; returns its items, sorted as they are judged |
 | `judge(policy, items)` | Each item's violation probability, or why there is none: `RequestTooLarge` or `Declined` (needs `DecisionModel`) |
-| `decide(policy, items, answers, threshold)` | Findings from those answers, `limit` included; pure |
+| `decide(policy, items, answers, threshold)` | One finding per item from those answers; pure |
 | `lint(policies, threshold)` | All three for every policy, as the CLI runs them |
 | `DecisionModel.ask(source, state, questions)` | Yes/no questions under a shared state, packed, cached, retried; no policy needed |
 | `DecisionModel.layer(cacheDirectory?)` | The `DecisionModel` service for the model the environment variables above configure (`configuredTarget`) |
@@ -265,7 +242,6 @@ bun evals/examples.ts                      # examples written into the policy bo
 bun evals/cutoffs.ts                       # per-policy cut-offs tuned on dev vs. global (stored scores)
 bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
 bun evals/packing.ts                       # repeatability of fresh runs (real requests) and batch independence
-bun evals/counts.ts                        # limit vs. asking the count rule of the whole file
 bun evals/mine.ts prometheus/prometheus    # candidate real violations from PR review comments (GitHub API, cached)
 bun evals/sample.ts --per-repo 3 owner/repo …   # random real files by language, test vs. source, and size (GitHub API, cached)
 bun evals/wordings.ts --split test         # each rule-wording set vs. the polished policies, each scored against its own gold
@@ -364,7 +340,7 @@ Each feature has an intended purpose, an eval that measures it, and a result. Ch
 | Examples in the body (few-shot) | Examples improve judgments | `examples.ts` | Calibration only: Brier better on both splits, AUROC unchanged | yes (write them in the body) |
 | Sorted items | The same files get the same verdicts | `packing.ts` | Holds: two fresh runs went from 40 differing verdicts to 0 | yes |
 | Answer cache (always on) | Re-runs pay only for changes; stable verdicts | `cache.ts` | Holds: 0 requests unchanged, 4 of 38 after an edit, 0 vs 38 verdict changes in untouched files | yes |
-| `limit` | Count rules judged reliably | `counts.ts` | Holds: 100% vs 92% (79% at the boundary) | yes |
+| `limit` | Count rules judged reliably | `counts.ts` | Holds: 100% vs 92% (79% at the boundary) | no: removed as unnecessary (below) |
 | Per-policy cut-offs | Better verdicts than global cut-offs | `cutoffs.ts` | Fails: surfaced violations fall from 72% to 52% for +0.002 F1 | no |
 | Policy file sent whole as the rule | Clef reads the rule with its frontmatter | `evals/.cache/research/ident/ablate.ts` (2026-10-22) | Replaced: with the excerpt framing, sending the body without the frontmatter (selector code) raised dev AUROC 0.910 → 0.919; the body alone is now the request's text | no |
 | `ask` routing step | Drop items a rule doesn't govern, cutting false alarms | (commit `a4caa7c`) | Fails: dev false alarms rose, violations dropped | no |
@@ -461,22 +437,12 @@ Each flag the CLI used to take is now fixed at one value. Whether that value is 
 
 Either default passes a clean checkout that has violations, and changed-since fails outright outside a git repository (`git diff HEAD` errors, exit 2). Off reports everything the selectors find; a selector scopes what it checks.
 
-#### Removed from the CLI: `check`, baseline, changed-lines scope, SARIF
+#### Removed from the CLI: `check`, baseline, changed-lines scope, SARIF, `limit`
 
-These were built and measured with new flags and subcommands, then removed because the CLI takes no arguments. The code and evals are in the git history.
+These were built and measured, then removed: the flags and subcommands because the CLI takes no arguments, and `limit` because it was unnecessary. The code and evals are in the git history.
 
 - `lint-anything check` (commit `47705a7`): judged each policy's examples against the rule without them. It caught a rule about the wrong thing (examples agreeing fell from 90% to 48%) but not an inverted one (87%), and it failed two semantic policies in their own wording.
 - `--baseline` and `--changed-since` (commit `9ddefd2`): on a generated repository, all five adoption scenarios behaved as expected; a baseline keyed by item text survived line shifts (one keyed by line would have called 7 of 11 accepted findings new).
 - `--sarif` (commit `cfab4c3`): the log validated against the SARIF 2.1.0 schema and every finding mapped to one result.
 - `ask` routing step (commit `a4caa7c`): routing the comments policy's items through "is this exempt?" raised dev false alarms from 8.2% to 11.5% and dropped 3 of 36 violating comments.
-
-#### Counting with `limit`
-
-Purpose: rules about a count ("at most 3 issue-less TODOs per file") are judged reliably. `evals/counts.ts` generates 64 TypeScript, Python, and Go files with a known number of issue-less TODOs (0 to 7, 24 files at exactly 3 or 4) among TODOs that cite an issue, and judges "more than 3" two ways:
-
-| Approach | Accuracy | Files with exactly 3 or 4 | AUROC | $ / 1k files |
-| --- | --- | --- | --- | --- |
-| the count rule, its selector emitting the whole file | 92% (59/64) | 79% (19/24) | 0.983 | $0.095 |
-| each TODO judged against "must reference an issue", counted by `limit: { max: 3 }` | **100%** (64/64) | **100%** (24/24) | 1.000 | $0.163 |
-
-The purpose holds: every file's count was exact, while the whole-file judgment ranked files well but misplaced the boundary in a fifth of the files at it. It costs about 1.7× as much.
+- `limit` (commit `d4a6620`, `evals/counts.ts`): judged each item, then reported one finding per file or per run, a violation when more than `max` items violated the rule. On 64 generated files with 0 to 7 issue-less TODOs, counting judged TODOs against "at most 3" was exact on every file, where asking the count rule of the whole file got 92% (79% of the 24 files at 3 or 4), at about 1.7× the cost.

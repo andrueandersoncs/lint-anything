@@ -283,19 +283,14 @@ const highlightOutputLine = (line) => {
   const finding = line.match(FINDING);
   if (finding) {
     const [, verdict, gap1, probability, gap2, rest] = finding;
-    const parts = rest.split("  ");
-    // A `limit` finding without a path has an empty location column.
-    const [location, policy, ...reason] =
-      parts.length === 2 ? ["", ...parts] : parts;
+    const [location, policy, ...reason] = rest.split("  ");
     return [
       span(`v-${verdict}`, verdict) + gap1 + span("o-prob", probability) + gap2,
       [
-        location && span("o-loc", location),
+        span("o-loc", location),
         span("o-policy", policy ?? ""),
         span("o-reason", reason.join("  ")),
-      ]
-        .filter(Boolean)
-        .join("  "),
+      ].join("  "),
     ].join("");
   }
   const summary = line.match(SUMMARY);

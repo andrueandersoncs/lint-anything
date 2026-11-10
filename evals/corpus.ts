@@ -172,8 +172,8 @@ const itemCriteria = {
  * `rule`, with the corpus item criteria. `select` should end in `bun "$EVAL_STEPS/present.ts"`, which writes
  * each item's location and context into its text as the corpus selectors do.
  */
-export const adHocPolicy = (name: string, select: string, rule: string, limit?: { readonly max: number; readonly per: "file" | "run" }) =>
-  Effect.runSync(parsePolicy(name, `---\n${Bun.YAML.stringify({ select, criteria: itemCriteria, ...(limit === undefined ? {} : { limit }) }, null, 2)}\n---\n` +
+export const adHocPolicy = (name: string, select: string, rule: string) =>
+  Effect.runSync(parsePolicy(name, `---\n${Bun.YAML.stringify({ select, criteria: itemCriteria }, null, 2)}\n---\n` +
     `${itemFraming}\n\nRule:\n${rule}\n`))
 
 const parseDirectory = async (directory: string): Promise<Array<Policy>> => {

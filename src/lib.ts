@@ -3,7 +3,7 @@
  *
  * - `select`: runs a policy's selector and returns its items, sorted as they are judged.
  * - `judge`: asks a decision model whether each item violates the policy (needs the `DecisionModel` service).
- * - `decide`: turns answers into findings, `limit` included; pure.
+ * - `decide`: turns answers into findings, one per item; pure.
  * - `lint`: all three for every policy, as the CLI runs them.
  *
  * `DecisionModel.ask` is the judge without policies: yes/no questions under a shared state, packed, cached,
@@ -54,7 +54,6 @@ export const ClefError = DecisionModelError
 export type ClefError = DecisionModelError
 export { type Item, parseItem } from "./item.ts"
 export {
-  aggregate,
   decide,
   defaultThreshold,
   type Finding,

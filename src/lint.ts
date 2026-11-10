@@ -2,75 +2,19 @@ import { Array as Arr, Effect, Result } from "effect"
 import { DecisionModel, type Question, type Unanswered } from "./decision-model.ts"
 import type { Item } from "./item.ts"
 import type { Policy } from "./policy.ts"
-import { runSelector, SelectorError, type SelectorRuns } from "./select.ts"
+import { runSelector, type SelectorRuns } from "./select.ts"
 
 export type Verdict = "pass" | "review" | "violation" | "inconclusive"
 
-/**
- * One judgment: of one item a policy's selector emitted (`item`, its id), or of a policy's `limit` over its
- * items (`violating`, the ids of the items that count).
- */
+/** One judgment: of one item a policy's selector emitted (`item`, its id). */
 export interface Finding {
   readonly policy: string
   readonly verdict: Verdict
+  readonly item: string
   readonly path?: string
-  readonly item?: string
   readonly lines?: readonly [number, number]
   readonly violates?: number
   readonly reason?: string
-  readonly violating?: ReadonlyArray<string>
-  /** Why an `inconclusive` item has no answer: its request was too large, or the model declined it. */
-  readonly unjudged?: "request too large" | "declined"
-}
-
-/** Where an item is, for a reason: its `lines` within its group's file, else its `path:lines`, else its id. */
-const itemPlace = (finding: Finding, inFile: boolean) =>
-  finding.lines === undefined
-    ? finding.item!
-    : `${inFile ? "" : `${finding.path}:`}${finding.lines[0]}-${finding.lines[1]}`
-
-// Why items go unjudged, in the order a `limit` finding's reason counts them.
-const unjudgedCauses = ["request too large", "declined"] as const
-
-/**
- * A `limit` policy's findings: its item findings counted per file (or once per run). A group is a
- * `violation` when more than `max` of its items are violations, and `inconclusive` when it isn't but its
- * items that weren't judged could put it over. Items in `review` are counted in the reason but not against
- * the limit. The reason says where the violating items are, and why items weren't judged.
- */
-export const aggregate = (
-  policy: string,
-  limit: { readonly max: number; readonly per: "file" | "run" },
-  items: ReadonlyArray<Finding>
-): Array<Finding> => {
-  const groups = new Map<string | undefined, Array<Finding>>()
-  if (limit.per === "run") groups.set(undefined, [...items])
-  else for (const item of items) groups.set(item.path, [...(groups.get(item.path) ?? []), item])
-  return [...groups].map(([path, group]) => {
-    const violating = group.filter((item) => item.verdict === "violation")
-    const review = group.filter((item) => item.verdict === "review").length
-    const unjudged = group.filter((item) => item.verdict === "inconclusive")
-    const verdict = violating.length > limit.max
-      ? "violation"
-      : violating.length + unjudged.length > limit.max
-      ? "inconclusive"
-      : "pass"
-    const places = violating.map((item) => itemPlace(item, path !== undefined)).join(", ")
-    return {
-      policy,
-      ...(path === undefined ? {} : { path }),
-      verdict,
-      reason: [
-        `${violating.length} of ${group.length} items violate the rule (at most ${limit.max} allowed)${places === "" ? "" : `: ${places}`}`,
-        ...(review > 0 ? [`${review} more in review`] : []),
-        ...unjudgedCauses.flatMap((cause) => {
-          const count = unjudged.filter((item) => (item.unjudged ?? "request too large") === cause).length
-          return count > 0 ? [`${count} not judged (${cause})`] : []
-        })
-      ].join("; "),
-      violating: violating.map((item) => item.item!)
-    }
-  })
 }
 
 // Checked on the eval corpus with its selectors (README, Evals): F1 is flat between these and the dev F1
@@ -102,12 +46,7 @@ const toFinding = (
       // violation is.
       return { ...base, verdict, violates, ...(verdict === "pass" ? {} : { reason: policy.criteria.true }) }
     },
-    onFailure: (error): Finding => ({
-      ...base,
-      verdict: "inconclusive",
-      reason: error.message,
-      unjudged: error._tag === "Declined" ? "declined" : "request too large"
-    })
+    onFailure: (error): Finding => ({ ...base, verdict: "inconclusive", reason: error.message })
   })
 
 const itemLocation = (item: Item) => ({
@@ -130,14 +69,7 @@ export const select = Effect.fn("select")(function*(
 ) {
   // Answers depend on how items are packed into requests, and tools like rg emit matches in varying
   // order; sorting makes the packing, and so the verdicts, repeatable.
-  const items = (yield* runSelector(policy, cwd, runs)).toSorted(byLocation)
-  const pathless = items.find((item) => item.path === undefined)
-  if (policy.limit?.per === "file" && pathless !== undefined) {
-    return yield* new SelectorError({
-      message: `${policy.name}: item ${pathless.id} has no path, and limit per file counts items by path; give every item a path or use per: run`
-    })
-  }
-  return items
+  return (yield* runSelector(policy, cwd, runs)).toSorted(byLocation)
 })
 
 /**
@@ -151,19 +83,17 @@ export const judge = Effect.fn("judge")(function*(policy: Policy, items: Readonl
 })
 
 /**
- * Decide stage: the findings for `items` given their `answers` (from `judge`, in the same order), under
- * `threshold`; with `policy.limit`, the items' findings counted against it.
+ * Decide stage: one finding per item of `items`, given their `answers` (from `judge`, in the same order),
+ * under `threshold`.
  */
 export const decide = (
   policy: Policy,
   items: ReadonlyArray<Item>,
   answers: ReadonlyArray<Result.Result<number, Unanswered>>,
   threshold: number
-): Array<Finding> => {
-  const found = Arr.zipWith(items, answers, (item, violates) =>
+): Array<Finding> =>
+  Arr.zipWith(items, answers, (item, violates) =>
     toFinding(violates, { policy: policy.name, ...itemLocation(item) }, policy, threshold))
-  return policy.limit === undefined ? found : aggregate(policy.name, policy.limit, found)
-}
 
 // Policies judged at once. The decision model bounds requests in flight across the run, so this only lets one policy's
 // selector run, and its requests fill slots, while another's are in flight. Each policy's requests are

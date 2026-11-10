@@ -5,15 +5,13 @@ import { Effect, FileSystem, Path, Runtime, Schema } from "effect"
  * text, sent exactly as written (the rule, and any framing or examples the author wants). The `select` shell
  * command finds what to judge itself and emits it as items; each item's text is one question. `criteria`
  * says what a yes (the item violates the rule) and a no mean for every question: without them a model may read yes as
- * "follows the rule" and invert every verdict. With `limit`, the policy reports how many of its items
- * violate the rule, per file or per run, against a maximum.
+ * "follows the rule" and invert every verdict.
  */
 export interface Policy {
   readonly name: string
   readonly body: string
   readonly select: string
   readonly criteria: { readonly true: string; readonly false: string }
-  readonly limit?: { readonly max: number; readonly per: "file" | "run" }
 }
 
 export class PolicyError extends Schema.TaggedError<PolicyError>()("PolicyError", {
@@ -27,10 +25,6 @@ const Frontmatter = Schema.Struct({
   criteria: Schema.optional(Schema.Struct({
     true: Schema.optional(Schema.NonEmptyString),
     false: Schema.optional(Schema.NonEmptyString)
-  })),
-  limit: Schema.optional(Schema.Struct({
-    max: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-    per: Schema.optional(Schema.Literals(["file", "run"]))
   }))
 })
 
@@ -51,10 +45,10 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
   const unknown = Object.keys(typeof parsed === "object" && parsed !== null ? parsed : {}).filter((key) => !(key in Frontmatter.fields))
   if (unknown.length > 0) {
     return yield* new PolicyError({
-      message: `${name}: unknown frontmatter ${unknown.join(", ")}; a policy has select, criteria, and limit, and its body is everything else the model reads`
+      message: `${name}: unknown frontmatter ${unknown.join(", ")}; a policy has select and criteria, and its body is everything else the model reads`
     })
   }
-  const { select, criteria, limit } = yield* Schema.decodeUnknownEffect(Frontmatter)(parsed).pipe(
+  const { select, criteria } = yield* Schema.decodeUnknownEffect(Frontmatter)(parsed).pipe(
     Effect.mapError((error) => new PolicyError({ message: `${name}: invalid frontmatter: ${error.message}` }))
   )
   if (select === undefined) {
@@ -69,8 +63,7 @@ export const parsePolicy = Effect.fn("parsePolicy")(function*(name: string, sour
     name,
     body,
     select,
-    criteria: { true: criteria.true, false: criteria.false },
-    ...(limit === undefined ? {} : { limit: { max: limit.max, per: limit.per ?? "file" } })
+    criteria: { true: criteria.true, false: criteria.false }
   } satisfies Policy
 })
 

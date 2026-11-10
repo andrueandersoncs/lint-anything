@@ -31,26 +31,25 @@ If `lint-anything` isn't found, install it with `bun add -d @andrueandersoncs/li
 stdout has one line per non-passing finding, then a summary. Passing items are never listed; they only appear in the `pass` count.
 
 ```
-violation     -      src/a.ts  todo-limit  2 of 3 items violate the rule (at most 1 allowed): 1-1, 3-3
 violation     0.97   src/a.ts:4-4  todo  The comment has no tracking issue.
 review        0.58   src/b.ts:10-22  no-flag-parameters  The function uses a boolean parameter to choose between two jobs.
 inconclusive  -      big  explain-why  request is 70123 bytes; Clef would truncate it
-4 checks: 2 violation, 1 review, 1 inconclusive, 0 pass
+3 checks: 1 violation, 1 review, 1 inconclusive, 0 pass
 ```
 
 Columns: verdict, violation probability (`-` when none), location, policy name, reason.
 
-- **Location** is `path:start-end` when the item has `path` and `lines`, the `path` alone for a `limit` finding, and otherwise the item's `id` (for a commit, say).
+- **Location** is `path:start-end` when the item has `path` and `lines`, and otherwise the item's `id` (for a commit, say).
 - **Policy name** is the file's path under `.lint-anything/rules`, without `.md` (`go/handle-errors`). Open that file to see the full rule.
 - **Reason:** the model returns no explanation. An item's reason is always the policy's `criteria.true`, the same text on every finding of that policy. It tells you what the policy counts as a violation, not why this particular item is one. To find out why, read the item at its location and the rule in the policy file.
-- **"N checks"** counts findings: one per item, but one per file (or per run) for a `limit` policy.
+- **"N checks"** counts findings: one per item.
 
 | Verdict | Meaning | Exit |
 | --- | --- | --- |
 | `pass` | probability ≤ 0.5 | 0 |
 | `review` | between 0.5 and 0.65: uncertain, often a case reasonable reviewers would disagree on | 0 |
 | `violation` | probability ≥ 0.65 | **1** |
-| `inconclusive` | the item wasn't judged: too large to send (`request is N bytes; Clef would truncate it`, or `…, over the 64000-byte request limit` on another model), or refused by the model (`<model> declined to answer`, OpenAI Decisions only); or a `limit` group whose unjudged items could put it over the limit | 0 |
+| `inconclusive` | the item wasn't judged: too large to send (`request is N bytes; Clef would truncate it`, or `…, over the 64000-byte request limit` on another model), or refused by the model (`<model> declined to answer`, OpenAI Decisions only) | 0 |
 
 | Exit code | Meaning |
 | --- | --- |
@@ -92,7 +91,7 @@ Each question shows one comment. Decide whether it breaks the rule below.
 Rule: every `TODO` or `FIXME` comment must reference a tracking issue, written as `#123`, `ABC-123`, or a full issue URL.
 ```
 
-Frontmatter keys are `select`, `criteria` (with both `true` and `false`), and optionally `limit`. All except `limit` are required. Any other key stops the run (`unknown frontmatter threshold`), so there is no per-policy threshold, model, or name.
+Frontmatter keys are `select` and `criteria` (with both `true` and `false`), both required. Any other key stops the run (`unknown frontmatter threshold`), so there is no per-policy threshold, model, or name.
 
 ### Criteria: get the direction right
 
@@ -122,7 +121,7 @@ The selector is a shell command that finds what to judge and prints **JSONL**, o
 | --- | --- | --- |
 | `id` | yes | non-empty **string** (`3` is rejected); names the item in findings. Doesn't need to be unique |
 | `text` | yes | non-empty string: **everything the model reads for this item**, including its context |
-| `path` | no | file path, for the location (required for `limit` with `per: file`) |
+| `path` | no | file path, for the location |
 | `lines` | no | `[start, end]`, integers, **1-based**, inclusive, `1 ≤ start ≤ end` |
 
 Any other field, a non-JSON line, or a wrong type stops the whole run with `selector output line N is not a valid item: …`. Blank lines are skipped.
@@ -177,25 +176,8 @@ What decides accuracy is what the item's text says (from the evals):
 - **Items must reach every possible violation.** A violation that no item contains can't be found.
 - **Compute facts; don't make the model derive them.** For "TODOs older than 90 days need an issue", giving the TODO's age in days scored 99% accuracy. Giving its commit date and today's date scored 84%, and the TODO alone 76%. Clef doesn't do date math or counting. Do it in the selector, with `git blame` or a script.
 - **Add only the context the rule turns on**: the enclosing function for a magic number, the call sites for a flag parameter, whether a symbol is used for a public-surface rule. Context costs input tokens.
-- **Rules about a count go in `limit`**, not in the rule text (next section).
 - **Line numbers in `text` reduce cache hits.** The cache is keyed on the text, so `"text": "src/a.ts:42: …"` gets asked again whenever a line above it is added or removed. Location is already in `path`/`lines`. Put the path in the text only if the rule needs it (test-file rules, say), and put line numbers in only if the rule needs them.
 - **Selectors built for a rule beat generic ones.** If you reword a rule, check its selector still reaches what the new wording covers.
-
-## Counting: `limit`
-
-```yaml
-limit: { max: 3, per: file }   # per: file (default) or per: run; max is an integer ≥ 0
-```
-
-Every item is judged as usual. Then the policy reports one finding per file (or one for the whole run) instead of one per item:
-
-- `violation` when more than `max` items in the group are violations. The reason lists where they are: their line ranges within the file (`1-1, 3-3`), or `path:lines` or ids with `per: run`.
-- `inconclusive` when the group isn't over the limit but its unjudged (too large) items could put it over.
-- otherwise `pass`. Items in `review` are mentioned in the reason but don't count toward the limit.
-- With `per: file`, every item needs a `path`. One without a path stops the run.
-- With `per: file`, a file with no items gets no finding. With `per: run`, there is always one finding, even with 0 items.
-
-Write the rule about a single item ("every TODO references an issue") and put the number in `limit`. On the evals, counting with `limit` was exact on all 64 files; asking Clef "more than 3 per file?" about the whole file got 92%.
 
 ## Testing and tuning a policy
 
@@ -259,5 +241,5 @@ The lint-anything repository has worked examples: 21 policies in `evals/corpus/p
 - [ ] The selector can't fail silently (no unguarded failure early in a pipe) and doesn't stop the run when nothing matches.
 - [ ] `criteria.true` describes a **violation**, specifically. `criteria.false` covers compliant items **and** items the rule doesn't govern.
 - [ ] The body holds only what the model should read: a one-line framing, then `Rule:` and a precise rule with exemptions.
-- [ ] Facts are computed in the selector, not left for the model to derive. Counts go in `limit`.
+- [ ] Facts are computed in the selector, not left for the model to derive.
 - [ ] `.lint-anything/labels/<name>.jsonl` labels files on both splits (labels from two or three models, disagreements settled by the user), `score.js` reaches every labeled violation, and changes were adopted on test, not dev.

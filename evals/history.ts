@@ -172,5 +172,5 @@ for (const { arm, run, items } of results) {
   console.log(`| ${arm} | ${fixed(auroc(run.scored))}${delta(run.scored, auroc)} | ${fixed(brier(run.scored))}${delta(run.scored, brier)} | ` +
     `${percent(accuracy(run.scored))}${delta(run.scored, accuracy)} | ${percent(accuracy(near(run.scored)))} | ` +
     `${percent(flagged(youngWithoutIssue(run.scored)))} | ${percent(q.caught)} / ${percent(q.falseAlarms)} | ` +
-    `$${costPerThousand(tokens, items.length).toFixed(3)} |`)
+    `${costPerThousand(tokens, items.length)} |`)
 }

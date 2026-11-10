@@ -11,8 +11,11 @@
 // paired intervals.
 // --wording judges the policies of corpus/wordings/<set> (same selectors) against that set's gold, on the
 // files labeled for it. --thresholds sets the item cut-offs (default: the CLI's).
+// Items are judged by the decision model the CLI would ask (Clef unless LINT_ANYTHING_ENDPOINT or
+// LINT_ANYTHING_MODEL says otherwise); another model's scores are stored under a `model-<name>` scope.
 import { resolve } from "node:path"
-import { makeClient } from "./client.ts"
+import { clef } from "../src/decision-model.ts"
+import { makeClient, model } from "./client.ts"
 import { type Case, categoryOf, loadCorpus } from "./corpus.ts"
 import {
   auroc,
@@ -85,7 +88,8 @@ const chosenShapes = (args.length > 0 ? args : ["production"]).map((shape) => {
   return shape as Shape
 })
 const scope = [split, origin === "all" ? undefined : origins.join("+"), category === "all" ? undefined : category,
-  wording === "" ? undefined : `wording-${wording}`]
+  wording === "" ? undefined : `wording-${wording}`,
+  model.cacheKey === clef.cacheKey ? undefined : `model-${model.model.replace(/[^\w.-]+/g, "-")}`]
   .filter((part) => part !== undefined)
   .join(".")
 
@@ -185,7 +189,7 @@ const count = (scored: ReadonlyArray<Scored<Case>>, label: Label) => scored.filt
 
 const baseItems = clearItems(baseline.scored)
 console.log(`\n${scope}: ${cases.length} cases in ${fileCount} files: ${count(baseline.files, "violates")} violating, ` +
-  `${count(baseline.files, "ambiguous")} ambiguous; ${baseline.name} judges ${baseline.items.length} items ` +
+  `${count(baseline.files, "ambiguous")} ambiguous; ${model.name} judges ${baseline.name}'s ${baseline.items.length} items ` +
   `(${count(baseItems, "violates")} violating, ${baseline.scored.length - baseItems.length} in ambiguous cases, ` +
   `left out of item metrics). A case scores its highest item score (0 without items); verdicts at item cut-offs ` +
   `${floor} / ${threshold}; "tuned" re-picks both on these same cases (in-sample: tune on dev, then pass them to test ` +
@@ -207,7 +211,7 @@ for (const run of runs) {
     `${fixed(verdictF1(run.files, tuned))} | ${percent(pairAccuracy(run.files))} | ${fixed(auroc(clearItems(run.scored)))}${items(auroc)} | ` +
     `${fixed(brier(clearItems(run.scored)))}${items(brier)} | ${reached(run, cases)} | ${run.items.length} ` +
     `(${run.scored.filter((entry) => entry.score === null).length}) | ${run.requests} | ` +
-    `$${costPerThousand(run.inputTokens, fileCount).toFixed(3)} |`)
+    `${costPerThousand(run.inputTokens, fileCount)} |`)
 }
 
 // Breakdowns of the baseline, with n: per origin (synthetic and planted files run easier than real ones, so

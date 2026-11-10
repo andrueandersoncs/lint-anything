@@ -111,9 +111,9 @@ try {
   console.log(`\n${files.length} files, ${rows.filter((row) => row.violates).length} with more than ${limit} issue-less TODOs; ${near.length} with exactly ${limit} or ${limit + 1}.`)
   console.log("| Approach | Accuracy | At the limit (3 or 4) | AUROC | $ / 1k files |\n|---|---|---|---|---|")
   console.log(`| A. count rule, whole file | ${accuracy(rows, (row) => row.wholeSaysViolation)} | ${accuracy(near, (row) => row.wholeSaysViolation)} | ` +
-    `${auroc(asScored((row) => row.wholeScore)).toFixed(3)} | $${costPerThousand(tokens(wholeRun), files.length).toFixed(3)} |`)
+    `${auroc(asScored((row) => row.wholeScore)).toFixed(3)} | ${costPerThousand(tokens(wholeRun), files.length)} |`)
   console.log(`| B. item rule + limit | ${accuracy(rows, (row) => row.limitSaysViolation)} | ${accuracy(near, (row) => row.limitSaysViolation)} | ` +
-    `${auroc(asScored((row) => row.count)).toFixed(3)} | $${costPerThousand(tokens(run), files.length).toFixed(3)} |`)
+    `${auroc(asScored((row) => row.count)).toFixed(3)} | ${costPerThousand(tokens(run), files.length)} |`)
   const exact = rows.filter((row) => row.count === row.file.issueless).length
   const error = rows.reduce((sum, row) => sum + Math.abs(row.count - row.file.issueless), 0) / rows.length
   console.log(`\nB's counts: exact for ${exact} of ${rows.length} files, mean absolute error ${error.toFixed(2)} TODOs.`)

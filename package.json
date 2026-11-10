@@ -1,7 +1,7 @@
 {
   "name": "@andrueandersoncs/lint-anything",
   "version": "0.3.0",
-  "description": "Check anything against plain-English policies, judged by Cloudflare's Clef decision model",
+  "description": "Check anything against plain-English policies, judged by a decision model: Cloudflare's Clef, or any System One or OpenAI Decisions endpoint",
   "license": "MIT",
   "author": "Andrue Anderson",
   "repository": {

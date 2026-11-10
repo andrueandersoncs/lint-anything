@@ -87,7 +87,7 @@ for (const split of ["dev", "test"] as const) {
       const isBase = scored === base
       console.log(`| ${split} | ${name.replace(/^(semantic|control)\//, "")} ${label} | ${scored.length} (${scored.filter((s) => s.label === "violates").length}) | ` +
         `${fixed(auroc(scored))}${isBase ? "" : delta(base, scored, auroc)} | ${fixed(brier(scored))}${isBase ? "" : delta(base, scored, brier)} | ` +
-        `${percent(q.caught)} / ${percent(q.surfaced)} / ${percent(q.falseAlarms)} | $${costPerThousand(tokens(run), scored.length).toFixed(3)} |`)
+        `${percent(q.caught)} / ${percent(q.surfaced)} / ${percent(q.falseAlarms)} | ${costPerThousand(tokens(run), scored.length)} |`)
     }
   }
 }

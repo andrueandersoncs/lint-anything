@@ -6,7 +6,7 @@
     <title>lint-anything — Lint what static analysis can't</title>
     <meta
       name="description"
-      content="Check code, commits, and anything a shell command can select against rules written in plain English, judged one yes-or-no question at a time by Cloudflare's Clef decision model."
+      content="Check code, commits, and anything a shell command can select against rules written in plain English, judged one yes-or-no question at a time by a decision model: Cloudflare's Clef, or any System One or OpenAI Decisions endpoint."
     >
     <meta name="theme-color" content="#09090b">
     <meta property="og:type" content="website">
@@ -14,7 +14,7 @@
     <meta property="og:title" content="lint-anything — If you can say it, you can lint it">
     <meta
       property="og:description"
-      content="Plain-English lint rules for coding agents, judged by Cloudflare's Clef decision model."
+      content="Plain-English lint rules for coding agents, judged by a decision model such as Cloudflare's Clef."
     >
     <meta
       property="og:image"
@@ -117,8 +117,9 @@
           </h1>
           <p class="hero-description">
             lint-anything checks code, commits, and anything else a shell command
-            can select against rules written in plain English. Cloudflare's Clef
-            decision model judges every item as a yes-or-no question.
+            can select against rules written in plain English. A decision model
+            judges every item as a yes-or-no question: Cloudflare's Clef by
+            default, or any model behind a System One or OpenAI Decisions endpoint.
           </p>
           <div class="hero-actions">
             <a href="#start" class="btn btn-primary">
@@ -241,7 +242,7 @@ violation     0.94   src/report.ts:6-6  todo-has-issue  The comment has no track
             </div>
             <h3>Rules in plain English</h3>
             <p>
-              A policy's body is sent to Clef exactly as written. No DSL, no
+              A policy's body is sent to the model exactly as written. No DSL, no
               plugin API, no AST visitors: the rule, plus whatever framing and
               examples help.
             </p>
@@ -258,7 +259,7 @@ violation     0.94   src/report.ts:6-6  todo-has-issue  The comment has no track
               A selector is a shell command that prints JSON lines. Comments from
               <code>rg</code>, functions from <code>ast-grep</code>, commits from
               <code>git log</code>, records from an API: if a command can print
-              it, Clef can judge it.
+              it, a decision model can judge it.
             </p>
           </article>
           <article class="feature-card spotlight reveal">
@@ -270,7 +271,7 @@ violation     0.94   src/report.ts:6-6  todo-has-issue  The comment has no track
             </div>
             <h3>A decision model, not a chat</h3>
             <p>
-              Clef answers each item with a violation probability. At or below
+              The model answers each item with a violation probability. At or below
               0.5 it passes, at 0.65 or above it's a violation, and the uncertain
               middle goes to review.
             </p>
@@ -369,7 +370,7 @@ written as `#123`, `ABC-123`, or a full issue URL.</code></pre>
               <p>
                 A shell command, run once per lint run from the project root. It
                 prints one JSON item per line: an <code>id</code>, the
-                <code>text</code> Clef reads, and optionally a <code>path</code>
+                <code>text</code> the model reads, and optionally a <code>path</code>
                 and <code>lines</code>. Each item is one yes-or-no question.
               </p>
             </li>
@@ -388,7 +389,7 @@ written as `#123`, `ABC-123`, or a full issue URL.</code></pre>
               <p>
                 The text of every request, sent exactly as written. Say what to
                 decide, then state the rule. Add framing or examples if they help
-                Clef judge it.
+                the model judge it.
               </p>
             </li>
           </ol>
@@ -494,8 +495,9 @@ limit: { max: 1, per: run }</code></pre>
               <span class="tool-chip">gh</span>
             </div>
             <p>
-              Selectors run without any <code>CLOUDFLARE_</code> variable, so a
-              policy's shell never sees your API token.
+              Selectors run without any <code>CLOUDFLARE_</code> or
+              <code>LINT_ANYTHING_</code> variable, so a policy's shell never sees
+              your API token.
             </p>
             <div class="code-block">
               <pre><code data-highlight="policy">select: |
@@ -548,7 +550,7 @@ criteria:
             <span class="pipe-index">04</span>
             <h3>Judge</h3>
             <p>
-              Clef returns a violation probability per question. Transient
+              The decision model returns a violation probability per question. Transient
               failures are retried with backoff.
             </p>
           </li>
@@ -623,7 +625,7 @@ criteria:
               <tbody>
                 <tr><td><code>0</code></td><td>No violations</td></tr>
                 <tr><td><code>1</code></td><td>At least one violation</td></tr>
-                <tr><td><code>2</code></td><td>A policy, selector, configuration, or Clef API error stopped the run</td></tr>
+                <tr><td><code>2</code></td><td>A policy, selector, configuration, or decision model API error stopped the run</td></tr>
                 <tr><td><code>130</code></td><td>Interrupted; answers already received stay cached</td></tr>
               </tbody>
             </table>
@@ -814,6 +816,11 @@ bun .claude/skills/lint-anything/scripts/score.js todo-has-issue candidate.md</c
 echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
 echo '.lint-anything/cache' >> .gitignore</code></pre>
               </div>
+              <p>
+                Or ask another decision model: set <code>LINT_ANYTHING_ENDPOINT</code>
+                to any System One or OpenAI Decisions endpoint, with
+                <code>LINT_ANYTHING_MODEL</code> and <code>LINT_ANYTHING_API_KEY</code>.
+              </p>
             </div>
           </li>
           <li class="step reveal">
@@ -866,14 +873,14 @@ bunx lint-anything --debug   # plus requests, cache hits, and cost on stderr</co
                 <pre><code data-highlight="ts">import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import {
-  Clef, decide, defaultThreshold, judge, loadPolicies, select
+  DecisionModel, decide, defaultThreshold, judge, loadPolicies, select
 } from "@andrueandersoncs/lint-anything"
 
 const findings = await Effect.runPromise(Effect.gen(function*() {
   const [policy] = yield* loadPolicies(".lint-anything/rules")
   const items = yield* select(policy!)
   return decide(policy!, items, yield* judge(policy!, items), defaultThreshold)
-}).pipe(Effect.provide(Layer.mergeAll(Clef.layer(".lint-anything/cache"), BunServices.layer))))</code></pre>
+}).pipe(Effect.provide(Layer.mergeAll(DecisionModel.layer(".lint-anything/cache"), BunServices.layer))))</code></pre>
               </div>
             </div>
           </li>
@@ -914,7 +921,7 @@ const findings = await Effect.runPromise(Effect.gen(function*() {
       <div class="footer-content">
         <div class="footer-logo">
           <span class="logo-text">lint-anything</span>
-          <p>Plain-English policies, judged by Clef.</p>
+          <p>Plain-English policies, judged by a decision model.</p>
         </div>
         <div class="footer-links">
           <div class="footer-column">

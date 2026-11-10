@@ -362,7 +362,7 @@ export interface PolicyScore {
 
 /**
  * Runs `policy`'s selector from `cwd` and judges the items that fall in a labeled target (only those: the
- * rest of the codebase costs nothing). Needs the `Clef` service.
+ * rest of the codebase costs nothing). Needs the `DecisionModel` service.
  */
 export const scorePolicy = Effect.fn("scorePolicy")(function*(policy: Policy, labels: ReadonlyArray<LabelRecord>, cwd?: string) {
   const selected = yield* select(policy, cwd)

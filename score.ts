@@ -3,10 +3,11 @@
 // against the code labeled for it in .lint-anything/labels/<policy>.jsonl, from the project root:
 //   bun score.js <policy>                  the policy in .lint-anything/rules/<policy>.md
 //   bun score.js <policy> <candidate.md>   that policy against a candidate (any path), paired
-// Only items in labeled files are judged; answers share the CLI's cache in .lint-anything/cache.
+// Only items in labeled files are judged, by the decision model the CLI would ask; answers share the CLI's
+// cache in .lint-anything/cache.
 import { BunServices } from "@effect/platform-bun"
 import { Console, Effect, FileSystem, Layer, Runtime, Schema } from "effect"
-import { Clef, inputTokenPrice, sumUsage } from "./src/clef.ts"
+import { DecisionModel, sumUsage } from "./src/decision-model.ts"
 import { parsePolicy, type Policy } from "./src/policy.ts"
 import {
   auroc,
@@ -115,7 +116,7 @@ const program = Effect.gen(function*() {
     ? undefined
     : yield* parsePolicy(`${name} (candidate)`, yield* read(candidatePath))
   const labels = yield* loadLabels(name)
-  const clef = yield* Clef
+  const model = yield* DecisionModel
   const [base, other] = yield* Effect.all([
     scorePolicy(current, labels),
     candidate === undefined ? Effect.succeed(undefined) : scorePolicy(candidate, labels)
@@ -130,13 +131,14 @@ const program = Effect.gen(function*() {
     yield* Console.log("Decide on test; tune on dev.\n")
   }
   yield* Console.log(`dev mistakes (${other === undefined ? "current" : "candidate"}; test is held out)\n${devMistakes(other ?? base)}\n`)
-  const spent = sumUsage((yield* clef.stats).values())
+  const spent = sumUsage((yield* model.stats).values())
+  const price = model.target.inputTokenPrice
   yield* Console.log(`cost: ${spent.requests} requests, ${spent.cached} answers from the cache, ${spent.inputTokens} input tokens, ` +
-    `$${(spent.inputTokens * inputTokenPrice).toFixed(4)}`)
+    (price === undefined ? `price unknown for ${model.target.name}` : `$${(spent.inputTokens * price).toFixed(4)}`))
 })
 
 program.pipe(
-  Effect.provide(Layer.mergeAll(Clef.layer(cacheDirectory), BunServices.layer)),
+  Effect.provide(Layer.mergeAll(DecisionModel.layer(cacheDirectory), BunServices.layer)),
   Effect.catch((error) =>
     Console.error(`error: ${"message" in error ? error.message : String(error)}`).pipe(Effect.andThen(Effect.sync(() => (process.exitCode = 2))))
   ),

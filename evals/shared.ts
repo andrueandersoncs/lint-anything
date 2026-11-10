@@ -1,5 +1,5 @@
 // Measures selector sharing: policies with the same `select` should run it once per lint run. Lints this
-// repository's `src/*.ts` with six policies sharing one selector, against a stub Clef (no requests), and
+// repository's `src/*.ts` with six policies sharing one selector, against a stub decision model (no requests), and
 // counts executions through a log the selector appends to.
 //   bun evals/shared.ts
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer, Result } from "effect"
-import { Clef } from "../src/clef.ts"
+import { DecisionModel, endpointTarget } from "../src/decision-model.ts"
 import { defaultThreshold, lint } from "../src/lint.ts"
 import { adHocPolicy } from "./corpus.ts"
 
@@ -24,8 +24,9 @@ rg --json -w 'const' -g '*.ts' src |
   bun "$EVAL_STEPS/present.ts"`
 const policies = rules.map((rule, index) => adHocPolicy(`shared/${index}`, select, `# Rule ${index}\n\n${rule}`))
 
-// Every judgment scores 0.1; this eval measures the steps, not Clef.
-const stub = Layer.succeed(Clef, Clef.of({
+// Every judgment scores 0.1; this eval measures the steps, not the model.
+const stub = Layer.succeed(DecisionModel, DecisionModel.of({
+  target: endpointTarget({ url: "http://stub.invalid/v1/systemone", model: "stub" }),
   ask: (_, __, questions) => Effect.succeed(questions.map(() => Result.succeed(0.1))),
   stats: Effect.succeed(new Map())
 }))

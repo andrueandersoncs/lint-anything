@@ -2,12 +2,12 @@
 // requests through the cached client, and the file-level view of item scores.
 import { availableParallelism } from "node:os"
 import { Effect } from "effect"
-import { inputTokenPrice, planRequests } from "../src/clef.ts"
+import { planRequests } from "../src/decision-model.ts"
 import type { Item } from "../src/item.ts"
 import { itemQuestion } from "../src/lint.ts"
 import { parsePolicy, type Policy } from "../src/policy.ts"
 import { runSelector } from "../src/select.ts"
-import type { makeClient } from "./client.ts"
+import { type makeClient, model } from "./client.ts"
 import { itemLabel, reachedRanges, type Scored, targetScore } from "../src/score.ts"
 import { type Case, type Corpus, corpusDirectory, ruleText, scoreLabel } from "./corpus.ts"
 
@@ -121,9 +121,9 @@ export type Plan = (policy: Policy, entries: ReadonlyArray<Item>) => {
   readonly oversized: ReadonlyArray<number>
 }
 
-/** What the CLI sends for a selector's items. */
+/** What the CLI sends for a selector's items, to the evals' decision model. */
 export const productionPlan: Plan = (policy, entries) => {
-  const planned = planRequests(policy.body, entries.map((entry) => itemQuestion(policy, entry)))
+  const planned = planRequests(policy.body, entries.map((entry) => itemQuestion(policy, entry)), model)
   return {
     requests: planned.requests.map(({ body, questions }) => ({ body, questions: questions.map(({ id, value }) => ({ id, index: value })) })),
     oversized: planned.oversized.map(({ value }) => value)
@@ -140,7 +140,7 @@ export interface ItemRun {
 
 /**
  * Judges `items` with `plan`, one group per selector run (one policy on one file), as the CLI groups a
- * policy's items when linting that file. Oversized items score `null`.
+ * policy's items when linting that file. Oversized items, and items the model declines, score `null`.
  */
 export const scoreItems = async (ask: ReturnType<typeof makeClient>, items: ReadonlyArray<ItemCase>, plan: Plan): Promise<ItemRun> => {
   const groups = new Map<string, Array<ItemCase>>()
@@ -162,9 +162,9 @@ export const scoreItems = async (ask: ReturnType<typeof makeClient>, items: Read
       inputTokens.set(policy.name, (inputTokens.get(policy.name) ?? 0) + reply.inputTokens)
       ms.push(reply.ms)
       for (const { id, index } of request.questions) {
-        const noul = reply.answers[id]?.noul
-        if (typeof noul !== "number") throw new Error(`no answer for ${id}`)
-        scores.set(group[index]!, noul)
+        const answer = reply.answers.get(id)
+        if (answer === undefined) throw new Error(`no answer for ${id}`)
+        scores.set(group[index]!, answer === "declined" ? null : answer)
       }
     }))
   }))
@@ -186,8 +186,12 @@ export const fileScores = (fileCases: ReadonlyArray<Case>, items: ReadonlyArray<
   })
 }
 
-/** USD per 1,000 units (items or files) for `tokens` input tokens spent on `count` of them. */
-export const costPerThousand = (tokens: number, count: number) => (tokens * inputTokenPrice * 1000) / count
+/**
+ * USD per 1,000 units (items or files) for `tokens` input tokens spent on `count` of them, as `$0.123`, or
+ * `–` when the model's price isn't known.
+ */
+export const costPerThousand = (tokens: number, count: number) =>
+  model.inputTokenPrice === undefined ? "–" : `$${((tokens * model.inputTokenPrice * 1000) / count).toFixed(3)}`
 
 export const writeScores = (path: string, scored: ReadonlyArray<Scored<Case>>) =>
   Bun.write(path, `${scored.map(({ subject: item, score }) => JSON.stringify({ case: item.id, label: item.gold.label, score })).join("\n")}\n`)

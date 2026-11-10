@@ -1,5 +1,5 @@
 import { Array as Arr, Effect, Result } from "effect"
-import { Clef, type Question, type RequestTooLarge } from "./clef.ts"
+import { DecisionModel, type Question, type Unanswered } from "./decision-model.ts"
 import type { Item } from "./item.ts"
 import type { Policy } from "./policy.ts"
 import { runSelector, SelectorError, type SelectorRuns } from "./select.ts"
@@ -19,6 +19,8 @@ export interface Finding {
   readonly violates?: number
   readonly reason?: string
   readonly violating?: ReadonlyArray<string>
+  /** Why an `inconclusive` item has no answer: its request was too large, or the model declined it. */
+  readonly unjudged?: "request too large" | "declined"
 }
 
 /** Where an item is, for a reason: its `lines` within its group's file, else its `path:lines`, else its id. */
@@ -27,11 +29,14 @@ const itemPlace = (finding: Finding, inFile: boolean) =>
     ? finding.item!
     : `${inFile ? "" : `${finding.path}:`}${finding.lines[0]}-${finding.lines[1]}`
 
+// Why items go unjudged, in the order a `limit` finding's reason counts them.
+const unjudgedCauses = ["request too large", "declined"] as const
+
 /**
  * A `limit` policy's findings: its item findings counted per file (or once per run). A group is a
  * `violation` when more than `max` of its items are violations, and `inconclusive` when it isn't but its
  * items that weren't judged could put it over. Items in `review` are counted in the reason but not against
- * the limit. The reason says where the violating items are.
+ * the limit. The reason says where the violating items are, and why items weren't judged.
  */
 export const aggregate = (
   policy: string,
@@ -44,10 +49,10 @@ export const aggregate = (
   return [...groups].map(([path, group]) => {
     const violating = group.filter((item) => item.verdict === "violation")
     const review = group.filter((item) => item.verdict === "review").length
-    const unjudged = group.filter((item) => item.verdict === "inconclusive").length
+    const unjudged = group.filter((item) => item.verdict === "inconclusive")
     const verdict = violating.length > limit.max
       ? "violation"
-      : violating.length + unjudged > limit.max
+      : violating.length + unjudged.length > limit.max
       ? "inconclusive"
       : "pass"
     const places = violating.map((item) => itemPlace(item, path !== undefined)).join(", ")
@@ -58,7 +63,10 @@ export const aggregate = (
       reason: [
         `${violating.length} of ${group.length} items violate the rule (at most ${limit.max} allowed)${places === "" ? "" : `: ${places}`}`,
         ...(review > 0 ? [`${review} more in review`] : []),
-        ...(unjudged > 0 ? [`${unjudged} not judged (request too large)`] : [])
+        ...unjudgedCauses.flatMap((cause) => {
+          const count = unjudged.filter((item) => (item.unjudged ?? "request too large") === cause).length
+          return count > 0 ? [`${count} not judged (${cause})`] : []
+        })
       ].join("; "),
       violating: violating.map((item) => item.item!)
     }
@@ -75,13 +83,14 @@ export const verdictOf = (violates: number, floor: number, threshold: number): V
   violates <= floor ? "pass" : violates >= threshold ? "violation" : "review"
 
 // Nothing is added to what the policy says: the request's text is the policy body, each question is an
-// item's text, and the policy's criteria say what yes (violates) and no mean. Packing a policy's items as
+// item's text, and the policy's criteria say what yes (violates) and no mean (a decision API without
+// criteria gets them in the question's instructions). Packing a policy's items as
 // questions of one request won the eval suite's sweep (README, Evals); one request per item cost 2.5×.
 /** The question that judges `item` against `policy`, asked under the policy body. */
 export const itemQuestion = (policy: Policy, item: Item): Question => ({ instructions: item.text, criteria: policy.criteria })
 
 const toFinding = (
-  violates: Result.Result<number, RequestTooLarge>,
+  violates: Result.Result<number, Unanswered>,
   base: Omit<Finding, "verdict" | "violates" | "reason">,
   policy: Policy,
   threshold: number
@@ -89,10 +98,16 @@ const toFinding = (
   Result.match(violates, {
     onSuccess: (violates): Finding => {
       const verdict = verdictOf(violates, reviewFloor, threshold)
-      // Clef answers only with a probability, so a finding's reason is what the policy says a violation is.
+      // A decision model answers only with a probability, so a finding's reason is what the policy says a
+      // violation is.
       return { ...base, verdict, violates, ...(verdict === "pass" ? {} : { reason: policy.criteria.true }) }
     },
-    onFailure: ({ bytes }): Finding => ({ ...base, verdict: "inconclusive", reason: `request is ${bytes} bytes; Clef would truncate it` })
+    onFailure: (error): Finding => ({
+      ...base,
+      verdict: "inconclusive",
+      reason: error.message,
+      unjudged: error._tag === "Declined" ? "declined" : "request too large"
+    })
   })
 
 const itemLocation = (item: Item) => ({
@@ -126,12 +141,13 @@ export const select = Effect.fn("select")(function*(
 })
 
 /**
- * Judge stage: asks Clef whether each item violates `policy`, under the policy body. Results follow
- * `items` order: the probability that the item violates the rule, or `RequestTooLarge`.
+ * Judge stage: asks the decision model whether each item violates `policy`, under the policy body. Results
+ * follow `items` order: the probability that the item violates the rule, or why there is none
+ * (`RequestTooLarge`, `Declined`).
  */
 export const judge = Effect.fn("judge")(function*(policy: Policy, items: ReadonlyArray<Item>) {
-  const clef = yield* Clef
-  return yield* clef.ask(policy.name, policy.body, items.map((item) => itemQuestion(policy, item)))
+  const model = yield* DecisionModel
+  return yield* model.ask(policy.name, policy.body, items.map((item) => itemQuestion(policy, item)))
 })
 
 /**
@@ -141,7 +157,7 @@ export const judge = Effect.fn("judge")(function*(policy: Policy, items: Readonl
 export const decide = (
   policy: Policy,
   items: ReadonlyArray<Item>,
-  answers: ReadonlyArray<Result.Result<number, RequestTooLarge>>,
+  answers: ReadonlyArray<Result.Result<number, Unanswered>>,
   threshold: number
 ): Array<Finding> => {
   const found = Arr.zipWith(items, answers, (item, violates) =>
@@ -149,7 +165,7 @@ export const decide = (
   return policy.limit === undefined ? found : aggregate(policy.name, policy.limit, found)
 }
 
-// Policies judged at once. Clef bounds requests in flight across the run, so this only lets one policy's
+// Policies judged at once. The decision model bounds requests in flight across the run, so this only lets one policy's
 // selector run, and its requests fill slots, while another's are in flight. Each policy's requests are
 // packed alone, so concurrency changes no answer.
 const policyConcurrency = 8

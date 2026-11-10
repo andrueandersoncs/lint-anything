@@ -7,11 +7,11 @@ Design notes (2026-10-26). Steps 1 and 2 of the suggested order are done, includ
 Most of the seams already exist:
 
 - The JSONL item contract (`src/item.ts`) separates selecting from judging.
-- `Clef` is an Effect service, and evals already stub it (`evals/shared.ts`).
+- `DecisionModel` (formerly `Clef`) is an Effect service, and evals already stub it (`evals/shared.ts`).
 
 One thing is still coupled: the `Policy` type (`src/policy.ts`) bundles selector, rule, cut-offs, and `limit`.
 
-`src/clef.ts` no longer knows what a lint policy is (2026-10-26):
+`src/clef.ts` (now `src/decision-model.ts`) no longer knows what a lint policy is (2026-10-26):
 
 - `Clef.ask(source, state, questions)` takes `Question`s (`{instructions, criteria}`) and returns, in order, the probability of yes or `RequestTooLarge`.
 - `source` only keys `stats` (the CLI passes the policy name).
@@ -24,7 +24,7 @@ flowchart LR
   P[Policy .md] -->|select| S[sh -c selector]
   S -->|JSONL Item id/text/path/lines| Q[question = item.text + criteria]
   P -->|body, criteria| Q
-  Q -->|packed ≤64, ≤64KB| C[Clef + SQLite cache]
+  Q -->|packed ≤64, ≤64KB| C[decision model + SQLite cache]
   C -->|p violates| V[verdictOf 0.5/0.65]
   V --> A[aggregate limit]
   A --> O[stdout findings]
@@ -34,7 +34,7 @@ flowchart LR
 | --- | --- | --- |
 | Select | `() → Item[]` | `src/select.ts`, `src/item.ts` |
 | Rule | `{body, criteria}` + `Item → Question` | `src/lint.ts` (`itemQuestion`) |
-| Judge | `(source, state, Question[]) → p[]` | `Clef.ask`, `planRequests` (`src/clef.ts`) |
+| Judge | `(source, state, Question[]) → p[]` | `DecisionModel.ask`, `planRequests` (`src/decision-model.ts`) |
 | Decide | `p → Verdict`, then `aggregate` | `src/lint.ts` (`verdictOf`, `aggregate`) |
 | Report | `Finding[] →` text | `index.ts` |
 
@@ -68,11 +68,17 @@ So share a selector only for the unit cut (the function, the test). Keep per-rul
 
 Shape: a `Judge` interface, `(state, questions) → probabilities`. Clef is one backend; others could be a deterministic judge, another LLM, or a human.
 
+Done for decision models (2026-11-10): the `DecisionModel` service asks any decision model, not just Clef.
+
+- A `Target` is a model, the wire format its endpoint speaks, its URL, and its bearer token. There are two formats: System One (`state` + `noul` questions keyed by id, which Clef, Jev, LiteLLM, and LLM Gateway speak; Workers AI's `result` envelope is unwrapped) and OpenAI Decisions (`input` + `predicate` questions, with criteria folded into each question's instructions, and refusals as `Declined`).
+- The user approved the configuration surface: optional `LINT_ANYTHING_ENDPOINT`, `LINT_ANYTHING_MODEL`, and `LINT_ANYTHING_API_KEY`. With none set, a run is Clef on Workers AI with byte-identical request bodies, cache keys, stdout, and `--debug` output. `--debug` shows `-` as the cost of a model whose price isn't known (also approved).
+- Packing limits (64 questions, 64,000 bytes) and cut-offs are the same for every model. The answer cache keys by model, and by endpoint URL for an endpoint model. The evals use the same configuration, so `evals/run.ts` can score another model on the corpus; other models' scores go to `results/<scope>.model-<name>/`.
+
 Unlocks:
 
 - **Mechanical rules: no separate judge (rejected 2026-10-26).** The selector already covers this. It drops items it knows pass, and writes computed facts into the text of the rest, so Clef's judgment of them is near-certain and cached after the first run. Control rules already score item AUROC 1.0 this way.
 - **Explanations: rejected (2026-10-26).** A second LLM writing a reason for each non-passing finding would only move LLM cost into the tool. The consumer is a coding agent that is itself an LLM and reads the item to fix it anyway. Findings keep `criteria.true` as their reason.
-- **Comparing judges.** The eval harness could score Clef against other models on the same 10,623 cases. That makes it easier to switch vendors.
+- **Comparing judges.** The eval harness scores whichever decision model the environment configures on the same 10,623 cases (2026-11-10). No model but Clef and Clef-flash has been scored yet.
 - **Cascades.** A cheap judge first, with Clef only for uncertain items. Caveat: the `ask` routing pre-filter failed (commit `a4caa7c`: more false alarms, fewer violations caught). A cascade needs its own eval first.
 - **A general batched yes/no classifier.** The packer, the content-addressed SQLite cache, retries, and sorted packing for stable answers make a generic way to ask N yes/no questions under shared context. Uses beyond lint: issue triage, routing PRs to reviewers, labeling commits or changelogs, data labeling.
 

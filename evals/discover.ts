@@ -1,13 +1,13 @@
 // Discovers candidate review norms from PR review comments (RESEARCH.md, H23): the mechanical half of a
 // rule-mining tool. Reads the review comments `mine.ts` cached, keeps human top-level comments on source
-// files, asks Clef which ones invoke a general norm rather than a one-off fix, embeds every comment
+// files, asks the decision model which ones invoke a general norm rather than a one-off fix, embeds every comment
 // (Workers AI, bge-m3), and clusters the kept ones into themes ranked by distinct reviewers. Naming themes
 // and scoring them against each repo's documented norms happens in the research kernel.
 //   bun evals/discover.ts [--similarity 0.6] <owner/repo> ...
 import { mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { type Question, planRequests } from "../src/clef.ts"
-import { makeClient } from "./client.ts"
+import { planRequests, type Question } from "../src/decision-model.ts"
+import { makeClient, model } from "./client.ts"
 
 const reviewRaw = join(import.meta.dir, ".cache/research/review/raw")
 const out = join(import.meta.dir, ".cache/research/discover")
@@ -97,7 +97,7 @@ const keepQuestion = (comment: RawComment): Question => ({
 
 const ask = makeClient(8)
 const judgeNorms = async (comments: ReadonlyArray<RawComment>) => {
-  const { requests, oversized } = planRequests(keepState, comments.map(keepQuestion))
+  const { requests, oversized } = planRequests(keepState, comments.map(keepQuestion), model)
   if (oversized.length > 0) throw new Error(`${oversized.length} comments too large for one request`)
   const scores: Array<number> = []
   let inputTokens = 0
@@ -105,9 +105,9 @@ const judgeNorms = async (comments: ReadonlyArray<RawComment>) => {
     const reply = await ask(request.body)
     if (!reply.cached) inputTokens += reply.inputTokens
     for (const { id, value } of request.questions) {
-      const noul = reply.answers[id]?.noul
-      if (typeof noul !== "number") throw new Error(`no answer for ${id}`)
-      scores[value] = noul
+      const answer = reply.answers.get(id)
+      if (answer === undefined || answer === "declined") throw new Error(`no answer for ${id}`)
+      scores[value] = answer
     }
   }))
   return { scores, inputTokens }

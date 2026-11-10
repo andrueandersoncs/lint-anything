@@ -1,5 +1,5 @@
 // Measures how packing items into requests affects answers. (1) Repeatability: two fresh lint runs on the
-// same 24 dev corpus files, through the CLI's own Clef path (real requests), must agree, which is why a
+// same 24 dev corpus files, through the CLI's own decision-model path (real requests), must agree, which is why a
 // selector's items are sorted before packing. (2) Batch independence: the dev items of six corpus policies
 // with many short items (TODOs, `any`, `except` handlers, comments, numeric literals, tests) judged in full
 // batches and in two half-size batches, through the eval client, to show how far answers move when the
@@ -10,7 +10,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
-import { Clef } from "../src/clef.ts"
+import { DecisionModel } from "../src/decision-model.ts"
 import { defaultThreshold, type Finding, lint, reviewFloor, verdictOf } from "../src/lint.ts"
 import { makeClient } from "./client.ts"
 import { loadCorpus } from "./corpus.ts"
@@ -28,7 +28,7 @@ const policies = ["semantic/readability/comments-explain-why", "semantic/design/
 const cwd = process.cwd()
 process.chdir(workspace)
 const run = () => Effect.runPromise(lint(policies, defaultThreshold).pipe(
-  Effect.provide(Layer.mergeAll(Clef.layer(), BunServices.layer))
+  Effect.provide(Layer.mergeAll(DecisionModel.layer(), BunServices.layer))
 ))
 try {
   const [first, second] = [await run(), await run()]

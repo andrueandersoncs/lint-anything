@@ -10,7 +10,7 @@ const ItemFields = Schema.Struct({
 })
 
 /**
- * One thing a selector picked out to judge. `text` is everything Clef reads for it, context included; `id`
+ * One thing a selector picked out to judge. `text` is everything the decision model reads for it, context included; `id`
  * names it in findings; `path` and `lines` (1-based, inclusive) say where findings point.
  */
 export type Item = Schema.Schema.Type<typeof ItemFields>
@@ -23,7 +23,7 @@ export const parseItem = Effect.fn("parseItem")(function*(line: string) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return yield* Effect.fail("not an object")
   const unknown = Object.keys(value).filter((key) => !(key in ItemFields.fields))
   if (unknown.length > 0) {
-    return yield* Effect.fail(`unknown field ${unknown.join(", ")}; put what Clef should read in text`)
+    return yield* Effect.fail(`unknown field ${unknown.join(", ")}; put what the model should read in text`)
   }
   return yield* Schema.decodeUnknownEffect(ItemFields)(value).pipe(
     Effect.mapError((error) =>

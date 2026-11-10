@@ -2,7 +2,7 @@
 import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Console, Effect, Runtime, Schema } from "effect"
 import { CliError, Command, Flag } from "effect/cli"
-import { Clef, inputTokenPrice, noUsage, sumUsage, type Usage } from "./src/clef.ts"
+import { DecisionModel, noUsage, sumUsage, type Usage } from "./src/decision-model.ts"
 import { defaultThreshold, type Finding, lint, type Verdict } from "./src/lint.ts"
 import { loadPolicies, type Policy } from "./src/policy.ts"
 import { killRunningSelectors } from "./src/select.ts"
@@ -34,7 +34,7 @@ class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", {}) {
   override readonly [Runtime.errorReported] = false
 }
 
-const runStopping = ["PolicyError", "SelectorError", "ClefError"]
+const runStopping = ["PolicyError", "SelectorError", "DecisionModelError"]
 
 const rulesDirectory = ".lint-anything/rules"
 const cacheDirectory = ".lint-anything/cache"
@@ -62,14 +62,27 @@ const formatText = (findings: ReadonlyArray<Finding>): string => {
   return [...lines, `${findings.length} checks: ${counts.join(", ")}`].join("\n")
 }
 
-/** A table of what each policy, and the run, cost: requests sent, answers from the cache, input tokens, USD. */
-const formatUsage = (policies: ReadonlyArray<Policy>, usage: ReadonlyMap<string, Usage>): string => {
+/**
+ * A table of what each policy, and the run, cost: requests sent, answers from the cache, input tokens, and
+ * USD at `inputTokenPrice` (`-` when the model's price isn't known).
+ */
+const formatUsage = (
+  policies: ReadonlyArray<Policy>,
+  usage: ReadonlyMap<string, Usage>,
+  inputTokenPrice: number | undefined
+): string => {
   const total = sumUsage(usage.values())
   const rows = [
     ["policy", "requests", "cached", "input tokens", "cost (USD)"],
     ...[...policies.map((policy) => [policy.name, usage.get(policy.name) ?? noUsage] as const), ["total", total] as const].map(
       ([name, { requests, cached, inputTokens }]) =>
-        [name, String(requests), String(cached), String(inputTokens), `$${(inputTokens * inputTokenPrice).toFixed(4)}`]
+        [
+          name,
+          String(requests),
+          String(cached),
+          String(inputTokens),
+          inputTokenPrice === undefined ? "-" : `$${(inputTokens * inputTokenPrice).toFixed(4)}`
+        ]
     )
   ]
   const widths = rows[0]!.map((_, column) => Math.max(...rows.map((row) => row[column]!.length)))
@@ -93,20 +106,22 @@ const command = Command.make(
   Effect.fn(function*({ debug }) {
     const policies = yield* loadPolicies(rulesDirectory)
     const findings = yield* Effect.gen(function*() {
-      const clef = yield* Clef
+      const model = yield* DecisionModel
       // A failed run is reported too: its requests cost the same.
-      const printUsage = debug ? Effect.flatMap(clef.stats, (usage) => Console.error(formatUsage(policies, usage))) : Effect.void
+      const printUsage = debug
+        ? Effect.flatMap(model.stats, (usage) => Console.error(formatUsage(policies, usage, model.target.inputTokenPrice)))
+        : Effect.void
       const findings = yield* lint(policies, defaultThreshold).pipe(Effect.onError(() => printUsage))
       yield* Console.log(formatText(findings))
       yield* printUsage
       return findings
-    }).pipe(Effect.provide(Clef.layer(cacheDirectory)))
+    }).pipe(Effect.provide(DecisionModel.layer(cacheDirectory)))
     const count = findings.filter((finding) => finding.verdict === "violation").length
     if (count > 0) {
       return yield* new ViolationsFound({ count })
     }
   })
-).pipe(Command.withDescription(`Check every policy in ${rulesDirectory} with Cloudflare Clef`))
+).pipe(Command.withDescription(`Check every policy in ${rulesDirectory} with a decision model (Cloudflare Clef by default)`))
 
 command.pipe(
   Command.run({ version }),

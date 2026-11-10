@@ -1,6 +1,6 @@
 # lint-anything
 
-Check anything against plain-English policies, judged by Cloudflare's [Clef](https://developers.cloudflare.com/workers-ai/models/clef/) decision model on Workers AI. A policy's selector decides what is checked: parts of files, facts derived from them, a repository's history, a third-party service.
+Check anything against plain-English policies, judged by a decision model: Cloudflare's [Clef](https://developers.cloudflare.com/workers-ai/models/clef/) on Workers AI by default, or any model served behind a System One or OpenAI Decisions endpoint. A policy's selector decides what is checked: parts of files, facts derived from them, a repository's history, a third-party service.
 
 ## Run
 
@@ -15,25 +15,57 @@ bunx lint-anything                          # from the project root
 
 The command is `lint-anything`. It runs on Bun, not Node: without Bun on the `PATH` it fails with `env: bun: No such file or directory`.
 
-The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the `clef` model and printed as text. Clef's answers are cached in `.lint-anything/cache/answers.sqlite` (add `.lint-anything/cache` to `.gitignore`). Effect CLI also provides its global flags (`--help`, `--version`, `--wizard`, `--completions`, `--log-level`); they are expected and stay.
+The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by a decision model (`clef` unless configured otherwise, below) and printed as text. Answers are cached in `.lint-anything/cache/answers.sqlite` (add `.lint-anything/cache` to `.gitignore`). Effect CLI also provides its global flags (`--help`, `--version`, `--wizard`, `--completions`, `--log-level`); they are expected and stay.
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID` | yes | Workers AI account |
-| `CLOUDFLARE_AUTH_TOKEN` | yes | API token |
+| `CLOUDFLARE_ACCOUNT_ID` | for Workers AI | Workers AI account |
+| `CLOUDFLARE_AUTH_TOKEN` | for Workers AI | API token |
 | `CLOUDFLARE_API_BASE_URL` | no | Defaults to `https://api.cloudflare.com/client/v4` |
+| `LINT_ANYTHING_ENDPOINT` | no | Another decision endpoint, as a full URL: the model is asked there instead of on Workers AI, and the `CLOUDFLARE_` variables aren't needed |
+| `LINT_ANYTHING_MODEL` | with `LINT_ANYTHING_ENDPOINT` | The model to ask. Without an endpoint, a Cloudflare model on Workers AI: `clef` (the default) or, for example, `clef-flash` |
+| `LINT_ANYTHING_API_KEY` | no | Bearer token for `LINT_ANYTHING_ENDPOINT`, if it needs one |
 
-Bun loads `.env` and `.env.local` from the current directory automatically.
+Bun loads `.env` and `.env.local` from the current directory automatically. An empty variable counts as unset.
+
+### Choosing a decision model
+
+A decision model answers yes/no questions with the probability of yes instead of writing text. Clef is one. lint-anything asks whichever model the environment names, and speaks the two decision APIs:
+
+- **System One** (`POST …/v1/systemone`), the API Jev introduced: a `state`, then `noul` questions keyed by id, each with `instructions` and `criteria`. Clef on Workers AI speaks it, and so do most hosts and servers of decision models, such as [LiteLLM](https://docs.litellm.ai/docs/decisions)'s proxy (which routes to Jev, Clef, Perplexity, Databricks, Microsoft Foundry, vLLM, and others) and [LLM Gateway](https://llmgateway.io/blog/llm-decision-api).
+- **OpenAI Decisions** (`POST …/v1/decisions`), used when the endpoint's path ends in `/decisions`: an `input`, then `predicate` questions. A predicate has no criteria, so each question's instructions are the item's text followed by `true: <criteria.true>` and `false: <criteria.false>` lines, as LiteLLM does when it sends criteria to OpenAI.
+
+```sh
+# Clef-flash on Workers AI, with the CLOUDFLARE_ credentials above
+LINT_ANYTHING_MODEL=clef-flash
+
+# any System One server, such as a LiteLLM proxy
+LINT_ANYTHING_ENDPOINT=http://localhost:4000/v1/systemone
+LINT_ANYTHING_MODEL=typesafe/jev-latest
+LINT_ANYTHING_API_KEY=sk-...
+
+# OpenAI's Decisions API
+LINT_ANYTHING_ENDPOINT=https://api.openai.com/v1/decisions
+LINT_ANYTHING_MODEL=gpt-6-luna-decisions
+LINT_ANYTHING_API_KEY=sk-...
+```
+
+- Every model is asked the same way: the same request text, at most 64 questions and 64,000 bytes per request, the same 0.5 / 0.65 cut-offs. A model whose context window is under 64K tokens may truncate a full request. Serve a local model with a context of at least that size.
+- Answers are cached per model, and per endpoint, so switching models never reuses another model's answers. Switching back finds the earlier model's answers still cached.
+- A question the model refuses (an OpenAI Decisions `refusal`) is `inconclusive`, with the reason `<model> declined to answer`. It isn't cached, so it is asked again next run.
+- `--debug` prices tokens only for Clef. For other models, the cost column shows `-`.
+- Errors name the model: `error: typesafe/jev-latest responded with HTTP 401: …`. A configuration that can't work stops the run (exit 2) before anything is sent: an endpoint without `LINT_ANYTHING_MODEL`, an endpoint that isn't an http(s) URL, `LINT_ANYTHING_API_KEY` without an endpoint, or a model name like `typesafe/jev-latest` without an endpoint (Workers AI only serves Cloudflare models by name).
+- Every accuracy number in this README was measured on Clef. Clef-flash scored much worse on the same corpus (Evals, "Defaults of the removed flags"), so check another model on your own labels (`score.js`, below) or on the corpus (`bun evals/run.ts` with the same variables set) before trusting its verdicts.
 
 ## Policies
 
-There are no built-in policies, and the CLI adds nothing to what a policy asks. A policy is a Markdown file anywhere under the rules directory (subdirectories included) that says everything Clef is asked:
+There are no built-in policies, and the CLI adds nothing to what a policy asks. A policy is a Markdown file anywhere under the rules directory (subdirectories included) that says everything the decision model is asked:
 
-- the **body** (after the frontmatter) is the text of every request, sent exactly as written: the rule, and any framing or examples that help Clef judge it;
+- the **body** (after the frontmatter) is the text of every request, sent exactly as written: the rule, and any framing or examples that help the model judge it;
 - the **`select`** command decides what is judged: which files, which parts of them, and what context goes with each part. Each item it emits is one yes/no question;
 - the **`criteria`** say what a yes and a no mean: `true` describes an item that violates the rule, `false` one that follows it.
 
-The CLI reads Clef's yes as "this item violates the rule", so a policy must have both criteria. Without them, Clef may read the question as whether the item *follows* the rule, which inverts every verdict. With only `Rule: every TODO must reference a tracking issue like #123.` as the body and no criteria, `// TODO(#12): tracked` scored 0.94 (`violation`) and `// TODO: fix this later` scored 0.02 (`pass`). With criteria added, they scored 0.02 and 0.94. A body that says what to decide ("Decide whether it breaks the rule below") helps too.
+The CLI reads the model's yes as "this item violates the rule", so a policy must have both criteria. Without them, the model may read the question as whether the item *follows* the rule, which inverts every verdict. On Clef: With only `Rule: every TODO must reference a tracking issue like #123.` as the body and no criteria, `// TODO(#12): tracked` scored 0.94 (`violation`) and `// TODO: fix this later` scored 0.02 (`pass`). With criteria added, they scored 0.02 and 0.94. A body that says what to decide ("Decide whether it breaks the rule below") helps too.
 
 ````md
 ---
@@ -56,7 +88,7 @@ Rule: every `TODO` or `FIXME` comment must reference a tracking issue, written a
 
 A missing rules directory, one with no `.md` files, or an invalid policy stops the run.
 
-Policies are meant to be written and tuned by a coding agent: give it the rule you want and let it iterate on the selector, the body, and the criteria together, measured against labeled code (below). Because the CLI adds nothing, any way of asking Clef that a request can express is available to a policy. `evals/corpus/selectors-excerpts/` is the earlier CLI's whole-file judging written as policies: its selector cuts files into 1,000-byte excerpts, and its body and criteria are that CLI's own words.
+Policies are meant to be written and tuned by a coding agent: give it the rule you want and let it iterate on the selector, the body, and the criteria together, measured against labeled code (below). Because the CLI adds nothing, any way of asking the model that a request can express is available to a policy. `evals/corpus/selectors-excerpts/` is the earlier CLI's whole-file judging written as policies: its selector cuts files into 1,000-byte excerpts, and its body and criteria are that CLI's own words.
 
 `skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, writing and tuning policies, and the pitfalls selectors run into. It ships in the package (`node_modules/@andrueandersoncs/lint-anything/skills/lint-anything/`) with its score script; copy that directory into a coding agent's skills directory.
 
@@ -73,13 +105,13 @@ An item counts as a violation when its lines overlap a labeled violation, and a 
 
 ### Selectors
 
-- The selector runs once per lint run with `sh -c`, from the current directory, with no arguments, an empty stdin, and the CLI's environment (`.env` included) without any variable whose name starts with `CLOUDFLARE_`, so a policy's shell never sees the API token. It finds what it checks itself: the example above searches the `.ts` and `.tsx` files under the current directory (`rg` skips what `.gitignore` ignores). A selector can select things that aren't files (`git log`, an API, a database), or facts derived from them.
+- The selector runs once per lint run with `sh -c`, from the current directory, with no arguments, an empty stdin, and the CLI's environment (`.env` included) without any variable whose name starts with `CLOUDFLARE_` or `LINT_ANYTHING_`, so a policy's shell never sees the model's API token or key. It finds what it checks itself: the example above searches the `.ts` and `.tsx` files under the current directory (`rg` skips what `.gitignore` ignores). A selector can select things that aren't files (`git log`, an API, a database), or facts derived from them.
 - It must print JSONL, one item per line, with these fields and no others:
 
   | Field | Required | Meaning |
   | --- | --- | --- |
   | `id` | yes | Names the item in findings |
-  | `text` | yes | Everything Clef reads for this item: the code or text to judge and any context, laid out as the selector likes |
+  | `text` | yes | Everything the model reads for this item: the code or text to judge and any context, laid out as the selector likes |
   | `path` | no | The item's file, for findings |
   | `lines` | no | `[start, end]`, 1-based and inclusive, for findings |
 
@@ -95,7 +127,7 @@ An item counts as a violation when its lines overlap a labeled violation, and a 
 
 ### Counting items: `limit`
 
-A policy can count instead of reporting each item: with `limit`, its items are judged as usual, and then the policy reports one finding per file (or, with `per: run`, one for the whole run) that is a `violation` when more than `max` items are violations. Its reason says where the violating items are: their lines within the file, or (with `per: run`) their `path:lines`, else their ids. A group that isn't over the limit is `inconclusive` when its items too large to judge could put it over. With `per: file`, every item needs a `path`; an item without one stops the run (exit 2).
+A policy can count instead of reporting each item: with `limit`, its items are judged as usual, and then the policy reports one finding per file (or, with `per: run`, one for the whole run) that is a `violation` when more than `max` items are violations. Its reason says where the violating items are: their lines within the file, or (with `per: run`) their `path:lines`, else their ids. A group that isn't over the limit is `inconclusive` when its items that weren't judged (too large, or declined by the model) could put it over; the reason counts them by cause, as `N not judged (request too large)` or `N not judged (declined)`. With `per: file`, every item needs a `path`; an item without one stops the run (exit 2).
 
 ````md
 ---
@@ -117,20 +149,21 @@ Write the rule about one item, and put the count in `limit`: Clef judges items w
 
 ## How it works
 
-Each policy's selector runs from the current directory, then Clef judges the selected items. Up to 8 policies run at once, and at most 8 requests are in flight across the run. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing. Findings are printed in policy order.
+Each policy's selector runs from the current directory, then the decision model judges the selected items. Up to 8 policies run at once, and at most 8 requests are in flight across the run. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing. Findings are printed in policy order.
 
-A request holds at most 64 questions (Clef's limit) and 64,000 bytes. Items that don't fit in one request are split across several.
+A request holds at most 64 questions (Clef's limit) and 64,000 bytes, whichever model is asked. Items that don't fit in one request are split across several. Each request is POSTed to the model's endpoint with its API token or key as a bearer token: on Workers AI, `https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/<model>`; otherwise `LINT_ANYTHING_ENDPOINT` as given.
 
 | Result | Verdict |
 | --- | --- |
 | `violates ≤ 0.5` | `pass` |
 | `violates ≥ 0.65` | `violation` |
 | otherwise | `review`: uncertain, including cases where careful reviewers would disagree |
-| request with only that item over the byte limit | `inconclusive` (not sent; Clef would truncate it) |
+| request with only that item over the byte limit | `inconclusive` (not sent): `request is N bytes; Clef would truncate it`, or for another model `request is N bytes, over the 64000-byte request limit` |
+| the model refused the question (OpenAI Decisions) | `inconclusive`: `<model> declined to answer` |
 
-An attempt that hasn't returned its whole response within 60 seconds counts as a transient failure. Transient HTTP failures (timeouts, network errors, 408, 429, 5xx) are retried up to 3 times with exponential backoff, waiting at least as long as a `Retry-After` header asks. A request that still fails stops the run (exit 2) with the HTTP status and Cloudflare's error, or the network error.
+An attempt that hasn't returned its whole response within 60 seconds counts as a transient failure. Transient HTTP failures (timeouts, network errors, 408, 429, 5xx) are retried up to 3 times with exponential backoff, waiting at least as long as a `Retry-After` header asks. A request that still fails stops the run (exit 2) with the HTTP status and the endpoint's error, or the network error.
 
-Answers are cached on disk in one SQLite database, `.lint-anything/cache/answers.sqlite`, one row per question, keyed by the model, the request's text (the policy body), and the question (item text and criteria). Only questions whose inputs changed are sent: re-running when nothing changed sends nothing, and editing a policy re-asks only that policy. Each request's answers are written in one transaction as it returns, so a run stopped by a failed request keeps the answers it already received, and a crash can't leave a partial answer. Runs can share the cache at once (WAL mode; a writer waits up to 10 seconds for another's lock). A cache that can't be opened (for example, a file that isn't a SQLite database) stops the run (exit 2). Delete the directory to judge everything afresh.
+Answers are cached on disk in one SQLite database, `.lint-anything/cache/answers.sqlite`, one row per question, keyed by the model (for a model at `LINT_ANYTHING_ENDPOINT`, its URL and name), the request's text (the policy body), and the question (item text and criteria). Only questions whose inputs changed are sent: re-running when nothing changed sends nothing, and editing a policy re-asks only that policy. Each request's answers are written in one transaction as it returns, so a run stopped by a failed request keeps the answers it already received, and a crash can't leave a partial answer. Runs can share the cache at once (WAL mode; a writer waits up to 10 seconds for another's lock). A cache that can't be opened (for example, a file that isn't a SQLite database) stops the run (exit 2). Delete the directory to judge everything afresh.
 
 A cached answer stands for 30 days; each run starts by deleting older answers, so their questions are asked again, answers follow updates to the model, and the cache doesn't grow without bound. A row can only hold a probability between 0 and 1. With 50,000 cached answers the database is 5.5 MB, and a run that takes every answer from it reads them in under half a second.
 
@@ -138,7 +171,7 @@ Clef's answer to one question shifts a little with the other questions in its re
 
 ## Output
 
-The CLI prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the item's `path:start-end`, or its `id` when it has no path and lines. Clef answers only with a probability, so an item's reason is the policy's `criteria.true`: what the policy says a violation is. A `limit` finding gives its file's path, and its count and the violating items' places as the reason:
+The CLI prints one line per non-passing finding — verdict, violation probability, location, policy, and reason — then a count per verdict. The location is the item's `path:start-end`, or its `id` when it has no path and lines. A decision model answers only with a probability, so an item's reason is the policy's `criteria.true`: what the policy says a violation is. A `limit` finding gives its file's path, and its count and the violating items' places as the reason:
 
 ```
 violation     -      src/a.ts  todo-limit  2 of 3 items violate the rule (at most 1 allowed): 1-1, 3-3
@@ -149,7 +182,7 @@ violation     0.97   9acebc18  commits  The commit message doesn't say why.
 
 Only `violation` fails the run; `review` and `inconclusive` are reported but exit `0`.
 
-With `--debug`, the CLI also prints, to stderr after the findings (or before the error, if the run stops), what each policy cost: requests sent, answers taken from the cache, input tokens Clef reported, and their cost at Clef's input-token price, then the total:
+With `--debug`, the CLI also prints, to stderr after the findings (or before the error, if the run stops), what each policy cost: requests sent, answers taken from the cache, input tokens the model reported, and their cost at Clef's input-token price, then the total. For any other model the cost column is `-`, since lint-anything doesn't know its price; a line under the table counts requests whose response reported no token count.
 
 ```
 policy   requests  cached  input tokens  cost (USD)
@@ -162,7 +195,7 @@ total           1       3           379     $0.0001
 | --- | --- |
 | `0` | No violations |
 | `1` | At least one violation |
-| `2` | Invalid command line; policy, selector, configuration, or Clef API error |
+| `2` | Invalid command line; policy, selector, configuration, or decision model API error |
 | `130` | Interrupted (SIGINT or SIGTERM): running selectors are killed and answers already received stay cached |
 | `129` | Killed by SIGHUP (terminal closed): running selectors are killed first |
 
@@ -188,11 +221,15 @@ The package also exports the stages a run composes as an [Effect](https://effect
 | Export | What it does |
 | --- | --- |
 | `select(policy, cwd?, runs?)` | Runs a policy's selector; returns its items, sorted as they are judged |
-| `judge(policy, items)` | Each item's violation probability, or `RequestTooLarge` (needs `Clef`) |
+| `judge(policy, items)` | Each item's violation probability, or why there is none: `RequestTooLarge` or `Declined` (needs `DecisionModel`) |
 | `decide(policy, items, answers, threshold)` | Findings from those answers, `limit` included; pure |
 | `lint(policies, threshold)` | All three for every policy, as the CLI runs them |
-| `Clef.ask(source, state, questions)` | Yes/no questions under a shared state, packed, cached, retried; no policy needed |
-| `Clef.layer(cacheDirectory?)` | The `Clef` service; reads the environment variables above |
+| `DecisionModel.ask(source, state, questions)` | Yes/no questions under a shared state, packed, cached, retried; no policy needed |
+| `DecisionModel.layer(cacheDirectory?)` | The `DecisionModel` service for the model the environment variables above configure (`configuredTarget`) |
+| `DecisionModel.layerFor(target, cacheDirectory?)` | The same for a model given in code: `workersAiTarget({ accountId, token, model? })` or `endpointTarget({ url, model, token? })` |
+| `planRequests(state, questions, model?)` | The exact request bodies a model would be sent (default: Clef's) |
+
+`Clef` and `ClefError` remain as deprecated names for `DecisionModel` and `DecisionModelError`.
 | `loadPolicies(directory)`, `parsePolicy(name, source)` | Policies from Markdown (`loadPolicies` needs `FileSystem` and `Path`, e.g. `BunServices.layer` from `@effect/platform-bun`) |
 | `loadLabels(policy)`, `scorePolicy(policy, labels, cwd?)` | A policy scored against `.lint-anything/labels/<policy>.jsonl`: per labeled file and item, with reach |
 | `quality`, `auroc`, `pairedInterval`, `bootstrapInterval`, … | The metrics and 95% bootstrap intervals the evals and the score script report |
@@ -200,20 +237,20 @@ The package also exports the stages a run composes as an [Effect](https://effect
 ```ts
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
-import { Clef, decide, defaultThreshold, judge, loadPolicies, select } from "@andrueandersoncs/lint-anything"
+import { DecisionModel, decide, defaultThreshold, judge, loadPolicies, select } from "@andrueandersoncs/lint-anything"
 
 const findings = await Effect.runPromise(Effect.gen(function*() {
   const [policy] = yield* loadPolicies(".lint-anything/rules")
   const items = yield* select(policy!)
   return decide(policy!, items, yield* judge(policy!, items), defaultThreshold)
-}).pipe(Effect.provide(Layer.mergeAll(Clef.layer(".lint-anything/cache"), BunServices.layer))))
+}).pipe(Effect.provide(Layer.mergeAll(DecisionModel.layer(".lint-anything/cache"), BunServices.layer))))
 ```
 
 Selectors still run in their own process groups and are killed when the process exits. The library installs no signal handlers: a host that wants selectors killed on SIGHUP calls `killRunningSelectors()` from its own handler, as the CLI does.
 
 ## Evals
 
-`evals/` scores policies (body, selector, criteria) and request shapes against a hand-labeled corpus, so changes can be measured instead of guessed. Its item labeling, file scores, metrics, and intervals are `src/score.ts`, the same code the skill's score script reports with.
+`evals/` scores policies (body, selector, criteria) and request shapes against a hand-labeled corpus, so changes can be measured instead of guessed. Its item labeling, file scores, metrics, and intervals are `src/score.ts`, the same code the skill's score script reports with. The evals ask the decision model the CLI would, configured by the same environment variables: Clef by default, so `LINT_ANYTHING_ENDPOINT=… LINT_ANYTHING_MODEL=… bun evals/run.ts` scores another model on the same cases. Its per-case scores go to their own `….model-<name>` results directory.
 
 ```sh
 bun evals/validate.ts                      # check the corpus, print label counts per policy and origin
@@ -223,7 +260,7 @@ bun evals/run.ts --split test --origin real --category semantic
 bun evals/run.ts production single         # request shapes for the same items
 bun evals/run.ts --selectors evals/corpus/selectors-excerpts   # another set of policies vs. the corpus policies
 bun evals/history.ts                       # context from outside the file: a dated git fixture
-bun evals/shared.ts                        # a shared selector runs once (stub Clef, no requests)
+bun evals/shared.ts                        # a shared selector runs once (stub decision model, no requests)
 bun evals/examples.ts                      # examples written into the policy body, as few-shot
 bun evals/cutoffs.ts                       # per-policy cut-offs tuned on dev vs. global (stored scores)
 bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
@@ -270,7 +307,7 @@ bun evals/wordings.ts --split test         # each rule-wording set vs. the polis
   - contrast-pair ordering, and cost per 1,000 files.
 
   Verdicts use `--thresholds floor,threshold`, which defaults to the CLI's. The table also shows the cut-offs that would maximize F1 on the scored cases; pick them on dev and pass them to test. The first variant is the baseline, and intervals are 95% paired bootstraps that resample files, because cases in one file share requests.
-- **Cache**: replies are cached in `evals/.cache` by model and exact request body, since Clef is deterministic. Reruns and re-scoring are free; only new requests are sent. Per-case scores go to `evals/results/<split>[.<origins>][.<category>][.wording-<set>]/<variant>.jsonl`.
+- **Cache**: replies are cached in `evals/.cache` by model (Clef's under its name, as before other models) and exact request body, since a decision model is deterministic for a given body. Reruns and re-scoring are free and need no credentials; only new requests are sent. Per-case scores go to `evals/results/<split>[.<origins>][.<category>][.wording-<set>][.model-<name>]/<variant>.jsonl`, the model part only for a model other than Clef.
 
 Findings (2026-10-22, re-run 2026-10-23 with every answer from the cache; `run.ts --origin real --category semantic`, cut-offs 0.5 / 0.65):
 
@@ -349,7 +386,7 @@ Purpose: context from outside the file makes rules about time or history judgeab
 
 #### Shared selector runs
 
-Purpose: policies that share a selector don't repeat the work. `evals/shared.ts` lints this repository's `src/*.ts` with six policies that share one selector, against a stub Clef that sends no requests, and counts executions through a log the selector appends to: it runs once instead of six times, and the findings (516, 86 per policy) are the same as without sharing. Sharing is scoped to one lint run.
+Purpose: policies that share a selector don't repeat the work. `evals/shared.ts` lints this repository's `src/*.ts` with six policies that share one selector, against a stub decision model that sends no requests, and counts executions through a log the selector appends to: it runs once instead of six times, and the findings (516, 86 per policy) are the same as without sharing. Sharing is scoped to one lint run.
 
 #### Examples in the body
 
@@ -405,7 +442,7 @@ Each flag the CLI used to take is now fixed at one value. Whether that value is 
 | Flag | Fixed at | Evidence | Best default? |
 | --- | --- | --- | --- |
 | `--threshold` | floor 0.5, threshold 0.65 | `run.ts`, corpus policies (2026-10-22): the dev F1 maximum is 0.575 / 0.725 (all cases). On all test cases it gives F1 0.591 vs. 0.580, but catches 63% of violations instead of 73% and surfaces 80% instead of 86% (false alarms 8% vs. 12%) | yes: F1 is flat across both, and 0.5 / 0.65 finds more violations |
-| `--model` | `clef` | `run.ts` with the earlier request shape (cached answers): clef-flash AUROC 0.879 → 0.764 [−0.150, −0.081] on dev, 0.869 → 0.771 [−0.146, −0.051] on test; false alarms 4% → 32% (dev) | yes; the CLI and evals now support only `clef`, and the `clef-flash` code is removed |
+| `--model` | `clef` | `run.ts` with the earlier request shape (cached answers): clef-flash AUROC 0.879 → 0.764 [−0.150, −0.081] on dev, 0.869 → 0.771 [−0.146, −0.051] on test; false alarms 4% → 32% (dev) | yes: Clef stays the default. The flag stays removed; `LINT_ANYTHING_MODEL` and `LINT_ANYTHING_ENDPOINT` now pick another model (Run, "Choosing a decision model"), and the evals score whichever model they name |
 | `--no-cache` | cache on | `cache.ts` above | yes (on) |
 | `--changed-since` | off | Throwaway script on `adoption.ts`'s repository and stub (below) | yes (off) |
 | `--baseline` / `--write-baseline` | off | Same script | yes (off) |

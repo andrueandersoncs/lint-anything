@@ -1,31 +1,37 @@
-import { model } from "../src/clef.ts"
+import { Effect, Redacted, Result } from "effect"
+import { configuredModel, configuredTarget, decodeReply, type Model } from "../src/decision-model.ts"
 
-/** One answer as Clef returns it; `noul` for yes/no questions, `probabilities` for choices. */
-export interface Answer {
-  readonly type: string
-  readonly noul?: number
-  readonly probabilities?: Readonly<Record<string, number>>
-}
-
-export interface ClefReply {
-  readonly answers: Readonly<Record<string, Answer>>
+/** One reply: each question's probability of yes, or `declined`, by question id. */
+export interface Reply {
+  readonly answers: ReadonlyMap<string, number | "declined">
+  /** Input tokens the model reported for the original request; 0 when it reported none. */
   readonly inputTokens: number
   /** Round-trip time of the original (uncached) request. */
   readonly ms: number
   readonly cached: boolean
 }
 
+/**
+ * The decision model the evals ask: the one the CLI would, from the same variables (Clef on Workers AI
+ * unless `LINT_ANYTHING_ENDPOINT` or `LINT_ANYTHING_MODEL` says otherwise). Bodies are planned for it, and
+ * its replies are cached apart from other models'.
+ */
+export const model: Model = Effect.runSync(configuredModel)
+// Credentials are needed only to send: replies already cached are read without them.
+const target = Effect.runSync(Effect.result(configuredTarget))
+
 const cacheDirectory = `${import.meta.dir}/.cache`
 const attempts = 6
 
+/** A response that retrying cannot change. */
+class Rejected extends Error {}
+
 /**
- * Sends Clef requests with bounded concurrency and caches replies by model and exact body. Clef is
- * deterministic for a given body, so a cached reply stands in for a fresh one.
+ * Sends requests to the decision model with bounded concurrency and caches replies by the model's cache key
+ * and exact body (for Clef, its name: the keys replies were cached under before other models). A decision
+ * model is deterministic for a given body, so a cached reply stands in for a fresh one.
  */
 export const makeClient = (concurrency: number) => {
-  const accountId = Bun.env.CLOUDFLARE_ACCOUNT_ID
-  const token = Bun.env.CLOUDFLARE_AUTH_TOKEN
-  const baseUrl = Bun.env.CLOUDFLARE_API_BASE_URL ?? "https://api.cloudflare.com/client/v4"
   let active = 0
   const waiting: Array<() => void> = []
   const acquire = async () => {
@@ -37,17 +43,19 @@ export const makeClient = (concurrency: number) => {
     waiting.shift()?.()
   }
 
-  const send = async (body: string): Promise<{ json: any; ms: number }> => {
-    if (accountId === undefined || token === undefined) {
-      throw new Error("set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AUTH_TOKEN")
-    }
+  const send = async (body: string): Promise<{ json: unknown; ms: number }> => {
+    if (Result.isFailure(target)) throw new Error(target.failure.message)
+    const { url, token } = target.success
     for (let attempt = 1; ; attempt++) {
       const started = performance.now()
       let retryable: string
       try {
-        const response = await fetch(`${baseUrl}/accounts/${accountId}/ai/run/@cf/cloudflare/${model}`, {
+        const response = await fetch(url, {
           method: "POST",
-          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          headers: {
+            ...(token === undefined ? {} : { authorization: `Bearer ${Redacted.value(token)}` }),
+            "content-type": "application/json"
+          },
           body
         })
         const text = await response.text()
@@ -55,20 +63,20 @@ export const makeClient = (concurrency: number) => {
         if (response.ok) return { json: JSON.parse(text), ms }
         // 4006: the account's daily Workers AI allocation is spent; retrying cannot help.
         if ((response.status !== 429 && response.status < 500) || text.includes('"code":4006')) {
-          throw new Error(`Clef ${response.status}: ${text.slice(0, 500)}`)
+          throw new Rejected(`${model.name} ${response.status}: ${text.slice(0, 500)}`)
         }
         retryable = `${response.status}`
       } catch (error) {
-        if (error instanceof Error && error.message.startsWith("Clef ")) throw error
+        if (error instanceof Rejected) throw error
         retryable = String(error)
       }
-      if (attempt === attempts) throw new Error(`Clef failed after ${attempts} attempts: ${retryable}`)
+      if (attempt === attempts) throw new Error(`${model.name} failed after ${attempts} attempts: ${retryable}`)
       await Bun.sleep(500 * 2 ** attempt)
     }
   }
 
-  return async (body: string): Promise<ClefReply> => {
-    const key = new Bun.CryptoHasher("sha256").update(model).update("\0").update(body).digest("hex")
+  return async (body: string): Promise<Reply> => {
+    const key = new Bun.CryptoHasher("sha256").update(model.cacheKey).update("\0").update(body).digest("hex")
     const cacheFile = Bun.file(`${cacheDirectory}/${key.slice(0, 2)}/${key}.json`)
     if (await cacheFile.exists()) {
       const { json, ms } = await cacheFile.json()
@@ -85,11 +93,10 @@ export const makeClient = (concurrency: number) => {
   }
 }
 
-const reply = (json: any, ms: number, cached: boolean): ClefReply => {
-  const answers = json?.result?.answers
-  const inputTokens = json?.result?.usage?.input_tokens
-  if (typeof answers !== "object" || answers === null || typeof inputTokens !== "number") {
-    throw new Error(`unexpected Clef reply: ${JSON.stringify(json).slice(0, 500)}`)
+const reply = (json: unknown, ms: number, cached: boolean): Reply => {
+  const decoded = Effect.runSync(Effect.result(decodeReply(model.format, json)))
+  if (Result.isFailure(decoded)) {
+    throw new Error(`unexpected ${model.name} reply: ${JSON.stringify(json).slice(0, 500)}`)
   }
-  return { answers, inputTokens, ms, cached }
+  return { answers: decoded.success.answers, inputTokens: decoded.success.inputTokens ?? 0, ms, cached }
 }

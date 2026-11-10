@@ -1,4 +1,5 @@
-// Measures the answer cache through the CLI's own Clef path (real requests, a temporary cache): a re-run
+// Measures the answer cache through the CLI's own decision-model path (real requests to the configured
+// model, Clef by default, and a temporary cache): a re-run
 // should send nothing, an edit should send only the questions it changed, and verdicts of unedited files
 // should hold still. Lints 24 dev corpus files with five corpus policies through their own selectors: the
 // three whose items the edit below adds (comments, magic values, TODOs) and two that judge larger units.
@@ -9,7 +10,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
-import { Clef, sumUsage } from "../src/clef.ts"
+import { DecisionModel, sumUsage } from "../src/decision-model.ts"
 import { defaultThreshold, type Finding, lint } from "../src/lint.ts"
 import { loadCorpus } from "./corpus.ts"
 
@@ -33,8 +34,8 @@ const run = async (cache: boolean) => {
   const started = performance.now()
   const result = await Effect.runPromise(Effect.gen(function*() {
     const findings = yield* lint(policies, defaultThreshold)
-    return { findings, stats: sumUsage((yield* (yield* Clef).stats).values()) }
-  }).pipe(Effect.provide(Layer.mergeAll(Clef.layer(cache ? cacheDirectory : undefined), BunServices.layer))))
+    return { findings, stats: sumUsage((yield* (yield* DecisionModel).stats).values()) }
+  }).pipe(Effect.provide(Layer.mergeAll(DecisionModel.layer(cache ? cacheDirectory : undefined), BunServices.layer))))
   return { ...result, ms: performance.now() - started }
 }
 const key = (finding: Finding) => `${finding.policy}\0${finding.path ?? ""}\0${finding.item ?? ""}`

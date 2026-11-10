@@ -52,8 +52,11 @@ const start = async (select: string, cwd: string | undefined): Promise<SelectorO
   const child = Bun.spawn(["sh", "-c", select], {
     cwd,
     // The environment as it is now (Bun.spawn's default is the one the process started with), without the
-    // `CLOUDFLARE_` variables: a selector is a policy's shell, and the API token must not reach it.
-    env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("CLOUDFLARE_"))),
+    // `CLOUDFLARE_` and `LINT_ANYTHING_` variables: a selector is a policy's shell, and the decision model's
+    // API token or key must not reach it.
+    env: Object.fromEntries(
+      Object.entries(process.env).filter(([name]) => !name.startsWith("CLOUDFLARE_") && !name.startsWith("LINT_ANYTHING_"))
+    ),
     // An empty stdin (/dev/null): without one, tools such as rg search stdin when it is a pipe, so the
     // CLI's own stdin would silently become the selector's input.
     stdin: "ignore",

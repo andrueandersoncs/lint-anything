@@ -1,11 +1,11 @@
 ---
 name: lint-anything
-description: Run lint-anything, act on its findings, and write or tune its policies (plain-English rules in `.lint-anything/rules/*.md`, each with a shell selector, judged by a decision model: Cloudflare's Clef by default, or any System One or OpenAI Decisions endpoint). Use when a project has a `.lint-anything/` directory, when asked to lint code against semantic or prose rules, to fix lint-anything findings, or to add, debug, or tune a rule.
+description: Run lint-anything, act on its findings, and write or tune its policies (plain-English rules in `.lint-anything/rules/*.md`, each with a shell selector, judged by the decision model the project configures: any System One or OpenAI Decisions endpoint, or Workers AI). Use when a project has a `.lint-anything/` directory, when asked to lint code against semantic or prose rules, to fix lint-anything findings, or to add, debug, or tune a rule.
 ---
 
 # lint-anything
 
-lint-anything checks a codebase against rules written in English. Each rule is a **policy**: a Markdown file whose shell **selector** cuts out the items to judge (functions, comments, commits, anything), and whose body and **criteria** tell a decision model what a violation is: Cloudflare's Clef unless the project configures another. The model returns a violation probability for each item; the CLI turns it into a verdict.
+lint-anything checks a codebase against rules written in English. Each rule is a **policy**: a Markdown file whose shell **selector** cuts out the items to judge (functions, comments, commits, anything), and whose body and **criteria** tell a decision model what a violation is: whichever model the project configures. The model returns a violation probability for each item; the CLI turns it into a verdict.
 
 It is a guide more than a gate: semantic rules are judged probabilistically. On the project's eval corpus, well-written policies catch about 69% of real violations outright, surface about 85% (counting `review`), and raise false alarms on about 13% of clean cases. Read findings critically; don't assume every `violation` is real or every `pass` is clean.
 
@@ -22,8 +22,9 @@ If `lint-anything` isn't found, install it with `bun add -d @andrueandersoncs/li
 
 - **No arguments.** Every run checks every policy; you can't pass files, a rule name, a threshold, or an output format. To check less, change the selector. The only flag is `--debug`; `--help` and `--version` also exist.
 - **The working directory matters.** Policies are read from `./.lint-anything/rules`, and selectors run in the current directory. Run from a subdirectory and you get `error: cannot read policies in .lint-anything/rules`: there is no upward search.
-- **Credentials:** `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_AUTH_TOKEN` for Clef on Workers AI, from the environment or from `.env` / `.env.local` in the current directory. They are required on every run, even when every answer would come from the cache. `CLOUDFLARE_API_BASE_URL` is optional.
-- **Another decision model:** `LINT_ANYTHING_MODEL` picks another Cloudflare model on Workers AI (`clef-flash`). With `LINT_ANYTHING_ENDPOINT` (a full URL), the model named by `LINT_ANYTHING_MODEL` is asked there instead, and `LINT_ANYTHING_API_KEY` is its bearer token if it needs one. An endpoint whose path ends in `/decisions` speaks OpenAI's Decisions API; any other speaks System One (`/v1/systemone`: Jev, LiteLLM, LLM Gateway, and most decision-model servers). These are the project's choice, so don't change them to make findings go away. Accuracy numbers in this skill were measured on Clef: a project on another model should score it on its labels before trusting it.
+- **The decision model** is the project's choice, set in the environment or in `.env` / `.env.local` in the current directory. Don't change it to make findings go away. With `LINT_ANYTHING_ENDPOINT` (a full URL), the model named by `LINT_ANYTHING_MODEL` is asked there, and `LINT_ANYTHING_API_KEY` is its bearer token if it needs one. An endpoint whose path ends in `/decisions` speaks OpenAI's Decisions API; any other speaks System One (`/v1/systemone`: Jev, LiteLLM, LLM Gateway, and most decision-model servers).
+- **Without an endpoint**, a Cloudflare model on Workers AI is asked: `clef`, or another that `LINT_ANYTHING_MODEL` names (`clef-flash`). `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_AUTH_TOKEN` are then required on every run, even when every answer would come from the cache. `CLOUDFLARE_API_BASE_URL` is optional.
+- **Accuracy numbers in this skill were measured on Clef.** A project on another model should score it on its labels before trusting it.
 - **Add `.lint-anything/cache` to `.gitignore`.** The answer cache (`answers.sqlite` plus `-wal`/`-shm` files) is written there.
 
 ### Output
@@ -174,7 +175,7 @@ Selectors can select things other than files: `git log`, an API, a database. Use
 What decides accuracy is what the item's text says (from the evals):
 
 - **Items must reach every possible violation.** A violation that no item contains can't be found.
-- **Compute facts; don't make the model derive them.** For "TODOs older than 90 days need an issue", giving the TODO's age in days scored 99% accuracy. Giving its commit date and today's date scored 84%, and the TODO alone 76%. Clef doesn't do date math or counting. Do it in the selector, with `git blame` or a script.
+- **Compute facts; don't make the model derive them.** For "TODOs older than 90 days need an issue", giving the TODO's age in days scored 99% accuracy. Giving its commit date and today's date scored 84%, and the TODO alone 76%. Don't rely on the model for date math or counting (Clef got both wrong on the evals). Do it in the selector, with `git blame` or a script.
 - **Add only the context the rule turns on**: the enclosing function for a magic number, the call sites for a flag parameter, whether a symbol is used for a public-surface rule. Context costs input tokens.
 - **Line numbers in `text` reduce cache hits.** The cache is keyed on the text, so `"text": "src/a.ts:42: …"` gets asked again whenever a line above it is added or removed. Location is already in `path`/`lines`. Put the path in the text only if the rule needs it (test-file rules, say), and put line numbers in only if the rule needs them.
 - **Selectors built for a rule beat generic ones.** If you reword a rule, check its selector still reaches what the new wording covers.
@@ -231,7 +232,7 @@ The lint-anything repository has worked examples: 21 policies in `evals/corpus/p
 - Each answer is cached per question, keyed by model (and endpoint), policy body, item text, and criteria. Switching models never reuses another model's answers. Re-running with nothing changed sends no requests, and an edit re-asks only the items whose text changed. Editing a policy's body or criteria re-asks all of that policy's items.
 - Answers expire after 30 days, so everything is asked again about once a month, and verdicts can shift slightly if the model has been updated.
 - A machine without the cache (a fresh CI runner) pays for every item on every run, unless CI keeps `.lint-anything/cache` between runs.
-- Clef's pricing is $0.24 per million input tokens; output is free. `--debug` prices only Clef; on another model its cost column is `-`, and the project's provider bills it. On the evals, rule-specific selectors cost about $14–16 per 1,000 files across 17 rules. Nothing caps spending: a selector that emits every line of a large repository sends all of them, so check the item count by hand first.
+- Cost depends on the model. `--debug` prices only Clef ($0.24 per million input tokens; output is free); on another model its cost column is `-`, and the project's provider bills it. On the evals, with Clef, rule-specific selectors cost about $14–16 per 1,000 files across 17 rules. Nothing caps spending: a selector that emits every line of a large repository sends all of them, so check the item count by hand first.
 - Deleting `.lint-anything/cache` forces a fresh judgment of everything.
 
 ## Quick checklist for a new policy

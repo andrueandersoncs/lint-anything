@@ -6,7 +6,7 @@
     <title>lint-anything — Lint what static analysis can't</title>
     <meta
       name="description"
-      content="Check code, commits, and anything a shell command can select against rules written in plain English, judged one yes-or-no question at a time by a decision model: Cloudflare's Clef, or any System One or OpenAI Decisions endpoint."
+      content="Check code, commits, and anything a shell command can select against rules written in plain English, judged one yes-or-no question at a time by the decision model of your choice: any System One or OpenAI Decisions endpoint, or Workers AI."
     >
     <meta name="theme-color" content="#09090b">
     <meta property="og:type" content="website">
@@ -14,7 +14,7 @@
     <meta property="og:title" content="lint-anything — If you can say it, you can lint it">
     <meta
       property="og:description"
-      content="Plain-English lint rules for coding agents, judged by a decision model such as Cloudflare's Clef."
+      content="Plain-English lint rules for coding agents, judged by the decision model of your choice."
     >
     <meta
       property="og:image"
@@ -117,8 +117,8 @@
           </h1>
           <p class="hero-description">
             lint-anything checks code, commits, and anything else a shell command
-            can select against rules written in plain English. A decision model
-            such as Cloudflare's Clef judges every item as a yes-or-no question.
+            can select against rules written in plain English. The decision model
+            of your choice judges every item as a yes-or-no question.
           </p>
           <div class="hero-actions">
             <a href="#start" class="btn btn-primary">
@@ -180,7 +180,7 @@ violation     0.94   src/report.ts:6-6  todo-has-issue  The comment has no track
             </figure>
           </div>
           <p class="hero-hint">
-            Real policies, real output from Clef. The background is a field of
+            Real policies, real model output. The background is a field of
             items waiting to be judged: hover to inspect one, click to judge a few.
           </p>
         </div>
@@ -398,7 +398,7 @@ written as `#123`, `ABC-123`, or a full issue URL.</code></pre>
       <section id="selectors" class="section selectors">
         <div class="section-header reveal">
           <span class="section-badge">Select anything</span>
-          <h2 class="section-title">If a command can print it, Clef can judge it</h2>
+          <h2 class="section-title">If a command can print it, a model can judge it</h2>
           <p class="section-description">
             Selectors cut out exactly what a rule is about, and put the context
             it needs into each item. Every finding below came from running these
@@ -549,7 +549,7 @@ criteria:
           <div class="scale-head">
             <h3>Every item gets a probability. Two cut-offs make it a verdict.</h3>
             <p>
-              The 19 items from the policies above, as Clef answered them. Hover
+              The 19 items from the policies above, as the model answered them. Hover
               or tap a point to see which item it is.
             </p>
           </div>
@@ -654,8 +654,9 @@ total                         4      14          1022     $0.0002</code></pre>
           <span class="section-badge">Evals</span>
           <h2 class="section-title">Measured on code nobody wrote for it</h2>
           <p class="section-description">
-            17 semantic rules on the test split: real files, copied verbatim
-            from open-source projects and labeled by two model families.
+            17 semantic rules on the test split, judged by Clef: real files,
+            copied verbatim from open-source projects and labeled by two model
+            families. The same evals score any other decision model.
           </p>
         </div>
         <div class="stats-grid spotlight-group">
@@ -787,21 +788,23 @@ bun .claude/skills/lint-anything/scripts/score.js todo-has-issue candidate.md</c
           <li class="step reveal">
             <div class="step-number">2</div>
             <div class="step-content">
-              <h3>Connect Workers AI</h3>
+              <h3>Connect a decision model</h3>
               <p>
-                Your Cloudflare account ID and an API token. Bun loads
-                <code>.env</code> and <code>.env.local</code> on its own.
+                Any System One or OpenAI Decisions endpoint, such as a LiteLLM
+                proxy or OpenAI. With no endpoint set, lint-anything asks Clef on
+                Workers AI with your Cloudflare account ID and an API token. Bun
+                loads <code>.env</code> and <code>.env.local</code> on its own.
               </p>
               <div class="code-block terminal">
-                <pre><code data-highlight="shell">echo 'CLOUDFLARE_ACCOUNT_ID=...' >> .env
+                <pre><code data-highlight="shell"># any System One or OpenAI Decisions endpoint
+echo 'LINT_ANYTHING_ENDPOINT=http://localhost:4000/v1/systemone' >> .env
+echo 'LINT_ANYTHING_MODEL=...' >> .env
+echo 'LINT_ANYTHING_API_KEY=...' >> .env
+# or, with no endpoint, Workers AI
+echo 'CLOUDFLARE_ACCOUNT_ID=...' >> .env
 echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
 echo '.lint-anything/cache' >> .gitignore</code></pre>
               </div>
-              <p>
-                Or ask another decision model: set <code>LINT_ANYTHING_ENDPOINT</code>
-                to any System One or OpenAI Decisions endpoint, with
-                <code>LINT_ANYTHING_MODEL</code> and <code>LINT_ANYTHING_API_KEY</code>.
-              </p>
             </div>
           </li>
           <li class="step reveal">
@@ -910,7 +913,7 @@ const findings = await Effect.runPromise(Effect.gen(function*() {
             <a href="https://github.com/andrueandersoncs/lint-anything/blob/main/README.md" target="_blank" rel="noopener">Documentation</a>
             <a href="https://github.com/andrueandersoncs/lint-anything/blob/main/skills/lint-anything/SKILL.md" target="_blank" rel="noopener">Agent skill</a>
             <a href="https://github.com/andrueandersoncs/lint-anything/blob/main/evals/RESEARCH.md" target="_blank" rel="noopener">Research notebook</a>
-            <a href="https://developers.cloudflare.com/workers-ai/models/clef/" target="_blank" rel="noopener">Clef on Workers AI</a>
+            <a href="https://github.com/andrueandersoncs/lint-anything/blob/main/README.md#choosing-a-decision-model" target="_blank" rel="noopener">Choosing a decision model</a>
           </div>
           <div class="footer-column">
             <h4>Package</h4>

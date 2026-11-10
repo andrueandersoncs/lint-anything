@@ -1,6 +1,6 @@
 # lint-anything
 
-Check anything against plain-English policies, judged by a decision model: Cloudflare's [Clef](https://developers.cloudflare.com/workers-ai/models/clef/) on Workers AI by default, or any model served behind a System One or OpenAI Decisions endpoint. A policy's selector decides what is checked: parts of files, facts derived from them, a repository's history, a third-party service.
+Check anything against plain-English policies, judged by the decision model of your choice: any model served behind a System One or OpenAI Decisions endpoint, or, with no endpoint set, a Cloudflare model on Workers AI ([Clef](https://developers.cloudflare.com/workers-ai/models/clef/) unless you name another). A policy's selector decides what is checked: parts of files, facts derived from them, a repository's history, a third-party service.
 
 ## Run
 
@@ -8,37 +8,43 @@ Requires [Bun](https://bun.sh) 1.2.23 or later, plus whatever your policies' sel
 
 ```sh
 bun add -d @andrueandersoncs/lint-anything   # or: bun add -g @andrueandersoncs/lint-anything
+
+# a decision model: any System One or OpenAI Decisions endpoint…
+echo 'LINT_ANYTHING_ENDPOINT=http://localhost:4000/v1/systemone' >> .env
+echo 'LINT_ANYTHING_MODEL=...' >> .env
+echo 'LINT_ANYTHING_API_KEY=...' >> .env     # if the endpoint needs one
+# …or, with no endpoint, Workers AI
 echo 'CLOUDFLARE_ACCOUNT_ID=...' >> .env
 echo 'CLOUDFLARE_AUTH_TOKEN=...' >> .env
+
 bunx lint-anything                          # from the project root
 ```
 
 The command is `lint-anything`. It runs on Bun, not Node: without Bun on the `PATH` it fails with `env: bun: No such file or directory`.
 
-The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by a decision model (`clef` unless configured otherwise, below) and printed as text. Answers are cached in `.lint-anything/cache/answers.sqlite` (add `.lint-anything/cache` to `.gitignore`). Effect CLI also provides its global flags (`--help`, `--version`, `--wizard`, `--completions`, `--log-level`); they are expected and stay.
+The CLI takes no arguments, and one flag, `--debug`: each run checks every policy. Policies are read from `.lint-anything/rules` under the current directory, and each policy's selector finds what it checks. Items are judged by the decision model the environment configures (below) and printed as text. Answers are cached in `.lint-anything/cache/answers.sqlite` (add `.lint-anything/cache` to `.gitignore`). Effect CLI also provides its global flags (`--help`, `--version`, `--wizard`, `--completions`, `--log-level`); they are expected and stay.
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID` | for Workers AI | Workers AI account |
-| `CLOUDFLARE_AUTH_TOKEN` | for Workers AI | API token |
-| `CLOUDFLARE_API_BASE_URL` | no | Defaults to `https://api.cloudflare.com/client/v4` |
-| `LINT_ANYTHING_ENDPOINT` | no | Another decision endpoint, as a full URL: the model is asked there instead of on Workers AI, and the `CLOUDFLARE_` variables aren't needed |
-| `LINT_ANYTHING_MODEL` | with `LINT_ANYTHING_ENDPOINT` | The model to ask. Without an endpoint, a Cloudflare model on Workers AI: `clef` (the default) or, for example, `clef-flash` |
+| `LINT_ANYTHING_ENDPOINT` | no | The decision endpoint to ask, as a full URL: any System One or OpenAI Decisions endpoint. Without it, the model is asked on Workers AI |
+| `LINT_ANYTHING_MODEL` | with `LINT_ANYTHING_ENDPOINT` | The model to ask. Without an endpoint, a Cloudflare model on Workers AI: `clef` unless set, or, for example, `clef-flash` |
 | `LINT_ANYTHING_API_KEY` | no | Bearer token for `LINT_ANYTHING_ENDPOINT`, if it needs one |
+| `CLOUDFLARE_ACCOUNT_ID` | without an endpoint | Workers AI account |
+| `CLOUDFLARE_AUTH_TOKEN` | without an endpoint | Workers AI API token |
+| `CLOUDFLARE_API_BASE_URL` | no | Defaults to `https://api.cloudflare.com/client/v4` |
 
 Bun loads `.env` and `.env.local` from the current directory automatically. An empty variable counts as unset.
 
 ### Choosing a decision model
 
-A decision model answers yes/no questions with the probability of yes instead of writing text. Clef is one. lint-anything asks whichever model the environment names, and speaks the two decision APIs:
+A decision model answers yes/no questions with the probability of yes instead of writing text. lint-anything isn't tied to one: it asks whichever model the environment names, and speaks the two decision APIs:
 
 - **System One** (`POST …/v1/systemone`), the API Jev introduced: a `state`, then `noul` questions keyed by id, each with `instructions` and `criteria`. Clef on Workers AI speaks it, and so do most hosts and servers of decision models, such as [LiteLLM](https://docs.litellm.ai/docs/decisions)'s proxy (which routes to Jev, Clef, Perplexity, Databricks, Microsoft Foundry, vLLM, and others) and [LLM Gateway](https://llmgateway.io/blog/llm-decision-api).
 - **OpenAI Decisions** (`POST …/v1/decisions`), used when the endpoint's path ends in `/decisions`: an `input`, then `predicate` questions. A predicate has no criteria, so each question's instructions are the item's text followed by `true: <criteria.true>` and `false: <criteria.false>` lines, as LiteLLM does when it sends criteria to OpenAI.
 
-```sh
-# Clef-flash on Workers AI, with the CLOUDFLARE_ credentials above
-LINT_ANYTHING_MODEL=clef-flash
+With no endpoint set, the model is a Cloudflare model on Workers AI, asked with the `CLOUDFLARE_` credentials: `clef` unless `LINT_ANYTHING_MODEL` names another.
 
+```sh
 # any System One server, such as a LiteLLM proxy
 LINT_ANYTHING_ENDPOINT=http://localhost:4000/v1/systemone
 LINT_ANYTHING_MODEL=typesafe/jev-latest
@@ -48,6 +54,9 @@ LINT_ANYTHING_API_KEY=sk-...
 LINT_ANYTHING_ENDPOINT=https://api.openai.com/v1/decisions
 LINT_ANYTHING_MODEL=gpt-6-luna-decisions
 LINT_ANYTHING_API_KEY=sk-...
+
+# Clef-flash on Workers AI, with the CLOUDFLARE_ credentials
+LINT_ANYTHING_MODEL=clef-flash
 ```
 
 - Every model is asked the same way: the same request text, at most 64 questions and 64,000 bytes per request, the same 0.5 / 0.65 cut-offs. A model whose context window is under 64K tokens may truncate a full request. Serve a local model with a context of at least that size.
@@ -55,7 +64,7 @@ LINT_ANYTHING_API_KEY=sk-...
 - A question the model refuses (an OpenAI Decisions `refusal`) is `inconclusive`, with the reason `<model> declined to answer`. It isn't cached, so it is asked again next run.
 - `--debug` prices tokens only for Clef. For other models, the cost column shows `-`.
 - Errors name the model: `error: typesafe/jev-latest responded with HTTP 401: …`. A configuration that can't work stops the run (exit 2) before anything is sent: an endpoint without `LINT_ANYTHING_MODEL`, an endpoint that isn't an http(s) URL, `LINT_ANYTHING_API_KEY` without an endpoint, or a model name like `typesafe/jev-latest` without an endpoint (Workers AI only serves Cloudflare models by name).
-- Every accuracy number in this README was measured on Clef. Clef-flash scored much worse on the same corpus (Evals, "Defaults of the removed flags"), so check another model on your own labels (`score.js`, below) or on the corpus (`bun evals/run.ts` with the same variables set) before trusting its verdicts.
+- Every accuracy number in this README was measured on Clef, the model the evals were built with. Clef-flash scored much worse on the same corpus (Evals, "Defaults of the removed flags"), so check another model on your own labels (`score.js`, below) or on the corpus (`bun evals/run.ts` with the same variables set) before trusting its verdicts.
 
 ## Policies
 
@@ -119,7 +128,7 @@ An item counts as a violation when its lines overlap a labeled violation, and a 
 - A selector still running after 10 minutes is killed, with every process it started, and stops the run (exit 2).
 - From the evals:
   - Items must reach every place a violation can be: a selector whose items miss the violating lines can't find them.
-  - Context belongs in each item's text, and computed facts beat raw data: a TODO's age in days lets Clef judge "older than 90 days" at 99% accuracy; its commit date and today's date do not. Context costs input tokens.
+  - Context belongs in each item's text, and computed facts beat raw data: a TODO's age in days lets the model judge "older than 90 days" at 99% accuracy; its commit date and today's date do not. Context costs input tokens.
   - Packing a policy's items as questions of one request matches one request per item and costs 2.4× less.
 - An item's answer is cached by its text, so whatever the text holds decides when it is asked again. Line numbers in the text (as in the example above) re-ask every item below an edit in that file; text without them stays cached until the item itself changes. `path` and `lines` set the finding's location either way.
 - Structural units (functions, classes, handlers, tests) are easiest to select with a syntax-aware tool such as [ast-grep](https://ast-grep.github.io/). The eval corpus's policies (`evals/corpus/policies/`) and their scripts (`evals/steps/`) are worked examples: a selector lists the files it judges (`rg --files -g '*.ts'`) and pipes their paths to a script that cuts out the units.
@@ -129,7 +138,7 @@ An item counts as a violation when its lines overlap a labeled violation, and a 
 
 Each policy's selector runs from the current directory, then the decision model judges the selected items. Up to 8 policies run at once, and at most 8 requests are in flight across the run. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing. Findings are printed in policy order.
 
-A request holds at most 64 questions (Clef's limit) and 64,000 bytes, whichever model is asked. Items that don't fit in one request are split across several. Each request is POSTed to the model's endpoint with its API token or key as a bearer token: on Workers AI, `https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/<model>`; otherwise `LINT_ANYTHING_ENDPOINT` as given.
+A request holds at most 64 questions and 64,000 bytes, whichever model is asked (Clef's limits; every decision API that documents a limit allows at least as many questions). Items that don't fit in one request are split across several. Each request is POSTed to the model's endpoint with its API token or key as a bearer token: on Workers AI, `https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/<model>`; otherwise `LINT_ANYTHING_ENDPOINT` as given.
 
 | Result | Verdict |
 | --- | --- |
@@ -145,7 +154,7 @@ Answers are cached on disk in one SQLite database, `.lint-anything/cache/answers
 
 A cached answer stands for 30 days; each run starts by deleting older answers, so their questions are asked again, answers follow updates to the model, and the cache doesn't grow without bound. A row can only hold a probability between 0 and 1. With 50,000 cached answers the database is 5.5 MB, and a run that takes every answer from it reads them in under half a second.
 
-Clef's answer to one question shifts a little with the other questions in its request (see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers; with the cache, an edit in one file also leaves the verdicts of every other file as they were.
+A model's answer to one question can shift a little with the other questions in its request (Clef's does; see Evals). A selector's items are sorted by path, line, and id before they are packed, so the same items always get the same answers; with the cache, an edit in one file also leaves the verdicts of every other file as they were.
 
 ## Output
 
@@ -358,7 +367,7 @@ Purpose: context from outside the file makes rules about time or history judgeab
 | … and its computed age in days | **1.000** [+0.077, +0.175] | **0.009** [−0.152, −0.099] | **99%** [+16, +31 pts] | **97%** | **0%** | 98% / 0% | $0.044 |
 
 - The purpose holds once the item states the fact the rule turns on. With the age in days, accuracy rises from 76% to 99% and false alarms from issue-less young TODOs vanish.
-- Clef doesn't do the date arithmetic: given today's date and each commit date, it still flags 88% of young issue-less TODOs. Compute facts in the selector; don't ask Clef to derive them.
+- Clef doesn't do the date arithmetic: given today's date and each commit date, it still flags 88% of young issue-less TODOs. Compute facts in the selector; don't ask the model to derive them.
 
 #### Shared selector runs
 

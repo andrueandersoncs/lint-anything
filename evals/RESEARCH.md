@@ -79,6 +79,8 @@ Clear semantic violations per policy:
 | H22 | correctness | With nothing added by the CLI, a policy can reproduce the excerpt CLI (H19) exactly in score, so a rule's own selector has it as a floor | supported: excerpt policies 0.918 / 0.914 vs. H19 0.914 / 0.913 (dev / test, intervals include 0); rule selectors beat them by +0.016 to +0.019 pooled; per rule, no-flag-parameters loses on test |
 | H23 | completeness | Clustering review comments rediscovers a repo's documented code norms (rule mining, step 4) | partly: 38% of documented norms reviewers invoked come back as a theme (20% in the top 20); 59% of themes share no norm; ~2.5 undocumented norms per repo from ≥ 2 reviewers. Clustering raw prose is the bottleneck |
 | H24 | correctness, efficiency, speed | Clef served by Flide (exact state forking, arXiv 2610.42148) matches Clef on Workers AI, and forking makes answers independent of packing | partly tested: on Workers AI, asking each item alone ranks worse than packing (item AUROC 0.894 vs. 0.915, 13,560 dev items); Flide does not fork Clef; GPU runs skipped |
+| H25 | correctness | Checking candidate after candidate on one test split adopts candidates that are no better | supported: within ten no-better candidates, 23% (10 + 10 test files) to 34% (20 + 20) of tuning runs adopt one, reporting +0.10 to +0.16 AUROC that fresh files don't show; picking on dev and deciding once on test stays at 2–7% |
+| H26 | correctness | The corpus test split has been read often but has rarely chosen a default | supported: test numbers in 9 entries (19 with pooled cases); it chose 2 defaults, each one check of a dev-tuned cut-off, and confirmed 8 that dev already supported. Spent for new decisions; a fresh holdout is about 216 real files labeled with the H11 protocol |
 
 Order of work: H1 (sizes every later sample), H2 (gates any labeling at scale), then H3/H4, H5, H7, H6,
 H9, H8. Corpus growth (2026-10-21): H10, H11 while labeling new files, H12 while planting, then H13, H14, H15
@@ -1002,6 +1004,159 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
 - **Status**: GPU runs skipped (2026-11-11; no NVIDIA GPU at hand). Predictions (a)–(d) stand untested;
   the method above runs them as written once a GPU box serves Flide.
 
+## H25: a test split that keeps deciding stops being held out
+
+- **Context**: the skill's tuning loop (before this entry) told an agent to score each candidate with
+  `score.js` and adopt it when test improves outside noise. `score.js` prints test for every candidate,
+  so an agent that tries ten candidates checks ten times against the same test files. Adage's eval
+  protocol has the opposite rule: a set whose result informs a decision is spent.
+- **Hypothesis**: checking one test split candidate after candidate adopts candidates that are no better
+  than the current policy, and the bigger the gain a test split reports at adoption, the less of it is real.
+- **Prediction** (written before running):
+  - (a) One check: with 10 violating and 10 clean test files, a candidate no better than the current
+    policy is adopted 3–10% of the time (above the 2.5% one metric would give: three metrics can each
+    "improve", and a percentile bootstrap over 20 targets is too narrow).
+  - (b) Ten candidates checked on the same test split: ≥ 25% of tuning runs adopt at least one candidate
+    that is no better, at 10 + 10 test files; ≥ 15% at 20 + 20.
+  - (c) Picking the candidate on dev and checking only it on test keeps the single-check rate for any
+    number of candidates.
+  - (d) At adoption, the test split reports an AUROC gain ≥ +0.05 (10 + 10); on fresh files the same
+    candidate's gain is within ±0.01 of 0.
+- **Method** (`evals/spent.ts`; stored results only, no requests): the real semantic file cases of the
+  current corpus, dev and test pooled per policy (violates and complies; ambiguous and not-applicable
+  left out). Each file case has three stored scores, under rule selectors (`production`), whole-file
+  judging (`production,chunk=0`), and 4,000-byte excerpts (`production,shape=file,chunk=4000`). A policy
+  *version* draws each file's score from one of the three at random, so every version is exactly as good
+  as every other and any adoption is false; the spread between strategies stands for the noise of a real
+  rewrite. A run picks an eligible policy at random and samples disjoint sets of n violating + n clean
+  files. The adoption rule is `score.js`'s: paired 95% bootstrap over files (2,000 resamples) for AUROC,
+  caught, and false alarms; adopt when one improves outside noise and none worsens outside noise.
+  - Loop A (the skill before H25): candidates are checked on the same test files one by one against the
+    current policy; record whether any is adopted within K candidates, and at the first adoption, its
+    test AUROC gain and its gain on fresh files.
+  - Loop B (the rule H25 proposes): K candidates compared on dev files by AUROC gain, the best one
+    checked once on test.
+- **Result** (2026-11-11; `bun evals/spent.ts`, 400 runs per size, seed 1; 4,921 file cases, 17
+  policies; 0 requests). Share of tuning runs that adopt a candidate no better than the current policy
+  [95% Wilson]:
+
+  | Test files per class | Policies | Loop A, K = 1 | K = 3 | K = 5 | K = 10 | K = 20 | Loop B, K = 10 | K = 20 |
+  |---|---|---|---|---|---|---|---|---|
+  | 5 + 5 | 16 | 0.5% | 2.3% | 4.8% | 7.0% | 9.5% [7.0, 12.8] | 1.0% | 0.8% |
+  | 10 + 10 | 14 | 4.3% [2.7, 6.7] | 9.5% | 15.0% | 23.3% [19.4, 27.6] | 31.0% [26.7, 35.7] | 4.5% | 3.8% [2.3, 6.1] |
+  | 20 + 20 | 11 | 6.5% [4.5, 9.4] | 16.5% | 24.5% | 33.5% [29.1, 38.3] | 44.0% [39.2, 48.9] | 6.8% | 6.8% [4.7, 9.6] |
+  | 40 + 40 | 6 | 6.0% [4.1, 8.8] | 17.3% | 22.3% | 29.3% [25.0, 33.9] | 40.3% [35.6, 45.1] | 6.0% | 5.0% [3.3, 7.6] |
+
+  Loop B at K = 1, 3, 5 stays in the same band (0.5–1.0%, 2.3–3.8%, 5.8–7.3%, 4.0–4.8% by size).
+  Loop A at its first adoption, mean AUROC gain on the test files that adopted the candidate vs. on fresh
+  files: +0.243 vs. +0.017 (5 + 5, 38 adoptions), +0.156 vs. −0.005 (10 + 10, 124), +0.098 vs. +0.008
+  (20 + 20, 176), +0.068 vs. +0.006 (40 + 40, 161).
+  - (a) holds: one check adopts a no-better candidate 4.3% of the time at 10 + 10 (2.3% in loop B's
+    independent draws), and 5–7% from 20 + 20 up. That is the floor for any rule that decides on test.
+  - (b) holds at 20 + 20 (33.5% within ten candidates) and falls just short at 10 + 10 (23.3%, interval
+    includes 25%). More labels don't protect a reused test split: with narrower intervals each check
+    clears more often, so the rate climbs faster at 20 + 20 and 40 + 40 than at 10 + 10. At 5 + 5 almost
+    nothing clears at all.
+  - (c) holds: picking on dev and checking once on test stays at the single-check rate for 1 to 20
+    candidates.
+  - (d) holds: the test split that adopted a candidate reports +0.07 to +0.24 AUROC; on fresh files the
+    same candidate gains nothing (−0.005 to +0.017).
+- **Conclusion**: supported. A test split that keeps deciding becomes a tuning set: after ten candidates,
+  a quarter to a third of tuning runs have adopted a change that is no better, and the gain they report
+  is noise. The skill's tuning loop now picks on dev and decides once on test, and a test split that has
+  decided is spent: its files move to dev, and the next decision gets freshly labeled test files.
+- **Caveats**: candidates here are independent draws; an agent's successive edits are correlated, which
+  would slow loop A's climb. The noise stands for a large rewrite (three judging strategies); small
+  edits move scores less. Only file-level AUROC, caught, and false alarms, as `score.js` reports them.
+
+## H26: which defaults the corpus test split chose
+
+- **Context**: H25 shows a test split that keeps deciding stops being held out. The constraints above say
+  "strategies and cut-offs are chosen on dev only", but most entries report test. Has the corpus test
+  split chosen anything, and is it spent?
+- **Hypothesis**: the corpus test split has been read often but has rarely chosen: the shipped defaults
+  were already supported on dev, and test confirmed them.
+- **Prediction** (written before the audit; the index rows, H13, H21–H24, and README's selector findings
+  had been read in this session):
+  - (a) Test numbers appear in at least 15 of the 25 entries H1–H25.
+  - (b) At least 3 shipped defaults or removals cite test in the entry or README row that made them.
+  - (c) For at least two thirds of those, dev alone already supported the same decision (dev interval
+    excludes 0 in the same direction, or dev chose it by rule), so test confirmed rather than chose.
+  - (d) At least one decision went with test where dev pointed the other way or was within noise.
+- **Method**: read every entry H1–H24 and README's findings (sections after "Evals"), list each decision
+  that changed the CLI, the policy format, the corpus policies, or the eval protocol (shipped, removed, or
+  rejected), and for each record: which split chose it, what dev said, what test said, and how many
+  earlier entries had read test. A decision "chose on test" when test was needed for it: dev within noise
+  or against it, or the entry says test decided.
+- **Result** (2026-11-11; every entry and README's findings read; the item cut-off rows recomputed from
+  stored scores, `evals/results/{dev,test}/production.jsonl`, all 10,623 cases; 0 requests):
+  - Reads. Split-level test numbers appear in 9 entries (H1, H6, H13, H16, H17, H19, H20, H21, H22).
+    Ten more pool dev and test cases into one number (H4, H5, H7, H8, H9, H11, H12, H14, H15, H25), so
+    test cases sit inside 19 of 25 entries. Two experiments build dev numbers from test labels: H17's
+    offsets and `examples.ts`'s examples come from the other split.
+  - Most of today's test split is younger than the early reads: 189 of its 216 real files (142 sampled,
+    47 mined) arrived on 2026-10-21 (H10, H11). H1–H9 read only the 27 curated real test files, plus
+    synthetic and planted ones.
+  - Every decision that changed or kept a default, the policy format, or the corpus policies, and what
+    each split said:
+
+    | Decision | Chosen by | Dev alone | Test | Test needed? |
+    |---|---|---|---|---|
+    | Per-policy cut-offs not shipped (2026-10-20, `cutoffs.ts`) | test | an in-sample fit, so no evidence | surfaced 72% → 52% for F1 +0.002 | yes: one check of a dev-tuned fit |
+    | Clef stays the model, not clef-flash | dev | −0.150 to −0.081 AUROC | −0.146 to −0.051 | no |
+    | Packed requests, not one per item (2026-10-21) | dev | AUROC within noise, 2.4× cheaper | `single` Brier worse outside noise | no |
+    | File cut-offs 0.3 / 0.45 kept, 112-file corpus (2026-10-21) | dev | dev maximum +0.018 [−0.011, +0.049] F1, within noise even in-sample | +0.009 [−0.023, +0.042] | no |
+    | File cut-offs 0.275 / 0.375, grown corpus (2026-10-21, `8ad2115`) | test | in-sample fit (+0.020 to +0.058 F1) | +0.011 to +0.048 F1, real semantic | yes: one check of a dev-tuned fit |
+    | H19's shape, 1 KB excerpts, cut-offs 0.45 / 0.575 (2026-10-21) | dev | +0.038 to +0.063 AUROC; 1 KB over 4 KB +0.003 to +0.018 | three variants checked; 1 KB +0.030 to +0.057 | no |
+    | A selector for every policy (H21, 2026-10-22) | owner, before measuring; selectors designed on dev | +0.019 [+0.008, +0.029] over excerpt policies (H22) | +0.016 [+0.006, +0.027], checked once | no |
+    | The body alone as the request's text (H22) | dev ablation | 0.910 → 0.919 | 0.916 vs. H19's 0.913 | no |
+    | Item cut-offs kept at 0.5 / 0.65 (`items.ts`, then H21 and H22) | dev | dev F1 maximum (0.575 / 0.725) +0.012 [−0.004, +0.028] F1 even in-sample; caught 71% → 61% | +0.010 [−0.005, +0.025]; caught 73% → 63% | no |
+    | Examples in the body, as advice | dev | Brier −0.007 to −0.006 | −0.009 to −0.007 | no |
+
+  - Test exposed per-rule regressions it was never used to fix. H21 named no-flag-parameters (−0.067
+    [−0.141, −0.003]), names-match-behavior, and protect-internal-state's reach as next work, "found only
+    on held-out data". Their selectors have not changed since: the only later commits to those policies
+    (`e6d879e`) moved file finding into the selectors, with item sets unchanged. README's advice to keep
+    the excerpt policy as a tuning baseline comes from the no-flag-parameters result.
+  - On the grown corpus, the file cut-offs were the first split-level check of its test split (H14 and
+    H15 had pooled its test cases with dev). H16 and H17 read test before H19's shape was adopted, and
+    H19 and H20 before H21 and H22.
+  - (a) refuted for split-level test numbers (9 of 25); holds if pooled numbers count (19 of 25). The
+    prediction didn't say which.
+  - (b) holds: 10 decisions cite test.
+  - (c) holds: dev alone supported 8 of 10. The other 2 were cut-offs tuned on dev, which dev can't
+    check in-sample; each was decided by one test check, the way H25 recommends.
+  - (d) refuted: no decision followed test against dev evidence. Test overruled dev once, on per-policy
+    cut-offs, and what it overruled was an in-sample fit.
+- **Conclusion**: the hypothesis holds. The corpus test split has been read often and has chosen little:
+  two cut-off questions, each in one check of a dev-tuned fit. It confirmed eight dev-supported choices
+  and overturned none. So today's headline test numbers (file AUROC 0.930, caught 69%, false alarms 13%)
+  are close to held-out for the shipped design: the rule selectors were designed on dev and checked on
+  test once. By H25's rule, though, the split is **spent for new decisions**:
+  - It has decided twice.
+  - It has passed four sequential adoptions on largely the same files: the file cut-offs, H19's shape,
+    H21's selectors, and H22's request text. H25 measured that one check passes a no-better candidate
+    4–7% of the time, with 10 to 40 files per class; it didn't measure checks at corpus scale.
+  - It has named which rules to work on next, so a fix to no-flag-parameters, names-match-behavior, or
+    protect-internal-state judged on it would be tuned on it.
+
+  Keep reporting it, so results stay comparable with every entry above. Decide the next default on a
+  fresh holdout.
+- **What a fresh holdout takes**:
+  - **Size.** About as many files as today's real test split: about 216 real files from repositories
+    not yet in the corpus, two thirds sampled (`sample.ts`, about 3 per repository) and a third mined
+    (`mine.ts`, high-confidence comments). At H10's rates (2.05 clear semantic violations per sampled
+    file, 4.04 per mined) that is about 590 clear violations. Today's split has 537, which gives
+    ±0.01-wide AUROC intervals on pooled decisions.
+  - **Labeling.** The H11 protocol: one Claude and one gpt-6.1-sol request per file, then adjudication
+    of their disagreements. That is about 2.1 adjudications per sampled file and 3.7 per mined file
+    (H11: 617 for 288 sampled files, 380 for 104 mined). In all, about 430 labeling requests and 570
+    adjudications. Judging the files costs Clef about $14 per 1,000 files.
+  - **Per-policy decisions** need ≥ 20 clear violations per policy (H1). Random and mined files won't
+    reach that for cohesive-modules, thin-entry-points, or test-behavior-not-implementation (4, 3, and 8
+    real test violations today), so per-policy work on those needs plants (H12), reported apart.
+  - **Use it once.** Label it when there is a decision to make, decide once, then fold it into dev (H25).
+
 ---
 
 ## Run log
@@ -1080,5 +1235,9 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   `production single` sent real `single` requests (credentials load from `.env.local`; that shape was not
   cached) and was stopped: 12,901 Clef requests, 8.04M input tokens, about $1.93. Replays since then point
   `CLOUDFLARE_API_BASE_URL` at a dead address; `production` replayed from cache (0 requests).
+- 2026-11-11: H25. `evals/spent.ts` added: simulates tuning loops on stored file scores (dev and test
+  real semantic, three strategies). 1,600 runs, about 13 minutes; no requests.
+- 2026-11-11: H26 audit of decisions made with the corpus test split. Item cut-offs recomputed from
+  stored all-case scores (scratch script, not kept); 0 requests.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

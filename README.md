@@ -99,7 +99,7 @@ A missing rules directory, one with no `.md` files, or an invalid policy stops t
 
 Policies are meant to be written and tuned by a coding agent: give it the rule you want and let it iterate on the selector, the body, and the criteria together, measured against labeled code (below). Because the CLI adds nothing, any way of asking the model that a request can express is available to a policy. `evals/corpus/selectors-excerpts/` is the earlier CLI's whole-file judging written as policies: its selector cuts files into 1,000-byte excerpts, and its body and criteria are that CLI's own words.
 
-`skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, writing and tuning policies, and the pitfalls selectors run into. It ships in the package (`node_modules/@andrueandersoncs/lint-anything/skills/lint-anything/`) with its score script; copy that directory into a coding agent's skills directory.
+`skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, sorting a project's AGENTS.md or contributor docs into what becomes a policy and what doesn't, writing and tuning policies, and the pitfalls selectors run into. It ships in the package (`node_modules/@andrueandersoncs/lint-anything/skills/lint-anything/`) with its score script; copy that directory into a coding agent's skills directory.
 
 ### Tuning against labels
 
@@ -110,7 +110,7 @@ bun <skill directory>/scripts/score.js <policy>                  # per split: re
 bun <skill directory>/scripts/score.js <policy> candidate.md     # and candidate − current, paired intervals
 ```
 
-An item counts as a violation when its lines overlap a labeled violation, and a file scores its highest item score, so labels stay valid when the selector changes. It lists dev mistakes and unreached violations; test is only summarized, and a change is adopted when test improves outside noise. The skill asks for labels from two or three different models, with the user settling their disagreements. The evals score the corpus with the same code (`src/score.ts`).
+An item counts as a violation when its lines overlap a labeled violation, and a file scores its highest item score, so labels stay valid when the selector changes. It lists dev mistakes and unreached violations; test is only summarized. A change is picked on dev and decided once, on freshly labeled test files, which then move to dev: in simulated tuning runs on the corpus, rechecking one test split candidate after candidate adopted a candidate no better than the current policy in 23–34% of runs within ten candidates (`evals/RESEARCH.md`, H25). The skill asks for labels from two or three different models, with the user settling their disagreements. The evals score the corpus with the same code (`src/score.ts`).
 
 ### Selectors
 
@@ -249,6 +249,7 @@ bun evals/history.ts                       # context from outside the file: a da
 bun evals/shared.ts                        # a shared selector runs once (stub decision model, no requests)
 bun evals/examples.ts                      # examples written into the policy body, as few-shot
 bun evals/cutoffs.ts                       # per-policy cut-offs tuned on dev vs. global (stored scores)
+bun evals/spent.ts                         # tuning loops that reuse one test split vs. decide once (stored scores)
 bun evals/cache.ts                         # the answer cache: requests on re-runs and edits (real requests)
 bun evals/packing.ts                       # repeatability of fresh runs (real requests) and batch independence
 bun evals/mine.ts prometheus/prometheus    # candidate real violations from PR review comments (GitHub API, cached)

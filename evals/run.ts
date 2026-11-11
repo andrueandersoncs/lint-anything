@@ -150,6 +150,8 @@ interface Run {
   readonly files: ReadonlyArray<Scored<Case>>
   readonly requests: number
   readonly inputTokens: number
+  /** Round-trip time of each request when it was sent (a cached reply keeps the time it took then). */
+  readonly ms: ReadonlyArray<number>
 }
 
 const runs: Array<Run> = await Promise.all(variants.map(async ({ name, set, plan }) => {
@@ -159,7 +161,7 @@ const runs: Array<Run> = await Promise.all(variants.map(async ({ name, set, plan
   await writeScores(`${import.meta.dir}/results/${scope}/${name}.jsonl`, files)
   await writeScores(`${import.meta.dir}/results/${scope}/${name}.items.jsonl`, run.scored)
   const inputTokens = [...run.inputTokens.values()].reduce((sum, value) => sum + value, 0)
-  return { name, items, scored: run.scored, files, requests: run.requests, inputTokens }
+  return { name, items, scored: run.scored, files, requests: run.requests, inputTokens, ms: run.ms }
 }))
 const baseline = runs[0]!
 
@@ -213,6 +215,14 @@ for (const run of runs) {
     `(${run.scored.filter((entry) => entry.score === null).length}) | ${run.requests} | ` +
     `${costPerThousand(run.inputTokens, fileCount)} |`)
 }
+
+const latency = (ms: ReadonlyArray<number>) => {
+  const sorted = [...ms].sort((a, b) => a - b)
+  const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!.toFixed(0)
+  return sorted.length === 0 ? "–" : `p50 ${at(0.5)} ms, p95 ${at(0.95)} ms, max ${at(1)} ms`
+}
+console.log(`\nRequest latency, as each request was sent (a cached reply keeps the time it took then):`)
+for (const run of runs) console.log(`- ${run.name}: ${run.requests} requests, ${latency(run.ms)}`)
 
 // Breakdowns of the baseline, with n: per origin (synthetic and planted files run easier than real ones, so
 // headline numbers should be read on real), and on real files per size bin and per policy. Other variants

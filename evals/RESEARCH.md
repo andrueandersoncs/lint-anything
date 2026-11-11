@@ -78,6 +78,7 @@ Clear semantic violations per policy:
 | H21 | correctness | Every policy judged through a selector built for its rule beats judging every rule against the same excerpts | supported on test: file AUROC 0.913 → 0.930 [+0.006, +0.028]; at 14% false alarms 69% caught vs. 55%; loses for no-flag-parameters and names-match-behavior; reworded rules lose 0.04–0.07 through selectors built for other text |
 | H22 | correctness | With nothing added by the CLI, a policy can reproduce the excerpt CLI (H19) exactly in score, so a rule's own selector has it as a floor | supported: excerpt policies 0.918 / 0.914 vs. H19 0.914 / 0.913 (dev / test, intervals include 0); rule selectors beat them by +0.016 to +0.019 pooled; per rule, no-flag-parameters loses on test |
 | H23 | completeness | Clustering review comments rediscovers a repo's documented code norms (rule mining, step 4) | partly: 38% of documented norms reviewers invoked come back as a theme (20% in the top 20); 59% of themes share no norm; ~2.5 undocumented norms per repo from ≥ 2 reviewers. Clustering raw prose is the bottleneck |
+| H24 | correctness, efficiency, speed | Clef served by Flide (exact state forking, arXiv 2610.42148) matches Clef on Workers AI, and forking makes answers independent of packing | partly tested: on Workers AI, asking each item alone ranks worse than packing (item AUROC 0.894 vs. 0.915, 13,560 dev items); Flide does not fork Clef; GPU runs skipped |
 
 Order of work: H1 (sizes every later sample), H2 (gates any labeling at scale), then H3/H4, H5, H7, H6,
 H9, H8. Corpus growth (2026-10-21): H10, H11 while labeling new files, H12 while planting, then H13, H14, H15
@@ -946,6 +947,61 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   matches); one Claude pass extracted the norms; windows differ tenfold between repos; thresholds not
   tuned (0.5 keep, 0.6 clustering, 0.9 dedupe).
 
+## H24: Flide, exact state forking
+
+- **Question**: Flide (arXiv 2610.42148; `flide` 0.1.13 on PyPI, Apache-2.0) serves decision models over the
+  System One API. For causal families (OneJev, Open-Jev, Qwen3.5 and Gemma 4 instruct) it runs each question
+  as a branch off one shared copy of the state, so a question's answer equals asking it alone (in exact
+  arithmetic; bitwise with `--batch-invariant`), at up to 9.5× lower latency than vLLM and SGLang. Clef's
+  weights are open (`Cloudflare/clef`, 27B, Apache-2.0) and Flide serves them. Does self-hosted Flide give
+  Clef's quality, answers that don't depend on packing, and faster or cheaper sweeps?
+- **What Flide does with our requests** (docs and source, read 2026-11-11):
+  - `noul` questions with `criteria.true` / `criteria.false` are accepted and rendered into the prompt, so
+    bodies need no change: point `LINT_ANYTHING_ENDPOINT` at `http://<host>:8000/v1/systemone`.
+  - Clef is not forked. `plugins/flide_clef.py` runs the state and every question as one sequence through
+    Clef's joint schema head, as the release does, so Clef's answers still depend on the other questions.
+    Forking applies to the causal families only.
+  - Clef's `max_length` defaults to 16,384 tokens and the state is cut silently to fit; our requests reach
+    64,000 bytes, so serve Clef with `--format-arg max_length=65536` (Workers AI's window).
+  - Flide needs Linux or WSL2 and an NVIDIA GPU (no Apple Silicon, no CPU). Clef in BF16 is about 54 GB of
+    weights: an 80 GB H100 or an H200.
+- **First measurement, Workers AI only**: does asking each item alone, which is what forking guarantees,
+  cost Clef quality? Dev real semantic, the CLI's packed requests vs. `single` (the same state and
+  question, one request per item). The `single` run was stopped after 12,901 requests (Run log), so 13,560
+  of 39,274 items have both answers. They span all 239 files but are not a random sample: they are the
+  first groups sent.
+  - 4.3% of answers identical, 15.9% within 0.01; |Δ| mean 0.089, median 0.055, p95 0.286, max 0.821;
+    1,310 item verdicts (9.7%) change at 0.5 / 0.65.
+  - Item AUROC 0.915 packed vs. 0.894 alone, paired [−0.036, −0.008]. The other items in a request help
+    Clef; half-size batches cost nothing (README: 0.917 → 0.916), so the help saturates early.
+  - For Clef, then, answering as if asked alone is a loss. Forking's packing independence matters for the
+    causal families, where the answer alone is the only answer.
+- **Predictions for the GPU runs** (written before running):
+  - (a) Clef on Flide (`max_length=65536`) vs. Workers AI, dev real semantic, production: file AUROC within
+    ±0.01 (paired interval includes 0); answers not identical (other kernels), |Δ| mean ≤ 0.03, ≤ 3% of
+    item verdicts change.
+  - (b) Packing: for OneJev1.6 under `--batch-invariant`, `production` vs. `single` puts ≥ 99% of answers
+    within 0.001; Clef on Flide stays packing-dependent (≥ 5% of verdicts change, as on Workers AI).
+  - (c) Speed: Clef on one H100 or H200 at concurrency 8 beats Workers AI's p50 of 512 ms (dev production:
+    p50 512 ms, p95 2,247 ms over 3,281 requests, from the cache's recorded times).
+  - (d) OneJev1.6 at 0.8B, 4B, 9B, and 27B ranks below Clef (dev file AUROC 0.937); 27B within 0.03.
+- **Method**: one GPU box serving each config on its own port (the eval cache keys replies by URL and
+  model, so two configs at one URL would share answers), the Mac as client over an SSH tunnel:
+  ```
+  # GPU box
+  uv venv -p 3.12 && source .venv/bin/activate && uv pip install flide==0.1.13 torchvision
+  flide serve --model Cloudflare/clef --format-arg max_length=65536
+  # Mac, per config
+  LINT_ANYTHING_ENDPOINT=http://localhost:8000/v1/systemone LINT_ANYTHING_MODEL=Cloudflare/clef \
+    bun evals/run.ts --split dev --origin real --category semantic production single
+  bun evals/engines.ts evals/results/dev.real.semantic/production.items.jsonl \
+    evals/results/dev.real.semantic.model-Cloudflare-clef/production.items.jsonl
+  ```
+  (a) and (d) from `run.ts` and `engines.ts` against the Workers AI results; (b) from `engines.ts` on one
+  model's `production` vs. `single` items; (c) from `run.ts`'s latency line.
+- **Status**: GPU runs skipped (2026-11-11; no NVIDIA GPU at hand). Predictions (a)–(d) stand untested;
+  the method above runs them as written once a GPU box serves Flide.
+
 ---
 
 ## Run log
@@ -1019,5 +1075,10 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
 - 2026-10-27: evals moved onto `src/score.ts` (labels, item labeling, file scores, reach, metrics, intervals), shared with the skill's score script; `evals/metrics.ts` keeps only `pairAccuracy`. Replayed from cache with selector output pinned: `run.ts` (dev, test, test real semantic), `cutoffs.ts`, `history.ts`, `examples.ts`, `counts.ts` print identically; on identical scored items (48,960 dev, 42,775 test) every metric and interval matches. Found on the way: the `preserve-error-context` selector (`errors.ts` step) is not deterministic (14 of 1,096 dev items differed between two selections of the same code), so its requests can miss the cache; 16 real requests were sent before the API was pointed at a dead address for the replays. `wordings.ts` not replayed (cache misses from that selector).
 - 2026-10-27: `evals/steps/errors.ts` made deterministic: ast-grep streams matches in no fixed order, and the step kept the first match at a line, so 7–11 of 279 files changed item order between runs of the same code. It now sorts matches as `tests.ts` does. Checked with 4 runs of every file-reading step over all corpus files: every step's output is identical within each file (`errors-go.ts` and `literals.ts` still vary only in the order of files, which the evals' one-file directories and the CLI's sort make irrelevant). `run.ts` dev, test, and test real semantic re-run (17 new requests): only preserve-error-context's rows and the aggregates holding them moved, by ≤ 0.003; a rerun is byte-identical. `wordings.ts --origin real` replayed on test and dev (39 new requests): README's wording table updated (≤ 0.001 on two intervals, 16.6% → 16.7%), and README's 4–9 KB size AUROC corrected to 0.897, as `run.ts` prints it.
 - 2026-11-10: `limit` removed from the policy format as unnecessary; `evals/counts.ts`, which measured it, removed with it (both in the git history, last at `e6a0b07`). Every other eval's request bodies and cache keys are unchanged. No requests sent.
+- 2026-11-11: H24 (Flide). `evals/engines.ts` added: compares two stored runs (answer agreement, verdict
+  changes, paired AUROC and Brier). `run.ts` prints each variant's request latency. A replay of dev with
+  `production single` sent real `single` requests (credentials load from `.env.local`; that shape was not
+  cached) and was stopped: 12,901 Clef requests, 8.04M input tokens, about $1.93. Replays since then point
+  `CLOUDFLARE_API_BASE_URL` at a dead address; `production` replayed from cache (0 requests).
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

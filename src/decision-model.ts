@@ -25,7 +25,7 @@ export class RequestTooLarge extends Schema.TaggedError<RequestTooLarge>()("Requ
   message: Schema.String
 }) {}
 
-/** The model declined to answer the question (an OpenAI Decisions `refusal`). */
+/** The model declined to answer the question (an OpenAI Decisions `refusal`, or a request Gemini's safety filters blocked). */
 export class Declined extends Schema.TaggedError<Declined>()("Declined", {
   message: Schema.String
 }) {}
@@ -78,8 +78,12 @@ const cacheBusyTimeoutMs = 10_000
  *   `result`, which is read the same way.
  * - `decisions`: OpenAI's Decisions API (`POST /v1/decisions`). A request has an `input` and a list of
  *   `predicate` questions; answers come back as a list, each a probability or a refusal.
+ * - `gemini`: Google's Decisions API for Gemini Decision (`POST /v1beta/decisions` on
+ *   `generativelanguage.googleapis.com`). A request has an `input` and `noul` questions keyed by id, whose
+ *   criteria are `true_description` and `false_description`; the key goes in `x-goog-api-key`. A request
+ *   its safety filters block is answered with HTTP 400 instead, which declines every question in it.
  */
-export type Format = "system-one" | "decisions"
+export type Format = "system-one" | "decisions" | "gemini"
 
 /** A response, read: each question's probability of yes, or `declined`, by id, and the input tokens it reports. */
 interface Reply {
@@ -96,7 +100,14 @@ interface Wire {
   readonly entry: (id: string, question: Question) => string
   /** Reads a response body. */
   readonly decode: (body: unknown) => Effect.Effect<Reply, Schema.SchemaError>
+  /** The header that carries the API key or token. */
+  readonly keyHeader: (key: string) => readonly [name: string, value: string]
+  /** Whether an error response (its status and body) declines every question in the request. */
+  readonly declinesAll: (status: number, body: string) => boolean
 }
+
+const bearer = (key: string) => ["authorization", `Bearer ${key}`] as const
+const never = () => false
 
 const Probability = Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 }))
 const ReportedUsage = Schema.optional(Schema.Struct({ input_tokens: Schema.Number }))
@@ -120,7 +131,9 @@ const systemOne: Wire = {
     ).pipe(Effect.map(({ answers, usage }) => ({
       answers: new Map(Object.entries(answers).map(([id, answer]) => [id, answer.noul])),
       inputTokens: usage?.input_tokens
-    })))
+    }))),
+  keyHeader: bearer,
+  declinesAll: never
 }
 
 // A predicate has no criteria, so they are folded into its instructions (as LiteLLM folds a noul question's
@@ -149,13 +162,54 @@ const decisions: Wire = {
         answers.map((answer) => [answer.name, answer.type === "refusal" ? "declined" : answer.probability])
       ),
       inputTokens: usage?.input_tokens
-    })))
+    }))),
+  keyHeader: bearer,
+  declinesAll: never
 }
 
-const wires: Record<Format, Wire> = { "system-one": systemOne, decisions }
+// Gemini's noul criteria name what a yes and a no mean `true_description` and `false_description`.
+const geminiNoul = (question: Question) => ({
+  type: "noul",
+  instructions: question.instructions,
+  criteria: { true_description: question.criteria.true, false_description: question.criteria.false }
+})
+
+const GeminiResponse = Schema.Struct({
+  answers: Schema.Record(Schema.String, Schema.Struct({ noul: Probability })),
+  usage: Schema.optional(Schema.Struct({ total_input_tokens: Schema.Number }))
+})
+
+// The error codes of a request Gemini's input safety filters blocked (HTTP 400).
+const GeminiBlocked = Schema.fromJsonString(Schema.Struct({
+  error: Schema.Struct({ code: Schema.Literals(["safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"]) })
+}))
+
+const gemini: Wire = {
+  head: (model, state) => `${JSON.stringify({ model, input: state }).slice(0, -1)},"questions":{`,
+  tail: "}}",
+  entry: (id, question) => `${JSON.stringify(id)}:${JSON.stringify(geminiNoul(question))}`,
+  decode: (body) =>
+    Schema.decodeUnknownEffect(GeminiResponse)(body).pipe(Effect.map(({ answers, usage }) => ({
+      answers: new Map(Object.entries(answers).map(([id, answer]) => [id, answer.noul])),
+      inputTokens: usage?.total_input_tokens
+    }))),
+  keyHeader: (key) => ["x-goog-api-key", key],
+  declinesAll: (status, body) => status === 400 && Option.isSome(Schema.decodeUnknownOption(GeminiBlocked)(body))
+}
+
+const wires: Record<Format, Wire> = { "system-one": systemOne, decisions, gemini }
 
 /** Reads a decision endpoint's response body in `format`. */
 export const decodeReply = (format: Format, body: unknown) => wires[format].decode(body)
+
+/** The header that carries `key` to an endpoint in `format`: a bearer token, or Gemini's `x-goog-api-key`. */
+export const keyHeader = (format: Format, key: string) => wires[format].keyHeader(key)
+
+/**
+ * Whether an endpoint in `format` declined every question of a request by answering with this error status
+ * and body (a request Gemini's safety filters blocked).
+ */
+export const declinesAll = (format: Format, status: number, body: string) => wires[format].declinesAll(status, body)
 
 // --- Models and where to reach them -----------------------------------------------------------------
 
@@ -173,7 +227,10 @@ export interface Model {
   readonly inputTokenPrice: number | undefined
 }
 
-/** A decision model and how to reach it: the endpoint requests are POSTed to, and the bearer token, if any. */
+/**
+ * A decision model and how to reach it: the endpoint requests are POSTed to, and the API key or token, if
+ * any (a bearer token, or for Gemini `x-goog-api-key`).
+ */
 export interface Target extends Model {
   readonly url: string
   readonly token: Redacted.Redacted<string> | undefined
@@ -208,9 +265,18 @@ export const workersAiTarget = (options: {
   }
 }
 
-/** The format an endpoint speaks: OpenAI Decisions when its path ends in `/decisions`, System One otherwise. */
-const formatOf = (url: string): Format =>
-  new URL(url).pathname.replace(/\/+$/, "").endsWith("/decisions") ? "decisions" : "system-one"
+/** Google's Gemini API host, which serves the Gemini Decisions API. */
+const geminiHost = "generativelanguage.googleapis.com"
+
+/**
+ * The format an endpoint speaks: Gemini Decisions on Google's Gemini API host, OpenAI Decisions when its
+ * path ends in `/decisions`, System One otherwise.
+ */
+const formatOf = (url: string): Format => {
+  const { hostname, pathname } = new URL(url)
+  if (hostname === geminiHost) return "gemini"
+  return pathname.replace(/\/+$/, "").endsWith("/decisions") ? "decisions" : "system-one"
+}
 
 const endpointModel = (url: string, model: string): Model => ({
   format: formatOf(url),
@@ -221,8 +287,10 @@ const endpointModel = (url: string, model: string): Model => ({
 })
 
 /**
- * A decision model behind any endpoint: OpenAI Decisions when the URL's path ends in `/decisions` (such as
- * `https://api.openai.com/v1/decisions`), System One otherwise (such as `http://localhost:4000/v1/systemone`).
+ * A decision model behind any endpoint: Gemini Decisions on `generativelanguage.googleapis.com` (such as
+ * `https://generativelanguage.googleapis.com/v1beta/decisions`), OpenAI Decisions when the URL's path ends
+ * in `/decisions` (such as `https://api.openai.com/v1/decisions`), System One otherwise (such as
+ * `http://localhost:4000/v1/systemone`).
  */
 export const endpointTarget = (options: {
   readonly url: string
@@ -283,8 +351,9 @@ export const configuredModel: Effect.Effect<Model, DecisionModelError> = Effect.
 /**
  * The decision model the environment configures, and how to reach it.
  *
- * - With `LINT_ANYTHING_ENDPOINT`: that endpoint (System One, or OpenAI Decisions when its path ends in
- *   `/decisions`), asking `LINT_ANYTHING_MODEL`, with `LINT_ANYTHING_API_KEY` as the bearer token if set.
+ * - With `LINT_ANYTHING_ENDPOINT`: that endpoint (Gemini Decisions on `generativelanguage.googleapis.com`,
+ *   OpenAI Decisions when its path ends in `/decisions`, System One otherwise), asking `LINT_ANYTHING_MODEL`,
+ *   with `LINT_ANYTHING_API_KEY` as the key if set (a bearer token, or for Gemini `x-goog-api-key`).
  * - Without it: `LINT_ANYTHING_MODEL` (default `clef`) on Workers AI, with `CLOUDFLARE_ACCOUNT_ID`,
  *   `CLOUDFLARE_AUTH_TOKEN`, and optionally `CLOUDFLARE_API_BASE_URL`.
  */
@@ -495,9 +564,10 @@ export class DecisionModel extends Context.Service<DecisionModel, {
 
 const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string | undefined) {
   const wire = wires[target.format]
+  const { token } = target
   const client = (yield* HttpClient.HttpClient).pipe(
     HttpClient.mapRequest(flow(
-      target.token === undefined ? (request) => request : HttpClientRequest.bearerToken(target.token),
+      token === undefined ? (request) => request : HttpClientRequest.setHeader(...wire.keyHeader(Redacted.value(token))),
       HttpClientRequest.acceptJson
     )),
     HttpClient.filterStatusOk,
@@ -531,9 +601,20 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
     })
   const declined = new Declined({ message: `${target.name} declined to answer` })
 
+  /** Whether `error` is an error response that declines every question in its request (`wire.declinesAll`). */
+  const declinesAll = (error: unknown): Effect.Effect<boolean> => {
+    if (!HttpClientError.isHttpClientError(error) || error.reason._tag !== "StatusCodeError") return Effect.succeed(false)
+    const { response } = error.reason
+    return response.text.pipe(
+      Effect.timeout("5 seconds"),
+      Effect.map((text) => wire.declinesAll(response.status, text)),
+      Effect.orElseSucceed(() => false)
+    )
+  }
+
   /** Sends one planned request for `source` and returns each question's answer, keyed like `request.questions`. */
   const send = Effect.fn("DecisionModel.send")(function*<A>(source: string, request: Planned<A>) {
-    const reply = yield* record(source, { requests: 1 }).pipe(
+    const reply: Reply = yield* record(source, { requests: 1 }).pipe(
       Effect.andThen(HttpClientRequest.post(target.url).pipe(
         HttpClientRequest.bodyText(request.body, "application/json"),
         client.execute
@@ -542,7 +623,10 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
       Effect.flatMap(wire.decode),
       permits.withPermit,
       Effect.catch((error) =>
-        Effect.flatMap(failureMessage(target.name, error), (message) => Effect.fail(new DecisionModelError({ message })))
+        Effect.flatMap(declinesAll(error), (all): Effect.Effect<Reply, DecisionModelError> =>
+          all
+            ? Effect.succeed({ answers: new Map(request.questions.map(({ id }) => [id, "declined"])), inputTokens: undefined })
+            : Effect.flatMap(failureMessage(target.name, error), (message) => Effect.fail(new DecisionModelError({ message }))))
       )
     )
     yield* record(source, reply.inputTokens === undefined ? { unmetered: 1 } : { inputTokens: reply.inputTokens })

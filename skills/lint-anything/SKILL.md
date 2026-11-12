@@ -1,6 +1,6 @@
 ---
 name: lint-anything
-description: Run lint-anything, act on its findings, and write or tune its policies (plain-English rules in `.lint-anything/rules/*.md`, each with a shell selector, judged by the decision model the project configures: any System One or OpenAI Decisions endpoint, or Workers AI). Use when a project has a `.lint-anything/` directory, when asked to lint code against semantic or prose rules, to fix lint-anything findings, to add, debug, or tune a rule, or to turn AGENTS.md, CLAUDE.md, or contributor docs into checks.
+description: Run lint-anything, act on its findings, and write or tune its policies (plain-English rules in `.lint-anything/rules/*.md`, each with a shell selector, judged by the decision model the project configures: any System One, OpenAI Decisions, or Gemini Decisions endpoint, or Workers AI). Use when a project has a `.lint-anything/` directory, when asked to lint code against semantic or prose rules, to fix lint-anything findings, to add, debug, or tune a rule, or to turn AGENTS.md, CLAUDE.md, or contributor docs into checks.
 ---
 
 # lint-anything
@@ -22,7 +22,7 @@ If `lint-anything` isn't found, install it with `bun add -d @andrueandersoncs/li
 
 - **No arguments.** Every run checks every policy; you can't pass files, a rule name, a threshold, or an output format. To check less, change the selector. The only flag is `--debug`; `--help` and `--version` also exist.
 - **The working directory matters.** Policies are read from `./.lint-anything/rules`, and selectors run in the current directory. Run from a subdirectory and you get `error: cannot read policies in .lint-anything/rules`: there is no upward search.
-- **The decision model** is the project's choice, set in the environment or in `.env` / `.env.local` in the current directory. Don't change it to make findings go away. With `LINT_ANYTHING_ENDPOINT` (a full URL), the model named by `LINT_ANYTHING_MODEL` is asked there, and `LINT_ANYTHING_API_KEY` is its bearer token if it needs one. An endpoint whose path ends in `/decisions` speaks OpenAI's Decisions API; any other speaks System One (`/v1/systemone`: Jev, LiteLLM, LLM Gateway, and most decision-model servers).
+- **The decision model** is the project's choice, set in the environment or in `.env` / `.env.local` in the current directory. Don't change it to make findings go away. With `LINT_ANYTHING_ENDPOINT` (a full URL), the model named by `LINT_ANYTHING_MODEL` is asked there, and `LINT_ANYTHING_API_KEY` is its key if it needs one. An endpoint on `generativelanguage.googleapis.com` speaks Google's Decisions API (`gemini-decision-1`, keyed by a Gemini API key); any other whose path ends in `/decisions` speaks OpenAI's; any other speaks System One (`/v1/systemone`: Jev, LiteLLM, LLM Gateway, and most decision-model servers).
 - **Without an endpoint**, a Cloudflare model on Workers AI is asked: `clef`, or another that `LINT_ANYTHING_MODEL` names (`clef-flash`). `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_AUTH_TOKEN` are then required on every run, even when every answer would come from the cache. `CLOUDFLARE_API_BASE_URL` is optional.
 - **Accuracy numbers in this skill were measured on Clef.** A project on another model should score it on its labels before trusting it.
 - **Add `.lint-anything/cache` to `.gitignore`.** The answer cache (`answers.sqlite` plus `-wal`/`-shm` files) is written there.
@@ -50,7 +50,7 @@ Columns: verdict, violation probability (`-` when none), location, policy name, 
 | `pass` | probability ≤ 0.5 | 0 |
 | `review` | between 0.5 and 0.65: uncertain, often a case reasonable reviewers would disagree on | 0 |
 | `violation` | probability ≥ 0.65 | **1** |
-| `inconclusive` | the item wasn't judged: too large to send (`request is N bytes; Clef would truncate it`, or `…, over the 64000-byte request limit` on another model), or refused by the model (`<model> declined to answer`, OpenAI Decisions only) | 0 |
+| `inconclusive` | the item wasn't judged: too large to send (`request is N bytes; Clef would truncate it`, or `…, over the 64000-byte request limit` on another model), or refused by the model (`<model> declined to answer`: an OpenAI Decisions refusal, or a request Gemini's safety filters blocked) | 0 |
 
 | Exit code | Meaning |
 | --- | --- |

@@ -10,7 +10,7 @@
  * and retried. `DecisionModel.layer(cacheDirectory?)` asks the model the environment configures
  * (`configuredTarget`): Clef on Workers AI with `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_AUTH_TOKEN` (and
  * optionally `CLOUDFLARE_API_BASE_URL`) by default, or `LINT_ANYTHING_MODEL` at `LINT_ANYTHING_ENDPOINT`, any
- * System One or OpenAI Decisions endpoint, with `LINT_ANYTHING_API_KEY`. `DecisionModel.layerFor(target)`
+ * System One, OpenAI Decisions, or Gemini Decisions endpoint, with `LINT_ANYTHING_API_KEY`. `DecisionModel.layerFor(target)`
  * takes the model from code instead (`workersAiTarget`, `endpointTarget`). `loadPolicies` needs `FileSystem`
  * and `Path`, for example from `BunServices.layer` in `@effect/platform-bun`.
  *
@@ -26,11 +26,13 @@ export {
   configuredModel,
   configuredTarget,
   Declined,
+  declinesAll,
   decodeReply,
   DecisionModel,
   DecisionModelError,
   endpointTarget,
   type Format,
+  keyHeader,
   type Model,
   noUsage,
   planRequests,

@@ -186,12 +186,17 @@ export const fileScores = (fileCases: ReadonlyArray<Case>, items: ReadonlyArray<
   })
 }
 
+// Input-token prices the CLI doesn't print, for eval reports only: Gemini Decision 1 on Google's Gemini API
+// at its paid-tier price (2026-11-11; its free tier is free).
+const evalInputTokenPrice = model.inputTokenPrice ??
+  (model.format === "gemini" && model.model === "gemini-decision-1" ? 0.1e-6 : undefined)
+
 /**
  * USD per 1,000 units (items or files) for `tokens` input tokens spent on `count` of them, as `$0.123`, or
  * `–` when the model's price isn't known.
  */
 export const costPerThousand = (tokens: number, count: number) =>
-  model.inputTokenPrice === undefined ? "–" : `$${((tokens * model.inputTokenPrice * 1000) / count).toFixed(3)}`
+  evalInputTokenPrice === undefined ? "–" : `$${((tokens * evalInputTokenPrice * 1000) / count).toFixed(3)}`
 
 export const writeScores = (path: string, scored: ReadonlyArray<Scored<Case>>) =>
   Bun.write(path, `${scored.map(({ subject: item, score }) => JSON.stringify({ case: item.id, label: item.gold.label, score })).join("\n")}\n`)

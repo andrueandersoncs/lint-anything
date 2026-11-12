@@ -1,6 +1,6 @@
 # lint-anything
 
-Check anything against plain-English policies, judged by the decision model of your choice: any model served behind a System One or OpenAI Decisions endpoint, or, with no endpoint set, a Cloudflare model on Workers AI ([Clef](https://developers.cloudflare.com/workers-ai/models/clef/) unless you name another). A policy's selector decides what is checked: parts of files, facts derived from them, a repository's history, a third-party service.
+Check anything against plain-English policies, judged by the decision model of your choice: any model served behind a System One, OpenAI Decisions, or Gemini Decisions endpoint, or, with no endpoint set, a Cloudflare model on Workers AI ([Clef](https://developers.cloudflare.com/workers-ai/models/clef/) unless you name another). A policy's selector decides what is checked: parts of files, facts derived from them, a repository's history, a third-party service.
 
 ## Run
 
@@ -9,7 +9,7 @@ Requires [Bun](https://bun.sh) 1.2.23 or later, plus whatever your policies' sel
 ```sh
 bun add -d @andrueandersoncs/lint-anything   # or: bun add -g @andrueandersoncs/lint-anything
 
-# a decision model: any System One or OpenAI Decisions endpoint…
+# a decision model: any System One, OpenAI Decisions, or Gemini Decisions endpoint…
 echo 'LINT_ANYTHING_ENDPOINT=http://localhost:4000/v1/systemone' >> .env
 echo 'LINT_ANYTHING_MODEL=...' >> .env
 echo 'LINT_ANYTHING_API_KEY=...' >> .env     # if the endpoint needs one
@@ -26,9 +26,9 @@ The CLI takes no arguments, and one flag, `--debug`: each run checks every polic
 
 | Environment variable | Required | Meaning |
 | --- | --- | --- |
-| `LINT_ANYTHING_ENDPOINT` | no | The decision endpoint to ask, as a full URL: any System One or OpenAI Decisions endpoint. Without it, the model is asked on Workers AI |
+| `LINT_ANYTHING_ENDPOINT` | no | The decision endpoint to ask, as a full URL: any System One, OpenAI Decisions, or Gemini Decisions endpoint. Without it, the model is asked on Workers AI |
 | `LINT_ANYTHING_MODEL` | with `LINT_ANYTHING_ENDPOINT` | The model to ask. Without an endpoint, a Cloudflare model on Workers AI: `clef` unless set, or, for example, `clef-flash` |
-| `LINT_ANYTHING_API_KEY` | no | Bearer token for `LINT_ANYTHING_ENDPOINT`, if it needs one |
+| `LINT_ANYTHING_API_KEY` | no | API key or token for `LINT_ANYTHING_ENDPOINT`, if it needs one: sent as a bearer token, or to Google's Gemini API as `x-goog-api-key` |
 | `CLOUDFLARE_ACCOUNT_ID` | without an endpoint | Workers AI account |
 | `CLOUDFLARE_AUTH_TOKEN` | without an endpoint | Workers AI API token |
 | `CLOUDFLARE_API_BASE_URL` | no | Defaults to `https://api.cloudflare.com/client/v4` |
@@ -37,10 +37,11 @@ Bun loads `.env` and `.env.local` from the current directory automatically. An e
 
 ### Choosing a decision model
 
-A decision model answers yes/no questions with the probability of yes instead of writing text. lint-anything isn't tied to one: it asks whichever model the environment names, and speaks the two decision APIs:
+A decision model answers yes/no questions with the probability of yes instead of writing text. lint-anything isn't tied to one: it asks whichever model the environment names, and speaks three decision APIs:
 
 - **System One** (`POST …/v1/systemone`), the API Jev introduced: a `state`, then `noul` questions keyed by id, each with `instructions` and `criteria`. Clef on Workers AI speaks it, and so do most hosts and servers of decision models, such as [LiteLLM](https://docs.litellm.ai/docs/decisions)'s proxy (which routes to Jev, Clef, Perplexity, Databricks, Microsoft Foundry, vLLM, and others) and [LLM Gateway](https://llmgateway.io/blog/llm-decision-api).
 - **OpenAI Decisions** (`POST …/v1/decisions`), used when the endpoint's path ends in `/decisions`: an `input`, then `predicate` questions. A predicate has no criteria, so each question's instructions are the item's text followed by `true: <criteria.true>` and `false: <criteria.false>` lines, as LiteLLM does when it sends criteria to OpenAI.
+- **Gemini Decisions** (`POST https://generativelanguage.googleapis.com/v1beta/decisions`), used when the endpoint is on `generativelanguage.googleapis.com`: Google's [Decisions API](https://aistudio.google.com/docs/decisions-api) for Gemini Decision. An `input`, then `noul` questions keyed by id, with the criteria as `true_description` and `false_description`. The key goes in the `x-goog-api-key` header; create one in [Google AI Studio](https://aistudio.google.com/api-keys). On the free tier, Gemini Decision takes 50,000 input tokens a minute. A request over that is answered with 429 and a `Retry-After`, which the CLI waits out (up to 3 retries), so a first run over a large repository may stop with HTTP 429 until it fits in the quota or the project is on a paid tier.
 
 With no endpoint set, the model is a Cloudflare model on Workers AI, asked with the `CLOUDFLARE_` credentials: `clef` unless `LINT_ANYTHING_MODEL` names another.
 
@@ -55,16 +56,21 @@ LINT_ANYTHING_ENDPOINT=https://api.openai.com/v1/decisions
 LINT_ANYTHING_MODEL=gpt-6-luna-decisions
 LINT_ANYTHING_API_KEY=sk-...
 
+# Google's Decisions API, with a Gemini API key
+LINT_ANYTHING_ENDPOINT=https://generativelanguage.googleapis.com/v1beta/decisions
+LINT_ANYTHING_MODEL=gemini-decision-1
+LINT_ANYTHING_API_KEY=AIza...
+
 # Clef-flash on Workers AI, with the CLOUDFLARE_ credentials
 LINT_ANYTHING_MODEL=clef-flash
 ```
 
 - Every model is asked the same way: the same request text, at most 64 questions and 64,000 bytes per request, the same 0.5 / 0.65 cut-offs. A model whose context window is under 64K tokens may truncate a full request. Serve a local model with a context of at least that size.
 - Answers are cached per model, and per endpoint, so switching models never reuses another model's answers. Switching back finds the earlier model's answers still cached.
-- A question the model refuses (an OpenAI Decisions `refusal`) is `inconclusive`, with the reason `<model> declined to answer`. It isn't cached, so it is asked again next run.
+- A question the model refuses (an OpenAI Decisions `refusal`) is `inconclusive`, with the reason `<model> declined to answer`. It isn't cached, so it is asked again next run. Gemini's input safety filters block a whole request instead (HTTP 400 with an error code such as `safety`), so every question in that request is `inconclusive` the same way.
 - `--debug` prices tokens only for Clef. For other models, the cost column shows `-`.
 - Errors name the model: `error: typesafe/jev-latest responded with HTTP 401: …`. A configuration that can't work stops the run (exit 2) before anything is sent: an endpoint without `LINT_ANYTHING_MODEL`, an endpoint that isn't an http(s) URL, `LINT_ANYTHING_API_KEY` without an endpoint, or a model name like `typesafe/jev-latest` without an endpoint (Workers AI only serves Cloudflare models by name).
-- Every accuracy number in this README was measured on Clef, the model the evals were built with. Clef-flash scored much worse on the same corpus (Evals, "Defaults of the removed flags"), so check another model on your own labels (`score.js`, below) or on the corpus (`bun evals/run.ts` with the same variables set) before trusting its verdicts.
+- Every accuracy number in this README was measured on Clef, the model the evals were built with. Clef-flash scored much worse on the same corpus (Evals, "Defaults of the removed flags"), so check another model on your own labels (`score.js`, below) or on the corpus (`bun evals/run.ts` with the same variables set) before trusting its verdicts. Gemini Decision 1 has been checked once, on the corpus's dev split (real files, semantic policies; [H27](evals/RESEARCH.md)): it ranks files as well as Clef (AUROC 0.937 on both) at 45% of the cost per file, but its scores run lower, so at the shipped cut-offs it catches fewer violations (59% vs. 68%) and raises fewer false alarms (7% vs. 13%).
 
 ## Policies
 
@@ -138,7 +144,7 @@ An item counts as a violation when its lines overlap a labeled violation, and a 
 
 Each policy's selector runs from the current directory, then the decision model judges the selected items. Up to 8 policies run at once, and at most 8 requests are in flight across the run. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing. Findings are printed in policy order.
 
-A request holds at most 64 questions and 64,000 bytes, whichever model is asked (Clef's limits; every decision API that documents a limit allows at least as many questions). Items that don't fit in one request are split across several. Each request is POSTed to the model's endpoint with its API token or key as a bearer token: on Workers AI, `https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/<model>`; otherwise `LINT_ANYTHING_ENDPOINT` as given.
+A request holds at most 64 questions and 64,000 bytes, whichever model is asked (Clef's limits; every decision API that documents a limit allows at least as many questions). Items that don't fit in one request are split across several. Each request is POSTed to the model's endpoint with its API token or key as a bearer token (to Google's Gemini API, as `x-goog-api-key`): on Workers AI, `https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/<model>`; otherwise `LINT_ANYTHING_ENDPOINT` as given.
 
 | Result | Verdict |
 | --- | --- |
@@ -146,7 +152,7 @@ A request holds at most 64 questions and 64,000 bytes, whichever model is asked 
 | `violates ≥ 0.65` | `violation` |
 | otherwise | `review`: uncertain, including cases where careful reviewers would disagree |
 | request with only that item over the byte limit | `inconclusive` (not sent): `request is N bytes; Clef would truncate it`, or for another model `request is N bytes, over the 64000-byte request limit` |
-| the model refused the question (OpenAI Decisions) | `inconclusive`: `<model> declined to answer` |
+| the model refused the question (OpenAI Decisions), or its safety filters blocked the request (Gemini Decisions) | `inconclusive`: `<model> declined to answer` |
 
 An attempt that hasn't returned its whole response within 60 seconds counts as a transient failure. Transient HTTP failures (timeouts, network errors, 408, 429, 5xx) are retried up to 3 times with exponential backoff, waiting at least as long as a `Retry-After` header asks. A request that still fails stops the run (exit 2) with the HTTP status and the endpoint's error, or the network error.
 

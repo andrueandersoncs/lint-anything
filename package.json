@@ -1,7 +1,7 @@
 {
   "name": "@andrueandersoncs/lint-anything",
   "version": "0.5.1",
-  "description": "Check anything against plain-English policies, judged by the decision model of your choice: any System One or OpenAI Decisions endpoint, or Workers AI",
+  "description": "Check anything against plain-English policies, judged by the decision model of your choice: any System One, OpenAI Decisions, or Gemini Decisions endpoint, or Workers AI",
   "license": "MIT",
   "author": "Andrue Anderson",
   "repository": {

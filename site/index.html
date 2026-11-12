@@ -6,7 +6,7 @@
     <title>lint-anything — Lint what static analysis can't</title>
     <meta
       name="description"
-      content="Check code, commits, and anything a shell command can select against rules written in plain English, judged one yes-or-no question at a time by the decision model of your choice: any System One or OpenAI Decisions endpoint, or Workers AI."
+      content="Check code, commits, and anything a shell command can select against rules written in plain English, judged one yes-or-no question at a time by the decision model of your choice: any System One, OpenAI Decisions, or Gemini Decisions endpoint, or Workers AI."
     >
     <meta name="theme-color" content="#09090b">
     <meta property="og:type" content="website">
@@ -790,13 +790,13 @@ bun .claude/skills/lint-anything/scripts/score.js todo-has-issue candidate.md</c
             <div class="step-content">
               <h3>Connect a decision model</h3>
               <p>
-                Any System One or OpenAI Decisions endpoint, such as a LiteLLM
-                proxy or OpenAI. With no endpoint set, lint-anything asks Clef on
+                Any System One, OpenAI Decisions, or Gemini Decisions endpoint,
+                such as a LiteLLM proxy, OpenAI, or Google. With no endpoint set, lint-anything asks Clef on
                 Workers AI with your Cloudflare account ID and an API token. Bun
                 loads <code>.env</code> and <code>.env.local</code> on its own.
               </p>
               <div class="code-block terminal">
-                <pre><code data-highlight="shell"># any System One or OpenAI Decisions endpoint
+                <pre><code data-highlight="shell"># any System One, OpenAI Decisions, or Gemini Decisions endpoint
 echo 'LINT_ANYTHING_ENDPOINT=http://localhost:4000/v1/systemone' >> .env
 echo 'LINT_ANYTHING_MODEL=...' >> .env
 echo 'LINT_ANYTHING_API_KEY=...' >> .env

@@ -81,6 +81,7 @@ Clear semantic violations per policy:
 | H24 | correctness, efficiency, speed | Clef served by Flide (exact state forking, arXiv 2610.42148) matches Clef on Workers AI, and forking makes answers independent of packing | partly tested: on Workers AI, asking each item alone ranks worse than packing (item AUROC 0.894 vs. 0.915, 13,560 dev items); Flide does not fork Clef; GPU runs skipped |
 | H25 | correctness | Checking candidate after candidate on one test split adopts candidates that are no better | supported: within ten no-better candidates, 23% (10 + 10 test files) to 34% (20 + 20) of tuning runs adopt one, reporting +0.10 to +0.16 AUROC that fresh files don't show; picking on dev and deciding once on test stays at 2–7% |
 | H26 | correctness | The corpus test split has been read often but has rarely chosen a default | supported: test numbers in 9 entries (19 with pooled cases); it chose 2 defaults, each one check of a dev-tuned cut-off, and confirmed 8 that dev already supported. Spent for new decisions; a fresh holdout is about 216 real files labeled with the H11 protocol |
+| H27 | correctness, efficiency | Gemini Decision 1 on Google's Decisions API judges the corpus policies about as well as Clef | supported on dev: file AUROC 0.937 on both [−0.008, +0.008], Brier 0.104 → 0.076, item AUROC −0.017; lower scores (caught 59% vs. 68%, false alarms 7% vs. 13% at 0.5 / 0.65); 45% of Clef's cost per file, p50 343 vs. 512 ms; no safety blocks |
 
 Order of work: H1 (sizes every later sample), H2 (gates any labeling at scale), then H3/H4, H5, H7, H6,
 H9, H8. Corpus growth (2026-10-21): H10, H11 while labeling new files, H12 while planting, then H13, H14, H15
@@ -1157,6 +1158,91 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
     real test violations today), so per-policy work on those needs plants (H12), reported apart.
   - **Use it once.** Label it when there is a decision to make, decide once, then fold it into dev (H25).
 
+## H27: Gemini Decision 1 against Clef
+
+- **Question**: Google's Decisions API (`POST https://generativelanguage.googleapis.com/v1beta/decisions`,
+  docs read 2026-11-11) serves `gemini-decision-1`: `noul` questions over a shared `input`, with criteria as
+  `true_description` / `false_description`, answers clipped to 0.01–0.99, a 262,144-token window, up to
+  1,000 questions per request, $0.10 / M input tokens on the paid tier (free tier: 200 RPM, 50,000 TPM,
+  10,000 RPD). lint-anything now speaks it (format `gemini`, picked by the endpoint's host). With the same
+  bodies, packing, and cut-offs, does it judge the corpus policies as well as Clef?
+- **Wire check** (2026-11-11, 2 probe requests): the key works in `x-goog-api-key` and is refused as a
+  bearer token (HTTP 401, "Expected OAuth 2 access token"). A TODO probe like the 2026-10-23 one (run
+  log), with criteria: issue-less TODO 0.975, `TODO(#12)` 0.025 (Clef there: 0.94, 0.02).
+- **Predictions** (written before the eval; Clef's dev real semantic baseline from H24: file AUROC 0.937,
+  p50 512 ms over 3,281 requests):
+  - (a) Gemini ranks below Clef on dev real semantic: file AUROC between 0.88 and 0.94, paired interval
+    excluding 0 on the low side.
+  - (b) At the CLI's cut-offs (0.5 / 0.65) at least 10% of item verdicts differ from Clef's.
+  - (c) Gemini's reported input tokens are within ±30% of Clef's for the same bodies, so its paid-tier
+    cost per 1,000 files is 30–55% of Clef's.
+  - (d) Request latency p50 within 2× of Clef's 512 ms (measured on the attempt that succeeded, so
+    rate-limit waits don't count).
+  - (e) No request is blocked by the safety filters.
+- **Method**: free-tier key, so the eval client waits out 429s (the delay in the response's `Retry-After`);
+  concurrency 4.
+  ```
+  LINT_ANYTHING_ENDPOINT=https://generativelanguage.googleapis.com/v1beta/decisions \
+  LINT_ANYTHING_MODEL=gemini-decision-1 LINT_ANYTHING_API_KEY=$GEMINI_API_KEY \
+    bun evals/run.ts --split dev --origin real --category semantic --concurrency 4
+  bun evals/engines.ts evals/results/dev.real.semantic/production.items.jsonl \
+    evals/results/dev.real.semantic.model-gemini-decision-1/production.items.jsonl
+  ```
+  The same `engines.ts` on the file results (`production.jsonl`). Per-policy and verdict-F1 paired
+  intervals come from scratch scripts over the same stored scores (`pairedInterval`, `verdictF1` from
+  `src/score.ts`; not kept). Tokens and times are summed from the run's cache entries.
+- **Result** (2026-11-11, dev real semantic: 3,691 file cases in 239 files, 39,274 items):
+  - Requests: 3,285 against Clef's 3,281. Gemini's question objects are a few bytes longer
+    (`true_description`), so 4 groups split into one more request. Wall time 4 h 58 min at about 11
+    requests a minute, set by the free tier's 50,000 TPM; every 429 was waited out, and nothing failed.
+  - Ranking:
+
+    | | Clef | Gemini | Paired Δ [95%] |
+    |---|---|---|---|
+    | File AUROC (clear) | 0.937 | 0.937 | [−0.008, +0.008] |
+    | File Brier | 0.104 | 0.076 | [−0.032, −0.023] |
+    | Item AUROC (clear) | 0.919 | 0.902 | [−0.027, −0.007] |
+    | Item Brier (`engines.ts`, all items) | 0.075 | 0.058 | [−0.020, −0.015] |
+    | Verdict F1 at 0.5 / 0.65 | 0.567 | 0.574 | [−0.018, +0.030] |
+
+  - Agreement: no item answer is identical and 7.0% are within 0.01; |Δ| mean 0.118, p95 0.340, Pearson
+    r 0.70 (files: r 0.84). At 0.5 / 0.65, 3,194 item verdicts (8.1%) and 678 file verdicts (18.4%)
+    differ; 980 and 191 of those are pass ↔ violation.
+  - Gemini scores lower across the board. Item means: compliant 0.118 (Clef 0.197), violating 0.492
+    (0.595); 47% of violating items reach 0.5 (Clef 65%) and 3.8% of compliant ones (5.9%). At the CLI's
+    cut-offs, file cases caught 59% vs. 68%, surfaced 75% vs. 87%, false alarms 7% vs. 13%. The cut-offs
+    `run.ts` tunes in-sample move down to fit: 0.35 / 0.575 → F1 0.613 for Gemini, against Clef's
+    0.575 / 0.725 → 0.578. Each model loses at the other's tuned cut-offs (Gemini at Clef's: 0.532;
+    Clef at Gemini's: 0.541), so its cut-offs belong to the model.
+  - Per policy (file AUROC, paired): Gemini is worse outside noise on 3 of 17, descriptive-test-names
+    0.967 → 0.872 [−0.200, −0.013], comments-explain-why 0.957 → 0.923 [−0.056, −0.014], and
+    thin-entry-points 0.979 → 0.950 [−0.062, −0.005], and better on none (cohesive-modules, 4 violations,
+    0.985 → 0.996 [+0.000, +0.028]). With 17 intervals, one exclusion is expected by chance.
+    intent-revealing-names drops 0.924 → 0.880 [−0.099, +0.007]; minimal-public-surface (+0.030) and
+    names-match-behavior (+0.026) rise within noise.
+  - Cost: 17.37M input tokens against Clef's about 16.24M (from its $16.306 per 1,000 files at $0.24 / M),
+    7% more. At $0.10 / M that is $1.74 for the sweep (Clef: about $3.90), $7.27 per 1,000 files against
+    $16.31: 45% of Clef's. The free tier charged nothing.
+  - Latency (the attempt that succeeded): p50 343 ms, p95 594 ms, max 5,405 ms; Clef p50 512 ms, p95
+    2,247 ms, max 6,602 ms.
+  - Safety blocks: none (0 of 3,285 requests declined; 0 unanswered items).
+  - (a) refuted: file AUROC 0.937 is inside the predicted range, but the paired interval is centered on
+    0 ([−0.008, +0.008]), not below it. Ranking is lower only per item (−0.017).
+  - (b) refuted for items: 8.1% of item verdicts differ, under 10%; file verdicts differ more (18.4%).
+  - (c) holds: tokens +7%; paid cost per 1,000 files 45% of Clef's.
+  - (d) holds, by more than predicted: p50 0.67× Clef's, p95 0.26×.
+  - (e) holds.
+- **Conclusion**: Gemini Decision 1 ranks the corpus's files as well as Clef (file AUROC 0.937 on both,
+  ±0.008), is better calibrated (Brier −0.028), and costs 45% as much per file at its paid price, with
+  lower and much steadier latency. Ranking within files is slightly worse (item AUROC −0.017), and three
+  policies lose outside noise, most on descriptive-test-names. Its scores sit lower, so with the shipped
+  0.5 / 0.65 cut-offs it reports fewer violations and fewer false alarms at the same F1; anyone switching
+  to it should re-tune cut-offs for Gemini rather than carry over Clef's. That tuning, like any choice of
+  Gemini as a default, needs a held-out check: these numbers are dev only, and the corpus test split is
+  spent for new decisions (H26). Clef stays the default.
+- **Status**: tested on dev real semantic. Not run: test (H26), other origins and categories, and
+  Gemini-tuned cut-offs.
+
 ---
 
 ## Run log
@@ -1239,5 +1325,12 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   real semantic, three strategies). 1,600 runs, about 13 minutes; no requests.
 - 2026-11-11: H26 audit of decisions made with the corpus test split. Item cut-offs recomputed from
   stored all-case scores (scratch script, not kept); 0 requests.
+- 2026-11-11: H27. `src/decision-model.ts` speaks Google's Decisions API (format `gemini`, chosen by the
+  host `generativelanguage.googleapis.com`; key in `x-goog-api-key`; a safety block declines every
+  question in the request). The eval client waits out 429s by `Retry-After` without spending an attempt,
+  caches declined requests, and prices `gemini-decision-1` at $0.10 / M input tokens for reports. Clef's
+  dev real semantic replay was unchanged (0 requests). Gemini, free-tier key: 2 probe requests, then
+  3,285 requests for dev real semantic (17.37M input tokens, $0 on the free tier; $1.74 at the paid
+  price), 4 h 58 min at concurrency 4.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

@@ -3,14 +3,19 @@ import { mkdirSync } from "node:fs"
 import { join } from "node:path"
 import { Cause, Config, Context, Effect, flow, Layer, Option, Redacted, Ref, Result, Runtime, Schedule, Schema, Semaphore } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http"
+import { maxImageBytes, maxMediaBytes, mediaBase64, type MediaKind, mediaKinds, mediaNoun, type Medium, readMedium } from "./media.ts"
 
 /**
  * One yes/no question: `instructions` is what the decision model judges, and `criteria` say what a yes
- * (`true`) and a no (`false`) mean. The model answers with the probability of yes.
+ * (`true`) and a no (`false`) mean. The model answers with the probability of yes. `media` lists image,
+ * audio, and video files the model is shown with it, by path from the current directory (types by
+ * extension, `media.ts`); a request shows its media for every question in it, so only questions with the
+ * same media share one.
  */
 export interface Question {
   readonly instructions: string
   readonly criteria: { readonly true: string; readonly false: string }
+  readonly media?: ReadonlyArray<string>
 }
 
 export class DecisionModelError extends Schema.TaggedError<DecisionModelError>()("DecisionModelError", {
@@ -75,15 +80,27 @@ const cacheBusyTimeoutMs = 10_000
  * - `system-one`: the System One API (`POST /v1/systemone`) that Jev introduced and Clef, LiteLLM, LLM
  *   Gateway, Ollama, llama.cpp, SGLang, and most decision-model servers speak. A request has a `state` and
  *   `noul` questions keyed by id; each answer is the probability of yes. Workers AI wraps the response in
- *   `result`, which is read the same way.
+ *   `result`, which is read the same way. Media go before the state as data URLs, in `images`, `audio`,
+ *   and `videos`, as Clef, clef-omni, and LiteLLM take them.
  * - `decisions`: OpenAI's Decisions API (`POST /v1/decisions`). A request has an `input` and a list of
- *   `predicate` questions; answers come back as a list, each a probability or a refusal.
+ *   `predicate` questions; answers come back as a list, each a probability or a refusal. With images, the
+ *   input is one user message: an `input_image` part per image, then the state as `input_text`. It takes
+ *   no audio or video.
  * - `gemini`: Google's Decisions API for Gemini Decision (`POST /v1beta/decisions` on
  *   `generativelanguage.googleapis.com`). A request has an `input` and `noul` questions keyed by id, whose
  *   criteria are `true_description` and `false_description`; the key goes in `x-goog-api-key`. A request
- *   its safety filters block is answered with HTTP 400 instead, which declines every question in it.
+ *   its safety filters block is answered with HTTP 400 instead, which declines every question in it. With
+ *   media, the input is a list of content blocks: an `image`, `audio`, or `video` block per file, in base64,
+ *   then the state as `text`.
  */
 export type Format = "system-one" | "decisions" | "gemini"
+
+/** A media file of a request, read and encoded for its body. */
+interface Encoded extends Medium {
+  readonly base64: string
+}
+
+const dataUrl = (medium: Encoded) => `data:${medium.type};base64,${medium.base64}`
 
 /** A response, read: each question's probability of yes, or `declined`, by id, and the input tokens it reports. */
 interface Reply {
@@ -92,8 +109,10 @@ interface Reply {
 }
 
 interface Wire {
-  /** The request body up to its first question. */
-  readonly head: (model: string, state: string) => string
+  /** The request body up to its first question, with its media. */
+  readonly head: (model: string, state: string, media: ReadonlyArray<Encoded>) => string
+  /** The kinds of media a request in this format can carry. */
+  readonly takes: ReadonlyArray<MediaKind>
   /** The request body after its last question. */
   readonly tail: string
   /** One question in the request body, under `id`. */
@@ -120,8 +139,20 @@ const SystemOneResponse = Schema.Struct({
   usage: ReportedUsage
 })
 
+// Clef's and clef-omni's names for the lists of each kind of media; a list with no files is left out.
+const systemOneMedia = (media: ReadonlyArray<Encoded>) => {
+  const of = (kind: MediaKind) => media.filter((medium) => medium.kind === kind).map(dataUrl)
+  const [images, audio, videos] = [of("image"), of("audio"), of("video")]
+  return {
+    ...(images.length === 0 ? {} : { images }),
+    ...(audio.length === 0 ? {} : { audio }),
+    ...(videos.length === 0 ? {} : { videos })
+  }
+}
+
 const systemOne: Wire = {
-  head: (model, state) => `${JSON.stringify({ model, state }).slice(0, -1)},"questions":{`,
+  head: (model, state, media) => `${JSON.stringify({ model, ...systemOneMedia(media), state }).slice(0, -1)},"questions":{`,
+  takes: mediaKinds,
   tail: "}}",
   entry: (id, question) => `${JSON.stringify(id)}:${JSON.stringify(noul(question))}`,
   // Workers AI wraps every model response in `result`; System One servers answer unwrapped.
@@ -152,8 +183,18 @@ const DecisionsResponse = Schema.Struct({
   usage: ReportedUsage
 })
 
+const decisionsInput = (state: string, media: ReadonlyArray<Encoded>) =>
+  media.length === 0 ? state : [{
+    role: "user",
+    content: [
+      ...media.map((medium) => ({ type: "input_image", image_url: dataUrl(medium) })),
+      { type: "input_text", text: state }
+    ]
+  }]
+
 const decisions: Wire = {
-  head: (model, state) => `${JSON.stringify({ model, input: state }).slice(0, -1)},"questions":[`,
+  head: (model, state, media) => `${JSON.stringify({ model, input: decisionsInput(state, media) }).slice(0, -1)},"questions":[`,
+  takes: ["image"],
   tail: "]}",
   entry: (id, question) => JSON.stringify(predicate(id, question)),
   decode: (body) =>
@@ -184,8 +225,15 @@ const GeminiBlocked = Schema.fromJsonString(Schema.Struct({
   error: Schema.Struct({ code: Schema.Literals(["safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"]) })
 }))
 
+const geminiInput = (state: string, media: ReadonlyArray<Encoded>) =>
+  media.length === 0 ? state : [
+    ...media.map((medium) => ({ type: medium.kind, data: medium.base64, mime_type: medium.type })),
+    { type: "text", text: state }
+  ]
+
 const gemini: Wire = {
-  head: (model, state) => `${JSON.stringify({ model, input: state }).slice(0, -1)},"questions":{`,
+  head: (model, state, media) => `${JSON.stringify({ model, input: geminiInput(state, media) }).slice(0, -1)},"questions":{`,
+  takes: mediaKinds,
   tail: "}}",
   entry: (id, question) => `${JSON.stringify(id)}:${JSON.stringify(geminiNoul(question))}`,
   decode: (body) =>
@@ -225,6 +273,11 @@ export interface Model {
   readonly cacheKey: string
   /** USD per input token, when known. */
   readonly inputTokenPrice: number | undefined
+  /**
+   * The kinds of media it takes, when known; otherwise any its format can carry is sent, and the endpoint
+   * says whether it takes them.
+   */
+  readonly media?: ReadonlyArray<MediaKind> | undefined
 }
 
 /**
@@ -234,6 +287,14 @@ export interface Model {
 export interface Target extends Model {
   readonly url: string
   readonly token: Redacted.Redacted<string> | undefined
+}
+
+// What Cloudflare's decision models take besides text: clef-omni reads images, audio, and video; Clef and
+// Clef-flash read images.
+const workersAiMedia: Record<string, ReadonlyArray<MediaKind>> = {
+  clef: ["image"],
+  "clef-flash": ["image"],
+  "clef-omni": mediaKinds
 }
 
 /** Clef on Workers AI, the model a run asks unless configured otherwise. */
@@ -246,7 +307,8 @@ function workersAiModel(model: string): Model {
     name: model === "clef" ? "Clef" : model,
     // Answers are filed under the model's name alone, as Clef's were before other models: caches still hit.
     cacheKey: model,
-    inputTokenPrice: model === "clef" ? clefInputTokenPrice : undefined
+    inputTokenPrice: model === "clef" ? clefInputTokenPrice : undefined,
+    media: workersAiMedia[model]
   }
 }
 
@@ -278,12 +340,15 @@ const formatOf = (url: string): Format => {
   return pathname.replace(/\/+$/, "").endsWith("/decisions") ? "decisions" : "system-one"
 }
 
+// A model behind a System One endpoint may take any media or none, so its endpoint decides; OpenAI's and
+// Gemini's Decisions APIs take what their format can carry.
 const endpointModel = (url: string, model: string): Model => ({
   format: formatOf(url),
   model,
   name: model,
   cacheKey: `${url} ${model}`,
-  inputTokenPrice: undefined
+  inputTokenPrice: undefined,
+  media: undefined
 })
 
 /**
@@ -373,26 +438,33 @@ export const configuredTarget: Effect.Effect<Target, DecisionModelError> = Effec
 
 // --- Packing ----------------------------------------------------------------------------------------
 
-/** One request: its exact body and what each question id answers. */
+/**
+ * One request: its exact body, the media its questions show (by path), and what each question id answers.
+ * The body of a request with media leaves them out; they are read, and put where its format takes them,
+ * when it is sent.
+ */
 export interface Planned<A> {
   readonly body: string
+  readonly media: ReadonlyArray<string>
   readonly questions: ReadonlyArray<{ readonly id: string; readonly value: A }>
 }
 
 /**
- * Packs one question per value, in order, into as few requests sharing `state` as the question and byte
- * limits allow, laid out for `model`. Question ids are `i0`, `i1`, … within each request. A value too
- * large to send even alone is returned in `oversized`.
+ * Packs one question per value, in order, into as few requests sharing `state` and `media` as the question
+ * and byte limits allow, laid out for `model`. Question ids are `i0`, `i1`, … within each request. A value
+ * too large to send even alone is returned in `oversized`. The byte limit is on the text: media are
+ * limited apart (`media.ts`).
  */
 const pack = <A>(
   model: Pick<Model, "format" | "model">,
   state: string,
+  media: ReadonlyArray<string>,
   values: ReadonlyArray<A>,
   question: (value: A) => Question
 ) => {
   const wire = wires[model.format]
   // The body is assembled from serialized parts so each request's exact size is known while packing.
-  const head = wire.head(model.model, state)
+  const head = wire.head(model.model, state, [])
   const fixedBytes = Buffer.byteLength(head) + Buffer.byteLength(wire.tail)
   const entry = (value: A, index: number) => {
     const id = `i${index}`
@@ -405,7 +477,7 @@ const pack = <A>(
   let questions: Array<{ readonly id: string; readonly value: A }> = []
   let bytes = fixedBytes
   const flush = () => {
-    if (questions.length > 0) requests.push({ body: `${head}${entries.join(",")}${wire.tail}`, questions })
+    if (questions.length > 0) requests.push({ body: `${head}${entries.join(",")}${wire.tail}`, media, questions })
     entries = []
     questions = []
     bytes = fixedBytes
@@ -431,17 +503,52 @@ const pack = <A>(
 
 /**
  * Plans the requests that ask `questions` under `state`: the state once per request and as many questions
- * as fit, laid out for `model` (default: Clef). Planned questions answer by index into `questions`.
+ * as fit, laid out for `model` (default: Clef). A request shows its media for every question in it, so
+ * questions share one only with questions showing the same media; groups are planned in order of their
+ * first question. Planned questions answer by index into `questions`.
  */
-export const planRequests = (state: string, questions: ReadonlyArray<Question>, model: Pick<Model, "format" | "model"> = clef) =>
-  pack(model, state, questions.map((_, index) => index), (index) => questions[index]!)
+export const planRequests = (state: string, questions: ReadonlyArray<Question>, model: Pick<Model, "format" | "model"> = clef) => {
+  const groups = new Map<string, Array<number>>()
+  questions.forEach((question, index) => {
+    const key = JSON.stringify(question.media ?? [])
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, [index])
+    else group.push(index)
+  })
+  const requests: Array<Planned<number>> = []
+  const oversized: Array<{ readonly value: number; readonly bytes: number }> = []
+  for (const indexes of groups.values()) {
+    const media = questions[indexes[0]!]!.media ?? []
+    const planned = pack(model, state, media, indexes, (index) => questions[index]!)
+    requests.push(...planned.requests)
+    oversized.push(...planned.oversized)
+  }
+  return { requests, oversized }
+}
+
+/** `body`, planned without media, with `media` encoded where `model`'s format takes them. */
+const withMedia = (model: Pick<Model, "format" | "model">, state: string, body: string, media: ReadonlyArray<Encoded>) => {
+  const head = wires[model.format].head
+  return `${head(model.model, state, media)}${body.slice(head(model.model, state, []).length)}`
+}
 
 // --- Answer cache -----------------------------------------------------------------------------------
 
+/** What a question's media add to its cache key: each file's type and contents, in order; empty without media. */
+const mediaPrint = (media: ReadonlyArray<Medium>) => media.map((medium) => `${medium.type} ${medium.digest}`).join("\0")
+
+/** A question's answer, to cache, with its media's `mediaPrint`. */
+interface Answered {
+  readonly question: Question
+  readonly print: string
+  readonly noul: number
+}
+
 /**
  * Answers kept on disk in one SQLite database, one row per question, keyed by the model's cache key, the
- * request text, and the question (not its id or the other questions in the request), so unchanged questions
- * aren't sent again. Opening it deletes answers older than `cacheMaxAgeMs` at `now`, so they are asked again.
+ * request text, the question (not its id or the other questions in the request), and the contents of its
+ * media (`mediaPrint`), so unchanged questions aren't sent again. Opening it deletes answers older than
+ * `cacheMaxAgeMs` at `now`, so they are asked again.
  */
 const openAnswerCache = (directory: string, now: number, model: Model) => {
   mkdirSync(directory, { recursive: true })
@@ -459,21 +566,23 @@ const openAnswerCache = (directory: string, now: number, model: Model) => {
   db.run("DELETE FROM answers WHERE answered <= ?", [now - cacheMaxAgeMs])
   const select = db.query<{ noul: number }, [Uint8Array]>("SELECT noul FROM answers WHERE key = ?")
   const upsert = db.query("INSERT OR REPLACE INTO answers (key, noul, answered) VALUES (?, ?, ?)")
-  const key = (state: string, question: Question): Uint8Array =>
-    new Bun.CryptoHasher("sha256").update(`${model.cacheKey}\0${state}\0${JSON.stringify(noul(question))}`).digest()
+  // A question without media keys as it did before media, so caches from then still hit.
+  const key = (state: string, question: Question, print: string): Uint8Array =>
+    new Bun.CryptoHasher("sha256").update(
+      `${model.cacheKey}\0${state}\0${JSON.stringify(noul(question))}${print === "" ? "" : `\0${print}`}`
+    ).digest()
   // One transaction per request's answers: a run stopped later keeps every answer it received.
-  const insert = db.transaction((state: string, answers: ReadonlyArray<{ readonly question: Question; readonly noul: number }>) => {
+  const insert = db.transaction((state: string, answers: ReadonlyArray<Answered>) => {
     const answered = Date.now()
-    for (const { question, noul } of answers) upsert.run(key(state, question), noul, answered)
+    for (const { question, print, noul } of answers) upsert.run(key(state, question, print), noul, answered)
   })
   const failed = (error: unknown) =>
     new DecisionModelError({ message: `answer cache ${join(directory, cacheFile)}: ${error instanceof Error ? error.message : String(error)}` })
   return {
-    /** Each question's cached answer, or `undefined` when it has none. */
-    get: (state: string, questions: ReadonlyArray<Question>) =>
-      Effect.try({ try: () => questions.map((question) => select.get(key(state, question))?.noul), catch: failed }),
-    set: (state: string, answers: ReadonlyArray<{ readonly question: Question; readonly noul: number }>) =>
-      Effect.try({ try: () => insert(state, answers), catch: failed }),
+    /** Each question's cached answer, or `undefined` when it has none; `prints` are their media's, in order. */
+    get: (state: string, questions: ReadonlyArray<Question>, prints: ReadonlyArray<string>) =>
+      Effect.try({ try: () => questions.map((question, index) => select.get(key(state, question, prints[index]!))?.noul), catch: failed }),
+    set: (state: string, answers: ReadonlyArray<Answered>) => Effect.try({ try: () => insert(state, answers), catch: failed }),
     close: () => db.close()
   }
 }
@@ -612,22 +721,81 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
     )
   }
 
-  /** Sends one planned request for `source` and returns each question's answer, keyed like `request.questions`. */
-  const send = Effect.fn("DecisionModel.send")(function*<A>(source: string, request: Planned<A>) {
-    const reply: Reply = yield* record(source, { requests: 1 }).pipe(
-      Effect.andThen(HttpClientRequest.post(target.url).pipe(
-        HttpClientRequest.bodyText(request.body, "application/json"),
-        client.execute
-      )),
-      Effect.flatMap((response) => response.json),
-      Effect.flatMap(wire.decode),
-      permits.withPermit,
-      Effect.catch((error) =>
-        Effect.flatMap(declinesAll(error), (all): Effect.Effect<Reply, DecisionModelError> =>
-          all
-            ? Effect.succeed({ answers: new Map(request.questions.map(({ id }) => [id, "declined"])), inputTokens: undefined })
-            : Effect.flatMap(failureMessage(target.name, error), (message) => Effect.fail(new DecisionModelError({ message }))))
+  /** Reads each media file the questions show, once, to key the cache by its contents. */
+  const readMedia = (questions: ReadonlyArray<Question>) =>
+    Effect.forEach(
+      [...new Set(questions.flatMap((question) => question.media ?? []))],
+      (path) =>
+        Effect.tryPromise({
+          try: () => readMedium(path),
+          catch: (error) =>
+            new DecisionModelError({ message: `cannot read media ${path}: ${error instanceof Error ? error.message : String(error)}` })
+        })
+    ).pipe(Effect.map((media) => new Map(media.map((medium) => [medium.path, medium]))))
+
+  // The kinds of media the model takes: what it is known to take, else any its format can carry.
+  const takes = (kind: MediaKind) => wire.takes.includes(kind) && (target.media?.includes(kind) ?? true)
+  const taken = ["text", ...mediaKinds.filter(takes).map((kind) => mediaNoun[kind])]
+  const takenList = taken.length <= 2 ? taken.join(" and ") : `${taken.slice(0, -1).join(", ")}, and ${taken.at(-1)}`
+  const notTaken = (medium: Medium) =>
+    new DecisionModelError({ message: `${target.name} takes ${takenList}, not ${mediaNoun[medium.kind]}: ${medium.path}` })
+
+  /** Why a question's media are too large to send, if they are: an image, or all of them together. */
+  const mediaTooLarge = (media: ReadonlyArray<Medium>) => {
+    const image = media.find((medium) => medium.kind === "image" && medium.bytes > maxImageBytes)
+    if (image !== undefined) {
+      return new RequestTooLarge({
+        bytes: image.bytes,
+        message: `image ${image.path} is ${image.bytes} bytes, over the ${maxImageBytes}-byte image limit`
+      })
+    }
+    const bytes = media.reduce((sum, medium) => sum + medium.bytes, 0)
+    return bytes > maxMediaBytes
+      ? new RequestTooLarge({ bytes, message: `media are ${bytes} bytes, over the ${maxMediaBytes}-byte media limit` })
+      : undefined
+  }
+
+  /** `request`'s body, its media read and encoded into it. */
+  const bodyOf = <A>(state: string, request: Planned<A>, media: ReadonlyMap<string, Medium>) =>
+    request.media.length === 0 ? Effect.succeed(request.body) : Effect.tryPromise({
+      try: async () => {
+        const encoded = await Promise.all(request.media.map(async (path) => {
+          const medium = media.get(path)!
+          return { ...medium, base64: await mediaBase64(medium) }
+        }))
+        return withMedia(target, state, request.body, encoded)
+      },
+      catch: (error) => new DecisionModelError({ message: `cannot read media: ${error instanceof Error ? error.message : String(error)}` })
+    })
+
+  /**
+   * Sends one planned request under `state` for `source` and returns each question's answer, keyed like
+   * `request.questions`. Its media are read while it holds a permit, so at most as many requests' media
+   * are in memory as requests are in flight.
+   */
+  const send = Effect.fn("DecisionModel.send")(function*<A>(
+    source: string,
+    state: string,
+    request: Planned<A>,
+    media: ReadonlyMap<string, Medium>
+  ) {
+    const post = (body: string) =>
+      HttpClientRequest.post(target.url).pipe(
+        HttpClientRequest.bodyText(body, "application/json"),
+        client.execute,
+        Effect.flatMap((response) => response.json),
+        Effect.flatMap(wire.decode),
+        Effect.catch((error) =>
+          Effect.flatMap(declinesAll(error), (all): Effect.Effect<Reply, DecisionModelError> =>
+            all
+              ? Effect.succeed({ answers: new Map(request.questions.map(({ id }) => [id, "declined"])), inputTokens: undefined })
+              : Effect.flatMap(failureMessage(target.name, error), (message) => Effect.fail(new DecisionModelError({ message }))))
+        )
       )
+    const reply: Reply = yield* record(source, { requests: 1 }).pipe(
+      Effect.andThen(bodyOf(state, request, media)),
+      Effect.flatMap(post),
+      permits.withPermit
     )
     yield* record(source, reply.inputTokens === undefined ? { unmetered: 1 } : { inputTokens: reply.inputTokens })
     const answers: Array<{ readonly value: A; readonly answer: number | "declined" }> = []
@@ -646,30 +814,44 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
    * caching their answers. Results follow `questions` order.
    */
   const ask = Effect.fn("DecisionModel.ask")(function*(source: string, state: string, questions: ReadonlyArray<Question>) {
+    const media = yield* readMedia(questions)
+    const mediaOf = (question: Question) => (question.media ?? []).map((path) => media.get(path)!)
+    const prints = questions.map((question) => mediaPrint(mediaOf(question)))
     const results: Array<Result.Result<number, Unanswered>> = []
     const misses: Array<number> = []
-    const cached = cache === undefined ? [] : yield* cache.get(state, questions)
+    const cached = cache === undefined ? [] : yield* cache.get(state, questions, prints)
     questions.forEach((_, index) => {
       const answer = cached[index]
       if (answer === undefined) misses.push(index)
       else results[index] = Result.succeed(answer)
     })
     if (misses.length < questions.length) yield* record(source, { cached: questions.length - misses.length })
-    const { requests, oversized } = planRequests(state, misses.map((index) => questions[index]!), target)
-    for (const { value, bytes } of oversized) results[misses[value]!] = Result.fail(tooLarge(bytes))
+    // Media the model can't take stop the run before anything is sent; media too large to send leave
+    // their question unanswered.
+    const sendable: Array<number> = []
+    for (const index of misses) {
+      const shown = mediaOf(questions[index]!)
+      const untaken = shown.find((medium) => !takes(medium.kind))
+      if (untaken !== undefined) return yield* notTaken(untaken)
+      const tooMuch = mediaTooLarge(shown)
+      if (tooMuch === undefined) sendable.push(index)
+      else results[index] = Result.fail(tooMuch)
+    }
+    const { requests, oversized } = planRequests(state, sendable.map((index) => questions[index]!), target)
+    for (const { value, bytes } of oversized) results[sendable[value]!] = Result.fail(tooLarge(bytes))
     // `permits` bounds requests in flight across the run. Each request's answers are cached as it
     // returns, so a run that fails later keeps every answer it received. A declined question isn't
     // cached: it is asked again next run.
     yield* Effect.forEach(requests, (request) =>
-      send(source, request).pipe(Effect.tap((received) => {
-        const answered: Array<{ readonly question: Question; readonly noul: number }> = []
+      send(source, state, request, media).pipe(Effect.tap((received) => {
+        const answered: Array<Answered> = []
         for (const { value, answer } of received) {
-          const index = misses[value]!
+          const index = sendable[value]!
           if (answer === "declined") {
             results[index] = Result.fail(declined)
           } else {
             results[index] = Result.succeed(answer)
-            answered.push({ question: questions[index]!, noul: answer })
+            answered.push({ question: questions[index]!, print: prints[index]!, noul: answer })
           }
         }
         return cache === undefined ? Effect.void : cache.set(state, answered)

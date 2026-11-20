@@ -5,7 +5,7 @@ description: Run lint-anything, act on its findings, and write or tune its polic
 
 # lint-anything
 
-lint-anything checks a codebase against rules written in English. Each rule is a **policy**: a Markdown file whose shell **selector** cuts out the items to judge (functions, comments, commits, anything), and whose body and **criteria** tell a decision model what a violation is: whichever model the project configures. The model returns a violation probability for each item; the CLI turns it into a verdict.
+lint-anything checks a codebase against rules written in English. Each rule is a **policy**: a Markdown file whose shell **selector** cuts out the items to judge (functions, comments, commits, screenshots, recordings, anything), and whose body and **criteria** tell a decision model what a violation is: whichever model the project configures. The model returns a violation probability for each item; the CLI turns it into a verdict.
 
 It is a guide more than a gate: semantic rules are judged probabilistically. On the project's eval corpus, well-written policies catch about 69% of real violations outright, surface about 85% (counting `review`), and raise false alarms on about 13% of clean cases. Read findings critically; don't assume every `violation` is real or every `pass` is clean.
 
@@ -24,7 +24,8 @@ If `lint-anything` isn't found, install it with `bun add -d @andrueandersoncs/li
 - **The working directory matters.** Policies are read from `./.lint-anything/rules`, and selectors run in the current directory. Run from a subdirectory and you get `error: cannot read policies in .lint-anything/rules`: there is no upward search.
 - **The decision model** is the project's choice, set in the environment or in `.env` / `.env.local` in the current directory. Don't change it to make findings go away. With `LINT_ANYTHING_ENDPOINT` (a full URL), the model named by `LINT_ANYTHING_MODEL` is asked there, and `LINT_ANYTHING_API_KEY` is its key if it needs one. An endpoint on `generativelanguage.googleapis.com` speaks Google's Decisions API (`gemini-decision-1`, keyed by a Gemini API key); any other whose path ends in `/decisions` speaks OpenAI's; any other speaks System One (`/v1/systemone`: Jev, LiteLLM, LLM Gateway, and most decision-model servers).
 - **Without an endpoint**, a Cloudflare model on Workers AI is asked: `clef`, or another that `LINT_ANYTHING_MODEL` names (`clef-flash`). `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_AUTH_TOKEN` are then required on every run, even when every answer would come from the cache. `CLOUDFLARE_API_BASE_URL` is optional.
-- **Accuracy numbers in this skill were measured on Clef.** A project on another model should score it on its labels before trusting it.
+- **What the model can see** besides text depends on it: Gemini Decision 1 and `clef-omni` take images, audio, and video; OpenAI Decisions, `clef`, and `clef-flash` take images only; another System One server takes what it takes. An item whose media the model can't take stops the run before anything is sent (`Clef takes text and images, not audio clips: …`).
+- **Accuracy numbers in this skill were measured on Clef**, on text. A project on another model, or with media, should score its policies on its labels before trusting them.
 - **Add `.lint-anything/cache` to `.gitignore`.** The answer cache (`answers.sqlite` plus `-wal`/`-shm` files) is written there.
 
 ### Output
@@ -50,7 +51,7 @@ Columns: verdict, violation probability (`-` when none), location, policy name, 
 | `pass` | probability ≤ 0.5 | 0 |
 | `review` | between 0.5 and 0.65: uncertain, often a case reasonable reviewers would disagree on | 0 |
 | `violation` | probability ≥ 0.65 | **1** |
-| `inconclusive` | the item wasn't judged: too large to send (`request is N bytes; Clef would truncate it`, or `…, over the 64000-byte request limit` on another model), or refused by the model (`<model> declined to answer`: an OpenAI Decisions refusal, or a request Gemini's safety filters blocked) | 0 |
+| `inconclusive` | the item wasn't judged: too large to send (`request is N bytes; Clef would truncate it`, or `…, over the 64000-byte request limit` on another model; `image <path> is N bytes, over the 4194304-byte image limit`; `media are N bytes, over the 8388608-byte media limit`), or refused by the model (`<model> declined to answer`: an OpenAI Decisions refusal, or a request Gemini's safety filters blocked) | 0 |
 
 | Exit code | Meaning |
 | --- | --- |
@@ -149,8 +150,20 @@ The selector is a shell command that finds what to judge and prints **JSONL**, o
 | `text` | yes | non-empty string: **everything the model reads for this item**, including its context |
 | `path` | no | file path, for the location |
 | `lines` | no | `[start, end]`, integers, **1-based**, inclusive, `1 ≤ start ≤ end` |
+| `media` | no | array of file paths, from the project root: images, audio, and video the model is shown with the text |
 
-Any other field, a non-JSON line, or a wrong type stops the whole run with `selector output line N is not a valid item: …`. Blank lines are skipped.
+Any other field, a non-JSON line, or a wrong type stops the whole run with `selector output line N is not a valid item: …`. Blank lines are skipped. So does a `media` file that doesn't exist, has a type the models don't take, or is one too many of its kind.
+
+**Media items.** `media` files are typed by extension: `.png`, `.jpg`, `.jpeg`, `.webp`; `.wav`, `.mp3`, `.flac`, `.ogg`; `.mp4`, `.webm`. An item shows at most 4 images, 4 audio clips, and 2 videos, at most 4 MiB per image and 8 MiB in all (larger is `inconclusive`). Keep `text` short and say what the media is: it is the question asked about them.
+
+```yaml
+select: |
+  for f in docs/screenshots/*.png; do
+    jq -cn --arg f "$f" '{id: $f, path: $f, text: "screenshot \($f)", media: [$f]}'
+  done
+```
+
+Items share a request only with items showing the same files, so a policy over 200 screenshots sends 200 requests on its first run. Several questions about one file (a heading rule and a button rule, as separate items with the same `media`) do share one.
 
 How a selector runs:
 
@@ -256,7 +269,7 @@ The lint-anything repository has worked examples: 21 policies in `evals/corpus/p
 
 ## Cache and cost
 
-- Each answer is cached per question, keyed by model (and endpoint), policy body, item text, and criteria. Switching models never reuses another model's answers. Re-running with nothing changed sends no requests, and an edit re-asks only the items whose text changed. Editing a policy's body or criteria re-asks all of that policy's items.
+- Each answer is cached per question, keyed by model (and endpoint), policy body, item text, criteria, and the contents of the item's media. Switching models never reuses another model's answers. Re-running with nothing changed sends no requests, and an edit re-asks only the items whose text or media changed. Editing a policy's body or criteria re-asks all of that policy's items.
 - Answers expire after 30 days, so everything is asked again about once a month, and verdicts can shift slightly if the model has been updated.
 - A machine without the cache (a fresh CI runner) pays for every item on every run, unless CI keeps `.lint-anything/cache` between runs.
 - Cost depends on the model. `--debug` prices only Clef ($0.24 per million input tokens; output is free); on another model its cost column is `-`, and the project's provider bills it. On the evals, with Clef, rule-specific selectors cost about $14–16 per 1,000 files across 17 rules. Nothing caps spending: a selector that emits every line of a large repository sends all of them, so check the item count by hand first.

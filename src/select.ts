@@ -1,5 +1,7 @@
+import { stat } from "node:fs/promises"
+import { resolve } from "node:path"
 import { Effect, Runtime, Schema } from "effect"
-import { parseItem } from "./item.ts"
+import { type Item, parseItem } from "./item.ts"
 import type { Policy } from "./policy.ts"
 
 export class SelectorError extends Schema.TaggedError<SelectorError>()("SelectorError", {
@@ -84,10 +86,26 @@ const start = async (select: string, cwd: string | undefined): Promise<SelectorO
 }
 
 /**
+ * `item` with its media files found: each path, from where the selector ran (`cwd`), must name a file. They
+ * are read when the item is judged, from the current directory, so a path from another `cwd` is resolved.
+ */
+const findMedia = (item: Item, cwd: string | undefined) => {
+  if (item.media === undefined) return Effect.succeed(item)
+  const media = cwd === undefined ? item.media : item.media.map((file) => resolve(cwd, file))
+  return Effect.forEach(media, (file, index) =>
+    Effect.tryPromise({
+      try: () => stat(file),
+      catch: () => `media ${item.media![index]}: no such file`
+    }).pipe(Effect.filterOrFail((stats) => stats.isFile(), () => `media ${item.media![index]} is not a file`))).pipe(
+      Effect.as({ ...item, media })
+    )
+}
+
+/**
  * Runs `policy.select` with `sh -c` from `cwd`, with no arguments and an empty stdin: the selector finds
  * what it judges itself. Its stdout must be JSONL: one item per non-empty line. A non-zero exit, an invalid
- * line, or running longer than `selectorTimeoutMinutes` fails the run. With `runs`, a selector already run
- * with the same command and directory reuses that run's output.
+ * line (media that name no file included), or running longer than `selectorTimeoutMinutes` fails the run.
+ * With `runs`, a selector already run with the same command and directory reuses that run's output.
  */
 export const runSelector = Effect.fn("runSelector")(function*(
   policy: Policy,
@@ -119,6 +137,7 @@ export const runSelector = Effect.fn("runSelector")(function*(
     lines.flatMap((line, index) => (line.trim() === "" ? [] : [{ line, number: index + 1 }])),
     ({ line, number }) =>
       parseItem(line).pipe(
+        Effect.flatMap((item) => findMedia(item, cwd)),
         Effect.mapError((reason) =>
           new SelectorError({ message: `${policy.name}: selector output line ${number} is not a valid item: ${reason}` })
         )

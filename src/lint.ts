@@ -30,8 +30,13 @@ export const verdictOf = (violates: number, floor: number, threshold: number): V
 // item's text, and the policy's criteria say what yes (violates) and no mean (a decision API without
 // criteria gets them in the question's instructions). Packing a policy's items as
 // questions of one request won the eval suite's sweep (README, Evals); one request per item cost 2.5×.
+// An item's media goes with its question, so only items showing the same files share a request.
 /** The question that judges `item` against `policy`, asked under the policy body. */
-export const itemQuestion = (policy: Policy, item: Item): Question => ({ instructions: item.text, criteria: policy.criteria })
+export const itemQuestion = (policy: Policy, item: Item): Question => ({
+  instructions: item.text,
+  criteria: policy.criteria,
+  ...(item.media === undefined || item.media.length === 0 ? {} : { media: item.media })
+})
 
 const toFinding = (
   violates: Result.Result<number, Unanswered>,

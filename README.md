@@ -1,6 +1,6 @@
 # lint-anything
 
-Check anything against plain-English policies, judged by the decision model of your choice: any model served behind a System One, OpenAI Decisions, or Gemini Decisions endpoint, or, with no endpoint set, a Cloudflare model on Workers AI ([Clef](https://developers.cloudflare.com/workers-ai/models/clef/) unless you name another). A policy's selector decides what is checked: parts of files, facts derived from them, a repository's history, a third-party service.
+Check anything against plain-English policies, judged by the decision model of your choice: any model served behind a System One, OpenAI Decisions, or Gemini Decisions endpoint, or, with no endpoint set, a Cloudflare model on Workers AI ([Clef](https://developers.cloudflare.com/workers-ai/models/clef/) unless you name another). A policy's selector decides what is checked: parts of files, facts derived from them, a repository's history, a third-party service, and images, audio, and video, for models that take them.
 
 ## Run
 
@@ -44,6 +44,18 @@ A decision model answers yes/no questions with the probability of yes instead of
 - **Gemini Decisions** (`POST https://generativelanguage.googleapis.com/v1beta/decisions`), used when the endpoint is on `generativelanguage.googleapis.com`: Google's [Decisions API](https://aistudio.google.com/docs/decisions-api) for Gemini Decision. An `input`, then `noul` questions keyed by id, with the criteria as `true_description` and `false_description`. The key goes in the `x-goog-api-key` header; create one in [Google AI Studio](https://aistudio.google.com/api-keys). On the free tier, Gemini Decision takes 50,000 input tokens a minute. A request over that is answered with 429 and a `Retry-After`, which the CLI waits out (up to 3 retries), so a first run over a large repository may stop with HTTP 429 until it fits in the quota or the project is on a paid tier.
 
 With no endpoint set, the model is a Cloudflare model on Workers AI, asked with the `CLOUDFLARE_` credentials: `clef` unless `LINT_ANYTHING_MODEL` names another.
+
+Items can show the model images, audio, and video (`media`, under Selectors), as far as the model takes them:
+
+| Model | Images | Audio | Video | Where a request carries them |
+| --- | --- | --- | --- | --- |
+| Gemini Decision 1 (Gemini Decisions) | yes | yes | yes | `input`: an `image`, `audio`, or `video` block per file, in base64, then the policy body as a `text` block |
+| OpenAI Decisions | yes | no | no | `input`: one user message, an `input_image` data URL per image, then the policy body as `input_text` |
+| `clef-omni` on Workers AI | yes | yes | yes | `images`, `audio`, and `videos`: data URLs, before the `state` |
+| `clef`, `clef-flash` on Workers AI | yes | no | no | `images`, as above |
+| any other System One model | its server decides | | | as for Clef; LiteLLM's proxy takes these lists and translates them for the model it routes to (Jev's images go through it, as `assets`) |
+
+An item whose media a model doesn't take stops the run (exit 2) before anything is sent: `Clef takes text and images, not audio clips: prompts/welcome.wav`. Media are sent as given, so a model's other limits (Clef's 16 megapixels per image, clef-omni's 300 seconds of audio and 60 of video) are its endpoint's to enforce: a file over one stops the run with the endpoint's error. The evals are all text, so no accuracy number here covers media: check a media policy on labeled files (`score.js`) before trusting its verdicts.
 
 ```sh
 # any System One server, such as a LiteLLM proxy
@@ -129,14 +141,24 @@ An item counts as a violation when its lines overlap a labeled violation, and a 
   | `text` | yes | Everything the model reads for this item: the code or text to judge and any context, laid out as the selector likes |
   | `path` | no | The item's file, for findings |
   | `lines` | no | `[start, end]`, 1-based and inclusive, for findings |
+  | `media` | no | Image, audio, and video files the model is shown with the item's text, by path from where the selector ran |
 
-- A non-zero exit or a line that isn't a valid item stops the run (exit 2). `rg` and `grep` exit 1 when nothing matches, so end a bare search with `|| true`, or pipe it on as above.
+- `media` files are typed by extension: `.png`, `.jpg`, `.jpeg`, `.webp` images; `.wav`, `.mp3`, `.flac`, `.ogg` audio; `.mp4`, `.webm` video. An item shows at most 4 images, 4 audio clips, and 2 videos (Clef's and clef-omni's limits, kept for every model). The text still says what the item is (`"screenshot shots/signup.png"`): it is the question the model answers about the media.
+
+  ```yaml
+  select: |
+    for f in shots/*.png; do
+      jq -cn --arg f "$f" '{id: $f, path: $f, text: "screenshot \($f)", media: [$f]}'
+    done
+  ```
+
+- A non-zero exit or a line that isn't a valid item (an unknown media type, too many files of a kind, or a media path that names no file included) stops the run (exit 2). `rg` and `grep` exit 1 when nothing matches, so end a bare search with `|| true`, or pipe it on as above.
 - A selector still running after 10 minutes is killed, with every process it started, and stops the run (exit 2).
 - From the evals:
   - Items must reach every place a violation can be: a selector whose items miss the violating lines can't find them.
   - Context belongs in each item's text, and computed facts beat raw data: a TODO's age in days lets the model judge "older than 90 days" at 99% accuracy; its commit date and today's date do not. Context costs input tokens.
   - Packing a policy's items as questions of one request matches one request per item and costs 2.4× less.
-- An item's answer is cached by its text, so whatever the text holds decides when it is asked again. Line numbers in the text (as in the example above) re-ask every item below an edit in that file; text without them stays cached until the item itself changes. `path` and `lines` set the finding's location either way.
+- An item's answer is cached by its text and the contents of its media, so whatever they hold decides when it is asked again. Line numbers in the text (as in the example above) re-ask every item below an edit in that file; text without them stays cached until the item itself changes. `path` and `lines` set the finding's location either way.
 - Structural units (functions, classes, handlers, tests) are easiest to select with a syntax-aware tool such as [ast-grep](https://ast-grep.github.io/). The eval corpus's policies (`evals/corpus/policies/`) and their scripts (`evals/steps/`) are worked examples: a selector lists the files it judges (`rg --files -g '*.ts'`) and pipes their paths to a script that cuts out the units.
 - Policies with the same `select` command share one run of it per lint run, so a selector several policies use can live in a script (for example `.lint-anything/lib/functions.sh`) that each calls.
 
@@ -144,7 +166,7 @@ An item counts as a violation when its lines overlap a labeled violation, and a 
 
 Each policy's selector runs from the current directory, then the decision model judges the selected items. Up to 8 policies run at once, and at most 8 requests are in flight across the run. A request's text is the policy body; it carries one yes/no question per item, the item's text, with the policy's criteria. Each item gets its own finding. A policy whose selector emits nothing sends nothing. Findings are printed in policy order.
 
-A request holds at most 64 questions and 64,000 bytes, whichever model is asked (Clef's limits; every decision API that documents a limit allows at least as many questions). Items that don't fit in one request are split across several. Each request is POSTed to the model's endpoint with its API token or key as a bearer token (to Google's Gemini API, as `x-goog-api-key`): on Workers AI, `https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/<model>`; otherwise `LINT_ANYTHING_ENDPOINT` as given.
+A request holds at most 64 questions and 64,000 bytes of text, whichever model is asked (Clef's limits; every decision API that documents a limit allows at least as many questions). Items that don't fit in one request are split across several. A request shows its media for every question in it (Clef and Gemini take media for the whole request, not per question), so items share a request only with items that show the same files, in the same order: one request per screenshot, say, however many questions it answers. An item's media are read when its request is sent, at most 4 MiB per image and 8 MiB in all (Clef's limits; 8 MiB in base64 fits Workers AI's 13 MiB request). Each request is POSTed to the model's endpoint with its API token or key as a bearer token (to Google's Gemini API, as `x-goog-api-key`): on Workers AI, `https://api.cloudflare.com/client/v4/accounts/<account>/ai/run/@cf/cloudflare/<model>`; otherwise `LINT_ANYTHING_ENDPOINT` as given.
 
 | Result | Verdict |
 | --- | --- |
@@ -152,11 +174,12 @@ A request holds at most 64 questions and 64,000 bytes, whichever model is asked 
 | `violates ≥ 0.65` | `violation` |
 | otherwise | `review`: uncertain, including cases where careful reviewers would disagree |
 | request with only that item over the byte limit | `inconclusive` (not sent): `request is N bytes; Clef would truncate it`, or for another model `request is N bytes, over the 64000-byte request limit` |
+| an image over 4 MiB, or media over 8 MiB together | `inconclusive` (not sent): `image <path> is N bytes, over the 4194304-byte image limit`, or `media are N bytes, over the 8388608-byte media limit` |
 | the model refused the question (OpenAI Decisions), or its safety filters blocked the request (Gemini Decisions) | `inconclusive`: `<model> declined to answer` |
 
 An attempt that hasn't returned its whole response within 60 seconds counts as a transient failure. Transient HTTP failures (timeouts, network errors, 408, 429, 5xx) are retried up to 3 times with exponential backoff, waiting at least as long as a `Retry-After` header asks. A request that still fails stops the run (exit 2) with the HTTP status and the endpoint's error, or the network error.
 
-Answers are cached on disk in one SQLite database, `.lint-anything/cache/answers.sqlite`, one row per question, keyed by the model (for a model at `LINT_ANYTHING_ENDPOINT`, its URL and name), the request's text (the policy body), and the question (item text and criteria). Only questions whose inputs changed are sent: re-running when nothing changed sends nothing, and editing a policy re-asks only that policy. Each request's answers are written in one transaction as it returns, so a run stopped by a failed request keeps the answers it already received, and a crash can't leave a partial answer. Runs can share the cache at once (WAL mode; a writer waits up to 10 seconds for another's lock). A cache that can't be opened (for example, a file that isn't a SQLite database) stops the run (exit 2). Delete the directory to judge everything afresh.
+Answers are cached on disk in one SQLite database, `.lint-anything/cache/answers.sqlite`, one row per question, keyed by the model (for a model at `LINT_ANYTHING_ENDPOINT`, its URL and name), the request's text (the policy body), the question (item text and criteria), and the type and SHA-256 of each media file it shows, so an edited image is asked again and a renamed one isn't. Each run reads every media file once to fingerprint it. Only questions whose inputs changed are sent: re-running when nothing changed sends nothing, and editing a policy re-asks only that policy. Each request's answers are written in one transaction as it returns, so a run stopped by a failed request keeps the answers it already received, and a crash can't leave a partial answer. Runs can share the cache at once (WAL mode; a writer waits up to 10 seconds for another's lock). A cache that can't be opened (for example, a file that isn't a SQLite database) stops the run (exit 2). Delete the directory to judge everything afresh.
 
 A cached answer stands for 30 days; each run starts by deleting older answers, so their questions are asked again, answers follow updates to the model, and the cache doesn't grow without bound. A row can only hold a probability between 0 and 1. With 50,000 cached answers the database is 5.5 MB, and a run that takes every answer from it reads them in under half a second.
 

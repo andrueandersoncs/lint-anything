@@ -629,19 +629,20 @@ const lockHeroHeight = () => {
 };
 
 let heroVisible = true;
-let resumeHero = null;
+const heroWaiters = [];
 
 const waitForHero = () =>
   heroVisible && !document.hidden
     ? Promise.resolve()
     : new Promise((resolve) => {
-        resumeHero = resolve;
+        heroWaiters.push(resolve);
       });
 
 const wakeHero = () => {
-  if (heroVisible && !document.hidden && resumeHero) {
-    resumeHero();
-    resumeHero = null;
+  if (heroVisible && !document.hidden) {
+    for (const resolve of heroWaiters.splice(0)) {
+      resolve();
+    }
   }
 };
 
@@ -716,6 +717,162 @@ const runHero = async () => {
   }
 };
 
+// The word after "Lint" cycles through things a decision model can judge, then
+// back to "anything".
+const rotator = document.querySelector("[data-rotator]");
+
+const rotateWords = async () => {
+  await document.fonts?.ready;
+  const shine = rotator.closest(".shine");
+  const first = rotator.textContent.trim();
+  const label = document.createElement("span");
+  label.className = "rotator-label";
+  label.textContent = first;
+  const words = [first, ...rotator.dataset.rotator.split(" ")].map((text, index) => {
+    const word = document.createElement("span");
+    word.className = `rotator-word shine-piece${index === 0 ? "" : " is-off"}`;
+    word.setAttribute("aria-hidden", "true");
+    word.textContent = text;
+    return word;
+  });
+  const rest = document.createElement("span");
+  const pieces = [shine.querySelector(".squiggle"), ...words, rest];
+
+  // The line stops painting its shine and every piece paints its own copy:
+  // the same image, offset by where the piece sits in the line. A wrapped
+  // line's background runs on from one line box to the next, so earlier line
+  // boxes count toward the offset. Words are measured without their transform.
+  const boxOf = (piece) => {
+    if (!words.includes(piece)) {
+      return piece.getClientRects()[0];
+    }
+    const slot = rotator.getBoundingClientRect();
+    return {
+      left: slot.left + piece.offsetLeft,
+      top: slot.top + piece.offsetTop,
+      height: piece.offsetHeight,
+    };
+  };
+  const pinShine = () => {
+    const lines = [...shine.getClientRects()];
+    const width = lines.reduce((sum, line) => sum + line.width, 0);
+    for (const piece of pieces) {
+      const box = boxOf(piece);
+      const middle = box.top + box.height / 2;
+      const index = Math.max(
+        0,
+        lines.findIndex((line) => middle >= line.top && middle <= line.bottom)
+      );
+      const before = lines
+        .slice(0, index)
+        .reduce((sum, line) => sum + line.width, 0);
+      piece.style.setProperty("--shine-w", `${width * 2.5}px`);
+      piece.style.setProperty("--shine-h", `${lines[index].height}px`);
+      piece.style.setProperty("--dx", `${before + box.left - lines[index].left}px`);
+      piece.style.setProperty("--dy", `${lines[index].top - box.top}px`);
+    }
+  };
+
+  // Hand over before the next frame, on the line's clock, so the sweep
+  // carries on where it was.
+  const clock = shine
+    .getAnimations()
+    .find((animation) => animation.animationName === "shine");
+  if (clock && clock.startTime === null) {
+    await clock.ready;
+  }
+  const startTime = clock?.startTime ?? null;
+  // " against it." becomes the last piece. The line break before it, where
+  // there is one, stays outside, so the piece sits on one line.
+  const restAfter = shine.querySelector(".hero-break") ?? rotator;
+  const trailing = [];
+  for (let node = restAfter.nextSibling; node; node = node.nextSibling) {
+    trailing.push(node);
+  }
+  rest.append(...trailing);
+  restAfter.after(rest);
+  rotator.replaceChildren(label, ...words);
+  rotator.classList.add("is-live");
+  // Each word's width in em, so the slot keeps fitting it as the font scales.
+  const fontSize = parseFloat(getComputedStyle(rotator).fontSize);
+  const widths = words.map((word) => {
+    const padding = parseFloat(getComputedStyle(word).paddingLeft);
+    return (word.getBoundingClientRect().width - 2 * padding) / fontSize;
+  });
+  rotator.style.width = `${widths[0]}em`;
+  for (const piece of pieces) {
+    piece.classList.add("shine-piece");
+  }
+  shine.classList.add("is-split");
+  pinShine();
+  if (startTime !== null) {
+    for (const piece of pieces) {
+      for (const animation of piece.getAnimations()) {
+        animation.startTime = startTime;
+      }
+    }
+  }
+  new ResizeObserver(pinShine).observe(rotator.closest("h1"));
+
+  const easing = getComputedStyle(document.documentElement)
+    .getPropertyValue("--ease-out")
+    .trim();
+  // While the slot changes width, "Lint" and "against it." move: their shine
+  // is pinned again every frame until the width transition ends.
+  const pinWhileResizing = () => {
+    const resizing = rotator
+      .getAnimations()
+      .filter((animation) => animation.transitionProperty === "width");
+    let settled = false;
+    Promise.all(resizing.map((animation) => animation.finished.catch(() => {}))).then(() => {
+      settled = true;
+      pinShine();
+    });
+    const frame = () => {
+      pinShine();
+      if (!settled) {
+        requestAnimationFrame(frame);
+      }
+    };
+    requestAnimationFrame(frame);
+  };
+
+  const shown = { opacity: 1, filter: "blur(0)", transform: "translateY(0)" };
+  const hidden = { opacity: 0, filter: "blur(0.06em)" };
+  const swap = (from, to) => {
+    rotator.style.width = `${widths[words.indexOf(to)]}em`;
+    pinWhileResizing();
+    to.classList.remove("is-off");
+    // The new word comes in just after the old one starts out and the slot
+    // starts to open, so a wider word doesn't land on "Lint".
+    to.animate([{ ...hidden, transform: "translateY(35%)" }, shown], {
+      duration: 650,
+      delay: 60,
+      easing,
+      fill: "backwards",
+    });
+    from
+      .animate([shown, { ...hidden, transform: "translateY(-35%)" }], {
+        duration: 450,
+        easing,
+        fill: "forwards",
+      })
+      .finished.then((animation) => {
+        from.classList.add("is-off");
+        animation.cancel();
+      });
+  };
+
+  let current = 0;
+  for (;;) {
+    await sleep(current === 0 ? 4000 : 2200);
+    await waitForHero();
+    const next = (current + 1) % words.length;
+    swap(words[current], words[next]);
+    current = next;
+  }
+};
+
 if (heroFile && heroPolicy && heroTerminal) {
   lockHeroHeight();
   document.fonts?.ready.then(lockHeroHeight);
@@ -724,15 +881,21 @@ if (heroFile && heroPolicy && heroTerminal) {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(lockHeroHeight, 200);
   });
-  if (!prefersReducedMotion) {
-    if (hero) {
-      new IntersectionObserver((entries) => {
-        heroVisible = entries.some((entry) => entry.isIntersecting);
-        wakeHero();
-      }).observe(hero);
-    }
-    document.addEventListener("visibilitychange", wakeHero);
+}
+
+if (!prefersReducedMotion) {
+  if (hero) {
+    new IntersectionObserver((entries) => {
+      heroVisible = entries.some((entry) => entry.isIntersecting);
+      wakeHero();
+    }).observe(hero);
+  }
+  document.addEventListener("visibilitychange", wakeHero);
+  if (heroFile && heroPolicy && heroTerminal) {
     runHero();
+  }
+  if (rotator) {
+    rotateWords();
   }
 }
 

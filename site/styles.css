@@ -38,6 +38,14 @@
   --radius: 14px;
   --radius-sm: 8px;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --shine-gradient: linear-gradient(
+    110deg,
+    #fafafa 20%,
+    var(--accent-bright) 38%,
+    var(--accent-pink) 46%,
+    var(--accent-mid) 54%,
+    #fafafa 72%
+  );
   --font-sans:
     "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
@@ -355,6 +363,9 @@ main,
 
 .hero-title {
   text-wrap: balance;
+  /* Into the hero's padding: "Lint markdown against it.", the widest the line gets, fits on one
+     line at full size, and "Lint markdown" on a 320px screen. */
+  margin-inline: -1rem;
   margin-bottom: 1.5rem;
   font-size: clamp(2.6rem, 7.5vw, 5.25rem);
   font-weight: 800;
@@ -366,14 +377,7 @@ main,
 
 .shine {
   color: transparent;
-  background: linear-gradient(
-    110deg,
-    #fafafa 20%,
-    var(--accent-bright) 38%,
-    var(--accent-pink) 46%,
-    var(--accent-mid) 54%,
-    #fafafa 72%
-  );
+  background: var(--shine-gradient);
   -webkit-background-clip: text;
   background-clip: text;
   background-size: 250% 100%;
@@ -401,7 +405,65 @@ main,
     squiggle-crawl 1.2s linear infinite;
 }
 
+/* The word after "Lint" cycles through things a decision model can judge (script.js). Browsers disagree
+   on painting a parent's background-clip: text through moving, fading, or stacked children, so the
+   line stops painting its shine and each piece paints its own copy, pinned to the line's in pixels
+   by --shine-w, --shine-h, --dx, and --dy. */
+.shine.is-split {
+  background: none;
+  animation: none;
+}
+
+.shine-piece {
+  background-image: var(--shine-gradient);
+  background-size: var(--shine-w) var(--shine-h);
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: shine-piece 7s linear infinite;
+}
+
+/* The slot narrows and widens to each word (script.js sets its width), so the line closes up around
+   a short word instead of leaving gaps. */
+.rotator.is-live {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  /* Quicker than a word comes in (650ms), so the slot has room for it first. */
+  transition: width 450ms var(--ease-out);
+}
+
+.rotator-word {
+  grid-area: 1 / 1;
+  /* background-clip: text stops at the border box; this keeps ascenders and descenders in it. */
+  padding: 0.12em 0.06em;
+  margin: -0.12em -0.06em;
+  white-space: nowrap;
+}
+
+/* Where the line doesn't fit on one line with its widest word, it breaks before "against" for every
+   word, so a short word never pulls "against it." back up a line and moves the page below. */
+@media (min-width: 500px) {
+  .hero-break {
+    display: none;
+  }
+}
+
+.rotator-word.is-off {
+  visibility: hidden;
+}
+
+.rotator-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 .hero-description {
+  text-wrap: pretty;
   max-width: 640px;
   margin: 0 auto 2.25rem;
   font-size: 1.2rem;
@@ -1951,6 +2013,16 @@ pre code {
   }
   to {
     background-position: -150% 0;
+  }
+}
+
+/* shine in pixels: the image is 250% of the line, so 100% and -150% are -0.6 and 0.9 of its width. */
+@keyframes shine-piece {
+  from {
+    background-position: calc(var(--shine-w) * -0.6 - var(--dx)) var(--dy);
+  }
+  to {
+    background-position: calc(var(--shine-w) * 0.9 - var(--dx)) var(--dy);
   }
 }
 

@@ -6,15 +6,15 @@
     <title>lint-anything — Lint what static analysis can't</title>
     <meta
       name="description"
-      content="Check code, commits, and anything a shell command can select against rules written in plain English, judged one yes-or-no question at a time by the decision model of your choice: any System One, OpenAI Decisions, or Gemini Decisions endpoint, or Workers AI."
+      content="Write lint rules in plain English, then check code, commits, pull requests, images, audio, and video against them, or anything else a shell command can select. The decision model of your choice judges each item yes or no: any System One, OpenAI Decisions, or Gemini Decisions endpoint, or Workers AI."
     >
     <meta name="theme-color" content="#09090b">
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://lint-anything.dev/">
-    <meta property="og:title" content="lint-anything — If you can say it, you can lint it">
+    <meta property="og:title" content="lint-anything — Write the rule in English. Lint anything against it.">
     <meta
       property="og:description"
-      content="Plain-English lint rules for coding agents, judged by the decision model of your choice."
+      content="Lint rules in plain English, for coding agents. Check code, commits, images, audio, and video against them with the decision model of your choice."
     >
     <meta
       property="og:image"
@@ -109,16 +109,20 @@
         <div class="hero-content">
           <a class="hero-badge" href="#start">
             <span class="pulse-dot" aria-hidden="true"></span>
-            v0.6.0 — Gemini Decisions
+            v0.7.0 — Images, audio, and video
             <span aria-hidden="true">→</span>
           </a>
           <h1 class="hero-title">
-            If you can say it,<br><span class="shine">you can <span class="squiggle">lint</span> it.</span>
+            Write the rule in English.<br><span class="shine"><span class="squiggle">Lint</span> <span
+              class="rotator"
+              data-rotator="code images markdown audio prompts video"
+            >anything</span><br class="hero-break"> against it.</span>
           </h1>
           <p class="hero-description">
-            lint-anything checks code, commits, and anything else a shell command
-            can select against rules written in plain English. The decision model
-            of your choice judges every item as a yes-or-no question.
+            For the rules you enforce in code review, like “names reveal intent”
+            or “commit messages say why.” The decision model of your choice
+            judges every function, commit, screenshot, or recording a shell
+            command selects, yes or no.
           </p>
           <div class="hero-actions">
             <a href="#start" class="btn btn-primary">
@@ -224,7 +228,7 @@ violation     0.94   src/report.ts:6-6  todo-has-issue  The comment has no track
       <section id="features" class="section features">
         <div class="section-header reveal">
           <span class="section-badge">Semantic rules</span>
-          <h2 class="section-title">Lint the rules a parser can't see</h2>
+          <h2 class="section-title">Catch what a parser can't see</h2>
           <p class="section-description">
             Naming, design, readability, architecture: rules that take judgment.
             Write them the way you'd explain them to a reviewer.
@@ -257,8 +261,9 @@ violation     0.94   src/report.ts:6-6  todo-has-issue  The comment has no track
             <p>
               A selector is a shell command that prints JSON lines. Comments from
               <code>rg</code>, functions from <code>ast-grep</code>, commits from
-              <code>git log</code>, records from an API: if a command can print
-              it, a decision model can judge it.
+              <code>git log</code>, records from an API, screenshots and
+              recordings by path: if a command can print it, a decision model
+              can judge it.
             </p>
           </article>
           <article class="feature-card spotlight reveal">
@@ -469,6 +474,25 @@ written as `#123`, `ABC-123`, or a full issue URL.</code></pre>
        text: "error in \(.path.text):\n\(.lines.text)"}'</code></pre>
             </div>
             <div class="finding"><code data-highlight="output">violation     0.98   src/report.ts:18-18  errors-say-what-to-do  The message doesn't say what went wrong or what to do about it.</code></div>
+          </article>
+          <article class="selector-card spotlight reveal">
+            <div class="selector-head">
+              <h3>Screenshots, audio, and video</h3>
+              <span class="tool-chip">media</span>
+            </div>
+            <p>
+              Files in <code>media</code> are shown to the model with the text,
+              where it takes them: Gemini Decision and clef-omni see images,
+              audio, and video; OpenAI Decisions and Clef see images.
+            </p>
+            <div class="code-block">
+              <pre><code data-highlight="policy">select: |
+  for f in shots/*.png; do
+    jq -cn --arg f "$f" \
+      '{id: $f, path: $f, text: "screenshot \($f)", media: [$f]}'
+  done</code></pre>
+            </div>
+            <div class="finding"><code data-highlight="output">violation     0.95   shots/signup.png  no-placeholder-screens  The screenshot shows placeholder text.</code></div>
           </article>
           <article class="selector-card spotlight reveal">
             <div class="selector-head">
@@ -905,7 +929,7 @@ const findings = await Effect.runPromise(Effect.gen(function*() {
       <div class="footer-content">
         <div class="footer-logo">
           <span class="logo-text">lint-anything</span>
-          <p>Plain-English policies, judged by a decision model.</p>
+          <p>Lint anything against rules in plain English.</p>
         </div>
         <div class="footer-links">
           <div class="footer-column">

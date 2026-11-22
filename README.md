@@ -242,12 +242,13 @@ The package also exports the stages a run composes as an [Effect](https://effect
 | `DecisionModel.ask(source, state, questions)` | Yes/no questions under a shared state, packed, cached, retried; no policy needed |
 | `DecisionModel.layer(cacheDirectory?)` | The `DecisionModel` service for the model the environment variables above configure (`configuredTarget`) |
 | `DecisionModel.layerFor(target, cacheDirectory?)` | The same for a model given in code: `workersAiTarget({ accountId, token, model? })` or `endpointTarget({ url, model, token? })` |
+| `DecisionModel.cascadeLayer(primary, secondary, cacheDirectory?, options?)` | Cross-family cascade: asks `primary` first and escalates only `[low, high]` probabilities to `secondary`, combining both answers |
 | `planRequests(state, questions, model?)` | The exact request bodies a model would be sent (default: Clef's) |
+| `loadPolicies(directory)`, `parsePolicy(name, source)` | Policies from Markdown (`loadPolicies` needs `FileSystem` and `Path`, e.g. `BunServices.layer` from `@effect/platform-bun`) |
+| `loadLabels(policy)`, `scorePolicy(policy, labels, cwd?)` | A policy scored against `.lint-anything/labels/<policy>.jsonl`: per labeled file and item, with reach (`labelFileItems`) |
+| `quality`, `auroc`, `auprc`, `tprAtFpr`, `violationPrecision`, `pairedInterval`, `bootstrapInterval`, … | The metrics and 95% bootstrap intervals the evals and the score script report |
 
 `Clef` and `ClefError` remain as deprecated names for `DecisionModel` and `DecisionModelError`.
-| `loadPolicies(directory)`, `parsePolicy(name, source)` | Policies from Markdown (`loadPolicies` needs `FileSystem` and `Path`, e.g. `BunServices.layer` from `@effect/platform-bun`) |
-| `loadLabels(policy)`, `scorePolicy(policy, labels, cwd?)` | A policy scored against `.lint-anything/labels/<policy>.jsonl`: per labeled file and item, with reach |
-| `quality`, `auroc`, `pairedInterval`, `bootstrapInterval`, … | The metrics and 95% bootstrap intervals the evals and the score script report |
 
 ```ts
 import { BunServices } from "@effect/platform-bun"

@@ -641,6 +641,22 @@ const failureMessage = (name: string, error: unknown): Effect.Effect<string> => 
   return Effect.succeed(`${name} sent an unexpected response: ${detail}`)
 }
 
+/** Extracts Google API JSON `"retryDelay": "Xs"` when a 429 response lacks a `Retry-After` header. */
+const jsonRetryDelayMs = (text: string): number | undefined => {
+  const match = /"retryDelay":\s*"(\d+(?:\.\d+)?)s"/.exec(text)
+  return match === null ? undefined : Math.ceil(Number(match[1]) * 1000)
+}
+
+/** Configuration for cascading two decision models: a fast primary and a secondary tiebreaker. */
+export interface CascadeOptions {
+  /** Primary probabilities below `low` are accepted directly without calling `secondary` (default: 0.15). */
+  readonly low?: number
+  /** Primary probabilities above `high` are accepted directly without calling `secondary` (default: 0.85). */
+  readonly high?: number
+  /** Combines primary and secondary probabilities for items sent to both (default: arithmetic mean). */
+  readonly combine?: (primary: number, secondary: number) => number
+}
+
 export class DecisionModel extends Context.Service<DecisionModel, {
   /** The model asked, and where. */
   readonly target: Target
@@ -669,7 +685,69 @@ export class DecisionModel extends Context.Service<DecisionModel, {
   /** `target`, whatever the environment says; answers are cached as with `layer`. */
   static readonly layerFor = (target: Target, cacheDirectory?: string) =>
     Layer.effect(DecisionModel, make(target, cacheDirectory)).pipe(Layer.provide(FetchHttpClient.layer))
+
+  /**
+   * Cross-family cascade: asks `primary` first, and asks `secondary` only for questions whose primary
+   * probability lands in `[low, high]`, combining both probabilities with `combine` (default: mean).
+   * Combines `stats` from both models.
+   */
+  static readonly cascadeLayer = (
+    primary: Target,
+    secondary: Target,
+    cacheDirectory?: string,
+    options?: CascadeOptions
+  ) =>
+    Layer.effect(DecisionModel, makeCascade(primary, secondary, cacheDirectory, options)).pipe(
+      Layer.provide(FetchHttpClient.layer)
+    )
 }
+
+const makeCascade = Effect.fnUntraced(function*(
+  primaryTarget: Target,
+  secondaryTarget: Target,
+  cacheDirectory: string | undefined,
+  options?: CascadeOptions
+) {
+  const low = options?.low ?? 0.15
+  const high = options?.high ?? 0.85
+  const combine = options?.combine ?? ((a: number, b: number) => (a + b) / 2)
+  const primary = yield* make(primaryTarget, cacheDirectory)
+  const secondary = yield* make(secondaryTarget, cacheDirectory)
+  return DecisionModel.of({
+    target: {
+      ...primary.target,
+      name: `${primary.target.name}+${secondary.target.name}`,
+      cacheKey: `${primary.target.cacheKey}+${secondary.target.cacheKey}`,
+      inputTokenPrice: undefined
+    },
+    ask: Effect.fn("DecisionModel.cascade.ask")(function*(source, state, questions) {
+      const first = [...(yield* primary.ask(source, state, questions))]
+      const escalate: Array<number> = []
+      first.forEach((result, index) => {
+        if (Result.isSuccess(result) && result.success >= low && result.success <= high) {
+          escalate.push(index)
+        }
+      })
+      if (escalate.length === 0) return first
+      const second = yield* secondary.ask(source, state, escalate.map((index) => questions[index]!))
+      escalate.forEach((origIndex, subIndex) => {
+        const a = first[origIndex]!
+        const b = second[subIndex]!
+        if (Result.isSuccess(a) && Result.isSuccess(b)) {
+          first[origIndex] = Result.succeed(combine(a.success, b.success))
+        }
+      })
+      return first
+    }),
+    stats: Effect.map(Effect.all([primary.stats, secondary.stats]), ([a, b]) => {
+      const merged = new Map<string, Usage>(a)
+      for (const [source, usage] of b) {
+        merged.set(source, sumUsage([merged.get(source) ?? noUsage, usage]))
+      }
+      return merged
+    })
+  })
+})
 
 const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string | undefined) {
   const wire = wires[target.format]
@@ -681,8 +759,25 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
     )),
     HttpClient.filterStatusOk,
     // The body is read within the attempt (the response keeps it for decoding), so a stalled body
-    // times out, and is retried, like a stalled response.
-    HttpClient.transformResponse(flow(Effect.tap((response) => response.text), Effect.timeout(attemptTimeout))),
+    // times out, and is retried, like a stalled response. When a 429 carries Google's JSON `retryDelay`
+    // without a `Retry-After` header, wait it out so the next attempt respects the quota window.
+    HttpClient.transformResponse(flow(
+      Effect.tap((response) => response.text),
+      Effect.timeout(attemptTimeout),
+      Effect.tapError((error) => {
+        if (!HttpClientError.isHttpClientError(error) || error.reason._tag !== "StatusCodeError") return Effect.void
+        const { response } = error.reason
+        if (response.status !== 429 || response.headers["retry-after"] !== undefined) return Effect.void
+        return response.text.pipe(
+          Effect.timeout("5 seconds"),
+          Effect.flatMap((text) => {
+            const delayMs = jsonRetryDelayMs(text)
+            return delayMs !== undefined && delayMs > 0 ? Effect.sleep(delayMs) : Effect.void
+          }),
+          Effect.orElseSucceed(() => undefined)
+        )
+      })
+    )),
     HttpClient.retryTransient({ schedule: Schedule.exponential(500), times: attemptRetries })
   )
 
@@ -837,8 +932,65 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
       if (tooMuch === undefined) sendable.push(index)
       else results[index] = Result.fail(tooMuch)
     }
-    const { requests, oversized } = planRequests(state, sendable.map((index) => questions[index]!), target)
-    for (const { value, bytes } of oversized) results[sendable[value]!] = Result.fail(tooLarge(bytes))
+    // Deduplicate identical misses within this call so repeated items aren't asked twice in one batch.
+    const uniqueSendable: Array<number> = []
+    const duplicates = new Map<number, Array<number>>()
+    const byFingerprint = new Map<string, number>()
+    for (const index of sendable) {
+      const fingerprint = `${JSON.stringify(noul(questions[index]!))}\0${prints[index]!}`
+      const leader = byFingerprint.get(fingerprint)
+      if (leader === undefined) {
+        const slot = uniqueSendable.length
+        byFingerprint.set(fingerprint, slot)
+        uniqueSendable.push(index)
+        duplicates.set(slot, [index])
+      } else {
+        duplicates.get(leader)!.push(index)
+      }
+    }
+    // Joint-attention System One models (such as Clef) lose substantial accuracy on 1-item warm-cache
+    // requests (evals/warm-pad.ts: -0.116 Item AUROC). When a warm cache leaves only 1-4 text misses,
+    // pad the batch up to 5 questions with small already-cached siblings from the same policy and discard
+    // the siblings' new answers so cached verdicts stay frozen while misses keep packed-batch accuracy.
+    const minWarmBatch = 5
+    const paddingIndices: Array<number> = []
+    if (
+      target.format === "system-one" &&
+      uniqueSendable.length > 0 &&
+      uniqueSendable.length < minWarmBatch &&
+      uniqueSendable.every((index) => (questions[index]!.media?.length ?? 0) === 0)
+    ) {
+      const siblingPool: Array<number> = []
+      for (let i = 0; i < questions.length; i++) {
+        if (cached[i] !== undefined && (questions[i]!.media?.length ?? 0) === 0 && questions[i]!.instructions.length <= 4_000) {
+          siblingPool.push(i)
+        }
+      }
+      const needed = minWarmBatch - uniqueSendable.length
+      if (siblingPool.length > 0) {
+        const step = Math.max(1, Math.floor(siblingPool.length / needed))
+        for (let i = 0; i < siblingPool.length && paddingIndices.length < needed; i += step) {
+          paddingIndices.push(siblingPool[i]!)
+        }
+      }
+    }
+    let paddingOffset = paddingIndices.length
+    let planned = planRequests(
+      state,
+      [...paddingIndices.map((index) => questions[index]!), ...uniqueSendable.map((index) => questions[index]!)],
+      target
+    )
+    // Only keep sibling padding when it fits inside one request alongside the misses; never add an extra request.
+    if (paddingOffset > 0 && planned.requests.length > 1) {
+      paddingOffset = 0
+      planned = planRequests(state, uniqueSendable.map((index) => questions[index]!), target)
+    }
+    const { requests, oversized } = planned
+    for (const { value, bytes } of oversized) {
+      if (value < paddingOffset) continue
+      const failure = Result.fail(tooLarge(bytes))
+      for (const index of duplicates.get(value - paddingOffset)!) results[index] = failure
+    }
     // `permits` bounds requests in flight across the run. Each request's answers are cached as it
     // returns, so a run that fails later keeps every answer it received. A declined question isn't
     // cached: it is asked again next run.
@@ -846,15 +998,19 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
       send(source, state, request, media).pipe(Effect.tap((received) => {
         const answered: Array<Answered> = []
         for (const { value, answer } of received) {
-          const index = sendable[value]!
+          if (value < paddingOffset) continue
+          const targets = duplicates.get(value - paddingOffset)!
+          const leader = targets[0]!
           if (answer === "declined") {
-            results[index] = Result.fail(declined)
+            const failure = Result.fail(declined)
+            for (const index of targets) results[index] = failure
           } else {
-            results[index] = Result.succeed(answer)
-            answered.push({ question: questions[index]!, print: prints[index]!, noul: answer })
+            const success = Result.succeed(answer)
+            for (const index of targets) results[index] = success
+            answered.push({ question: questions[leader]!, print: prints[leader]!, noul: answer })
           }
         }
-        return cache === undefined ? Effect.void : cache.set(state, answered)
+        return cache === undefined || answered.length === 0 ? Effect.void : cache.set(state, answered)
       })), { concurrency: "unbounded", discard: true })
     return results
   })

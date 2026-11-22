@@ -54,8 +54,13 @@ export interface Medium {
 /** Reads the media file at `path` (which must have a media type) and fingerprints it; rejects if it can't. */
 export const readMedium = async (path: string): Promise<Medium> => {
   const { type, kind } = mediaTypeOf(path)!
-  const data = await Bun.file(path).bytes()
-  return { path, type, kind, bytes: data.length, digest: new Bun.CryptoHasher("sha256").update(data).digest("hex") }
+  const hasher = new Bun.CryptoHasher("sha256")
+  let bytes = 0
+  for await (const chunk of Bun.file(path).stream()) {
+    hasher.update(chunk)
+    bytes += chunk.byteLength
+  }
+  return { path, type, kind, bytes, digest: hasher.digest("hex") }
 }
 
 /** A media file's contents in base64, read when its request is sent. */

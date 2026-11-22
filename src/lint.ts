@@ -60,8 +60,10 @@ const itemLocation = (item: Item) => ({
   ...(item.lines === undefined ? {} : { lines: item.lines })
 })
 
+const compareStrings = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
+
 const byLocation = (a: Item, b: Item) =>
-  (a.path ?? "").localeCompare(b.path ?? "") || (a.lines?.[0] ?? 0) - (b.lines?.[0] ?? 0) || a.id.localeCompare(b.id)
+  compareStrings(a.path ?? "", b.path ?? "") || (a.lines?.[0] ?? 0) - (b.lines?.[0] ?? 0) || compareStrings(a.id, b.id)
 
 /**
  * Select stage: runs `policy.select` from `cwd` (default: the current directory) and returns its items in

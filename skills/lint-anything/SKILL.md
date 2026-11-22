@@ -124,8 +124,8 @@ Frontmatter keys are `select` and `criteria` (with both `true` and `false`), bot
 
 The model's "yes" is read as **"this item violates the rule"**:
 
-- `criteria.true` describes an item that **violates** the rule.
-- `criteria.false` describes an item that **follows** it, **or that the rule doesn't govern**. Selectors usually over-select, so say what the false answer covers.
+- `criteria.true` describes an item that **violates** the rule — be rule-specific rather than generic ("The item contains a violation"). On the fresh 216-file holdout (H28/H34), replacing generic criteria with rule-specific `criteria.true` and exemption-explicit `criteria.false` plus targeted selector fixes raised Applicable File AUROC `+0.015`, Localized Caught `+6.5 pts`, and TPR@5% `+6.5 pts` outside noise at the same false-alarm rate.
+- `criteria.false` describes an item that **follows** it, **its explicit exemptions**, **or items the rule doesn't govern**. Selectors usually over-select, and decision models read `criteria` immediately adjacent to every question.
 
 If you swap them, every verdict inverts. Nothing catches this but the evidence: before relying on a new policy, run it on at least one known violation and one known-clean item and check that the scores point the right way.
 

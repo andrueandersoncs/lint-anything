@@ -10,6 +10,7 @@ import { Console, Effect, FileSystem, Layer, Runtime, Schema } from "effect"
 import { DecisionModel, sumUsage } from "./src/decision-model.ts"
 import { parsePolicy, type Policy } from "./src/policy.ts"
 import {
+  auprc,
   auroc,
   bootstrapInterval,
   caught,
@@ -25,7 +26,8 @@ import {
   scorePolicy,
   type Split,
   targetKey,
-  verdict
+  verdict,
+  violationPrecision
 } from "./src/score.ts"
 
 const rulesDirectory = ".lint-anything/rules"
@@ -44,18 +46,25 @@ const count = (cases: ReadonlyArray<Scored<unknown>>, label: Label) => cases.fil
 const ofSplit = <A extends Scored<LabelRecord>>(cases: ReadonlyArray<A>, split: Split) => cases.filter((scored) => scored.subject.split === split)
 const splits: ReadonlyArray<Split> = ["dev", "test"]
 
+const itemsOfSplit = (scored: PolicyScore, split: Split) => {
+  const keys = new Set(ofSplit(scored.targets, split).map((target) => target.group))
+  return scored.items.filter((item) => keys.has(item.group) && item.label !== "ambiguous")
+}
+
 const table = (scored: PolicyScore) => {
   const rows = [
-    "| split | labels (violates / complies / ambiguous) | violations reached | AUROC [95%] | caught | surfaced | false alarms | ambiguous → review | too large |",
-    "|---|---|---|---|---|---|---|---|---|"
+    "| split | labels (violates / complies / ambiguous) | violations reached | AUROC [95%] | caught | surfaced | false alarms | item PR-AUC | item prec(V) | ambiguous → review | too large |",
+    "|---|---|---|---|---|---|---|---|---|---|---|"
   ]
   for (const split of splits) {
     const cases = ofSplit(scored.targets, split)
+    const items = itemsOfSplit(scored, split)
     const q = quality(cases, cliThresholds)
     const { reached, total } = scored.reach[split]
     rows.push(`| ${split} | ${count(cases, "violates")} / ${count(cases, "complies")} / ${count(cases, "ambiguous")} | ${reached}/${total} | ` +
       `${fixed(q.auroc)} ${interval(bootstrapInterval(cases, auroc), fixed)} | ${percent(q.caught)} | ${percent(q.surfaced)} | ` +
-      `${percent(q.falseAlarms)} | ${percent(q.ambiguousToReview)} | ${q.inconclusive} |`)
+      `${percent(q.falseAlarms)} | ${fixed(auprc(items))} | ${percent(violationPrecision(items, cliThresholds))} | ` +
+      `${percent(q.ambiguousToReview)} | ${q.inconclusive} |`)
   }
   return rows.join("\n")
 }

@@ -21,6 +21,7 @@ import { DecisionModel, DecisionModelError } from "./decision-model.ts"
 
 export {
   cacheMaxAgeMs,
+  type CascadeOptions,
   clef,
   clefInputTokenPrice,
   configuredModel,
@@ -70,6 +71,7 @@ export {
 export { loadPolicies, parsePolicy, type Policy, PolicyError } from "./policy.ts"
 export { killRunningSelectors, runSelector, SelectorError, type SelectorRuns, selectorTimeoutMinutes } from "./select.ts"
 export {
+  auprc,
   auroc,
   bootstrapInterval,
   brier,
@@ -81,6 +83,7 @@ export {
   itemsOf,
   type Label,
   LabelError,
+  labelFileItems,
   type LabelRecord,
   loadLabels,
   pairedInterval,
@@ -97,7 +100,9 @@ export {
   targetKey,
   targetScore,
   type Thresholds,
+  tprAtFpr,
   tuneThresholds,
   verdict,
-  verdictF1
+  verdictF1,
+  violationPrecision
 } from "./score.ts"

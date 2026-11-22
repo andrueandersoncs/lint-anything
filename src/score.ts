@@ -91,6 +91,8 @@ export const loadLabels = Effect.fn("loadLabels")(function*(policyName: string, 
 
 const overlaps = (lines: Range, [start, end]: Range) => lines[0] <= end && start <= lines[1]
 
+const overlapLength = ([a0, a1]: Range, [b0, b1]: Range) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0) + 1)
+
 /**
  * An item's label within its target: a violating file's item is `violates` when its lines overlap one of
  * the violations (an item without lines covers the whole file) and `complies` otherwise; every other item
@@ -102,6 +104,38 @@ export const itemLabel = (target: { readonly label: Label; readonly lines?: Read
     : target.lines.some((range) => item.lines === undefined || overlaps(item.lines, range))
     ? "violates"
     : "complies"
+
+/**
+ * Labels every item emitted for one target together, preventing nested-range artifacts: when a violating
+ * target emits both an enclosing unit and a smaller item strictly nested inside it (e.g. a clean helper
+ * closure inside a 100-line violating function), the nested item stays `complies` if every gold range it
+ * overlaps is covered < 50% by it and strictly better covered by an enclosing emitted item.
+ */
+export const labelFileItems = (
+  target: { readonly label: Label; readonly lines?: ReadonlyArray<Range> },
+  items: ReadonlyArray<Item>
+): Array<Label> => {
+  if (target.label !== "violates" || target.lines === undefined) return items.map(() => target.label)
+  const ranges = target.lines
+  return items.map((item) => {
+    if (item.lines === undefined) return "violates"
+    const [start, end] = item.lines
+    const matched = ranges.filter((range) => overlaps(item.lines!, range))
+    if (matched.length === 0) return "complies"
+    const onlyNested = matched.every((range) => {
+      const rangeLen = range[1] - range[0] + 1
+      const mine = overlapLength(item.lines!, range)
+      if (mine / rangeLen >= 0.5) return false
+      return items.some((other) => {
+        if (other === item || other.lines === undefined) return false
+        const [os, oe] = other.lines
+        const strictlyEncloses = os <= start && end <= oe && (os < start || oe > end)
+        return strictlyEncloses && overlapLength(other.lines, range) > mine
+      })
+    })
+    return onlyNested ? "complies" : "violates"
+  })
+}
 
 /** How many of `ranges` some item covers; items without lines cover every range. */
 export const reachedRanges = (ranges: ReadonlyArray<Range>, items: ReadonlyArray<Item>) =>
@@ -175,6 +209,67 @@ const scoresOf = (cases: ReadonlyArray<Scored<unknown>>, label: Label) =>
 /** Separation of clear violations from clean units (ambiguous units excluded). */
 export const auroc = (cases: ReadonlyArray<Scored<unknown>>): number =>
   separation(scoresOf(cases, "complies"), scoresOf(cases, "violates"))
+
+/**
+ * Area under the precision-recall curve (Average Precision) on clear cases (ambiguous excluded). Ties are
+ * handled by grouping equal scores so ordering within ties cannot inflate or deflate precision.
+ */
+export const auprc = (cases: ReadonlyArray<Scored<unknown>>): number => {
+  const clear = cases.filter((scored) => scored.label !== "ambiguous")
+  const totalPos = clear.filter((scored) => scored.label === "violates").length
+  if (totalPos === 0 || clear.length === totalPos) return Number.NaN
+  const sorted = clear
+    .map((scored) => ({ score: probability(scored), pos: scored.label === "violates" }))
+    .sort((a, b) => b.score - a.score)
+  let tp = 0
+  let seen = 0
+  let ap = 0
+  for (let start = 0; start < sorted.length;) {
+    let end = start
+    let groupPos = 0
+    while (end < sorted.length && sorted[end]!.score === sorted[start]!.score) {
+      if (sorted[end]!.pos) groupPos++
+      end++
+    }
+    const groupSize = end - start
+    if (groupPos > 0) {
+      // Expected average precision over all random permutations of the tied group.
+      let sumPrec = 0
+      for (let k = 1; k <= groupPos; k++) {
+        const expectedSeen = seen + (k * (groupSize + 1)) / (groupPos + 1)
+        sumPrec += (tp + k) / expectedSeen
+      }
+      ap += sumPrec / totalPos
+    }
+    tp += groupPos
+    seen += groupSize
+    start = end
+  }
+  return ap
+}
+
+/**
+ * True positive rate at a target false-positive rate `fpr` on clear cases: share of violations scored
+ * strictly above the `(1 - fpr)` clean quantile (with linear handling of boundary ties).
+ */
+export const tprAtFpr = (cases: ReadonlyArray<Scored<unknown>>, fpr: number): number => {
+  const clean = scoresOf(cases, "complies").sort((a, b) => b - a)
+  const viol = scoresOf(cases, "violates")
+  if (clean.length === 0 || viol.length === 0) return Number.NaN
+  const cut = clean[Math.min(clean.length - 1, Math.floor(clean.length * fpr))]!
+  const above = viol.filter((value) => value > cut).length
+  const tied = viol.filter((value) => value === cut).length
+  const cleanAbove = clean.filter((value) => value > cut).length
+  const cleanTied = clean.filter((value) => value === cut).length
+  const allowedFromTie = cleanTied > 0 ? Math.max(0, Math.min(1, (fpr * clean.length - cleanAbove) / cleanTied)) : 0
+  return (above + tied * allowedFromTie) / viol.length
+}
+
+/** Precision of `violation` findings (`score >= threshold`) on clear cases (ambiguous excluded). */
+export const violationPrecision = (cases: ReadonlyArray<Scored<unknown>>, thresholds: Thresholds = cliThresholds): number => {
+  const clearFlagged = cases.filter((scored) => scored.label !== "ambiguous" && verdict(probability(scored), thresholds) === "violation")
+  return clearFlagged.length === 0 ? Number.NaN : clearFlagged.filter((scored) => scored.label === "violates").length / clearFlagged.length
+}
 
 /**
  * Ordinal concordance: over every pair of units with different targets (clean < ambiguous < violates),
@@ -381,9 +476,10 @@ export const scorePolicy = Effect.fn("scorePolicy")(function*(policy: Policy, la
   }
   return {
     targets: ofTarget.map(({ record, items }) => ({ subject: record, label: record.label, group: targetKey(record), score: targetScore(items.map(score)) })),
-    items: ofTarget.flatMap(({ record, items }) =>
-      items.map((item) => ({ subject: item, label: itemLabel(record, item), group: targetKey(record), score: score(item) }))
-    ),
+    items: ofTarget.flatMap(({ record, items }) => {
+      const itemLabels = labelFileItems(record, items)
+      return items.map((item, index) => ({ subject: item, label: itemLabels[index]!, group: targetKey(record), score: score(item) }))
+    }),
     reach
   } satisfies PolicyScore
 })

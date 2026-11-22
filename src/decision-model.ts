@@ -39,13 +39,19 @@ export class Declined extends Schema.TaggedError<Declined>()("Declined", {
 export type Unanswered = RequestTooLarge | Declined
 
 // Clef's context window is 65,536 tokens. A token is at least one byte, so a body within this limit is
-// never truncated by Clef, or by any model whose window is at least as large. Every model gets the same
-// limit, so a policy's items are packed alike whichever model judges them.
+// never truncated by Clef, or by any model whose window is at least as large. Every model but Julia-1 gets
+// the same limit, so a policy's items are packed alike whichever of them judges them.
 const maxRequestBytes = 64_000
 
 // Clef takes at most 64 questions per request; every decision API that documents a limit takes at least as
 // many (System One servers 64 to 128, OpenAI Decisions 400).
 const maxQuestions = 64
+
+// Julia-1 reads 8,192 tokens per question: its question, its two options, and the state. A token is at
+// least one byte, and the text Julia adds around them (`noul question: `, `false: `, `true: `, six special
+// tokens) is shorter than a body's JSON around the same text, so a body within this many bytes is never
+// truncated by a Julia server that reads the model's full window.
+const juliaMaxRequestBytes = 8_192
 
 /** USD per input token for Clef on Workers AI, which bills no output tokens. */
 export const clefInputTokenPrice = 0.24e-6
@@ -92,8 +98,14 @@ const cacheBusyTimeoutMs = 10_000
  *   its safety filters block is answered with HTTP 400 instead, which declines every question in it. With
  *   media, the input is a list of content blocks: an `image`, `audio`, or `video` block per file, in base64,
  *   then the state as `text`.
+ * - `julia`: System One as Supersonic Labs' Julia-1 reads it. Julia reads at most 256 tokens of a question
+ *   (its instructions and options, each option cut at 48 tokens) and up to the rest of its 8,192-token
+ *   window of the state, so the long text goes in the state: a question's state is the shared state, a
+ *   blank line, and the question's instructions, and its instructions are its `criteria.true`, the
+ *   statement the probability is of. Questions share a request only when that state is the same. It
+ *   takes text only.
  */
-export type Format = "system-one" | "decisions" | "gemini"
+export type Format = "system-one" | "decisions" | "gemini" | "julia"
 
 /** A media file of a request, read and encoded for its body. */
 interface Encoded extends Medium {
@@ -109,6 +121,15 @@ interface Reply {
 }
 
 interface Wire {
+  /**
+   * Where a question asked under `state` puts its text: the state its request carries and the question it
+   * sends. Without it, the state as given and the question as asked.
+   */
+  readonly place?: (state: string, question: Question) => { readonly state: string; readonly question: Question }
+  /** At most this many questions per request. */
+  readonly maxQuestions: number
+  /** At most this many bytes per request body (media aside): a body within it is never truncated. */
+  readonly maxBytes: number
   /** The request body up to its first question, with its media. */
   readonly head: (model: string, state: string, media: ReadonlyArray<Encoded>) => string
   /** The kinds of media a request in this format can carry. */
@@ -151,6 +172,8 @@ const systemOneMedia = (media: ReadonlyArray<Encoded>) => {
 }
 
 const systemOne: Wire = {
+  maxQuestions,
+  maxBytes: maxRequestBytes,
   head: (model, state, media) => `${JSON.stringify({ model, ...systemOneMedia(media), state }).slice(0, -1)},"questions":{`,
   takes: mediaKinds,
   tail: "}}",
@@ -193,6 +216,8 @@ const decisionsInput = (state: string, media: ReadonlyArray<Encoded>) =>
   }]
 
 const decisions: Wire = {
+  maxQuestions,
+  maxBytes: maxRequestBytes,
   head: (model, state, media) => `${JSON.stringify({ model, input: decisionsInput(state, media) }).slice(0, -1)},"questions":[`,
   takes: ["image"],
   tail: "]}",
@@ -232,6 +257,8 @@ const geminiInput = (state: string, media: ReadonlyArray<Encoded>) =>
   ]
 
 const gemini: Wire = {
+  maxQuestions,
+  maxBytes: maxRequestBytes,
   head: (model, state, media) => `${JSON.stringify({ model, input: geminiInput(state, media) }).slice(0, -1)},"questions":{`,
   takes: mediaKinds,
   tail: "}}",
@@ -245,7 +272,22 @@ const gemini: Wire = {
   declinesAll: (status, body) => status === 400 && Option.isSome(Schema.decodeUnknownOption(GeminiBlocked)(body))
 }
 
-const wires: Record<Format, Wire> = { "system-one": systemOne, decisions, gemini }
+// Julia-1 encodes each question alone: `noul question: <instructions>`, then its options
+// `false: <criteria.false>` and `true: <criteria.true>`, all cut to 256 tokens, then the state, up to the
+// server's token budget. An item's text in the instructions would be cut after about 150 tokens, so it goes
+// in the state after the shared text, and the question asks the statement a yes means. Nothing is added
+// but the blank line between them.
+const julia: Wire = {
+  ...systemOne,
+  place: (state, question) => ({
+    state: state === "" ? question.instructions : `${state}${state.endsWith("\n") ? "\n" : "\n\n"}${question.instructions}`,
+    question: { ...question, instructions: question.criteria.true }
+  }),
+  maxBytes: juliaMaxRequestBytes,
+  takes: []
+}
+
+const wires: Record<Format, Wire> = { "system-one": systemOne, decisions, gemini, julia }
 
 /** Reads a decision endpoint's response body in `format`. */
 export const decodeReply = (format: Format, body: unknown) => wires[format].decode(body)
@@ -331,31 +373,44 @@ export const workersAiTarget = (options: {
 const geminiHost = "generativelanguage.googleapis.com"
 
 /**
- * The format an endpoint speaks: Gemini Decisions on Google's Gemini API host, OpenAI Decisions when its
- * path ends in `/decisions`, System One otherwise.
+ * Whether `model` names Supersonic Labs' Julia-1 as its servers and hosts do: `julia-1` (julia-system-one's
+ * name for it), `SupersonicLabs/Julia-1` (its Hugging Face repository), or a build of it such as
+ * `Julia-1-GGUF`. A later Julia (`julia-1.5`, `julia-2`) may read more, so it isn't assumed to be Julia-1.
  */
-const formatOf = (url: string): Format => {
+export const isJulia1 = (model: string) => /^(?:.*\/)?julia-1(?![\d.])/i.test(model)
+
+/**
+ * The format an endpoint speaks for `model`: Gemini Decisions on Google's Gemini API host, OpenAI Decisions
+ * when its path ends in `/decisions`, System One otherwise, laid out for Julia-1 when the model is Julia-1.
+ */
+const formatOf = (url: string, model: string): Format => {
   const { hostname, pathname } = new URL(url)
   if (hostname === geminiHost) return "gemini"
-  return pathname.replace(/\/+$/, "").endsWith("/decisions") ? "decisions" : "system-one"
+  if (pathname.replace(/\/+$/, "").endsWith("/decisions")) return "decisions"
+  return isJulia1(model) ? "julia" : "system-one"
 }
 
 // A model behind a System One endpoint may take any media or none, so its endpoint decides; OpenAI's and
-// Gemini's Decisions APIs take what their format can carry.
-const endpointModel = (url: string, model: string): Model => ({
-  format: formatOf(url),
-  model,
-  name: model,
-  cacheKey: `${url} ${model}`,
-  inputTokenPrice: undefined,
-  media: undefined
-})
+// Gemini's Decisions APIs take what their format can carry, and Julia-1 takes text. Julia-1's answers are
+// filed apart from answers cached before lint-anything laid its requests out for it, whose items it read
+// only the start of.
+const endpointModel = (url: string, model: string): Model => {
+  const format = formatOf(url, model)
+  return {
+    format,
+    model,
+    name: model,
+    cacheKey: format === "julia" ? `${url} ${model} julia` : `${url} ${model}`,
+    inputTokenPrice: undefined,
+    media: undefined
+  }
+}
 
 /**
  * A decision model behind any endpoint: Gemini Decisions on `generativelanguage.googleapis.com` (such as
  * `https://generativelanguage.googleapis.com/v1beta/decisions`), OpenAI Decisions when the URL's path ends
  * in `/decisions` (such as `https://api.openai.com/v1/decisions`), System One otherwise (such as
- * `http://localhost:4000/v1/systemone`).
+ * `http://localhost:4000/v1/systemone`), laid out for Julia-1 when `model` names it (`isJulia1`).
  */
 export const endpointTarget = (options: {
   readonly url: string
@@ -396,7 +451,8 @@ const choice = Effect.gen(function*() {
     )
   }
   const name = Option.getOrElse(model, () => "clef")
-  if (!/^[\w.-]+$/.test(name)) {
+  // Julia-1 isn't on Workers AI: it runs where you serve it.
+  if (!/^[\w.-]+$/.test(name) || isJulia1(name)) {
     return yield* configError(
       `LINT_ANYTHING_MODEL ${name} is not a Cloudflare model; to ask it, set LINT_ANYTHING_ENDPOINT to the decision endpoint that serves it`
     )
@@ -417,8 +473,9 @@ export const configuredModel: Effect.Effect<Model, DecisionModelError> = Effect.
  * The decision model the environment configures, and how to reach it.
  *
  * - With `LINT_ANYTHING_ENDPOINT`: that endpoint (Gemini Decisions on `generativelanguage.googleapis.com`,
- *   OpenAI Decisions when its path ends in `/decisions`, System One otherwise), asking `LINT_ANYTHING_MODEL`,
- *   with `LINT_ANYTHING_API_KEY` as the key if set (a bearer token, or for Gemini `x-goog-api-key`).
+ *   OpenAI Decisions when its path ends in `/decisions`, System One otherwise, laid out for Julia-1 when
+ *   the model is Julia-1), asking `LINT_ANYTHING_MODEL`, with `LINT_ANYTHING_API_KEY` as the key if set (a
+ *   bearer token, or for Gemini `x-goog-api-key`).
  * - Without it: `LINT_ANYTHING_MODEL` (default `clef`) on Workers AI, with `CLOUDFLARE_ACCOUNT_ID`,
  *   `CLOUDFLARE_AUTH_TOKEN`, and optionally `CLOUDFLARE_API_BASE_URL`.
  */
@@ -439,21 +496,22 @@ export const configuredTarget: Effect.Effect<Target, DecisionModelError> = Effec
 // --- Packing ----------------------------------------------------------------------------------------
 
 /**
- * One request: its exact body, the media its questions show (by path), and what each question id answers.
- * The body of a request with media leaves them out; they are read, and put where its format takes them,
- * when it is sent.
+ * One request: its exact body, the state it carries (the shared state, or for Julia-1 the state its question
+ * placed there), the media its questions show (by path), and what each question id answers. The body of a
+ * request with media leaves them out; they are read, and put where its format takes them, when it is sent.
  */
 export interface Planned<A> {
   readonly body: string
+  readonly state: string
   readonly media: ReadonlyArray<string>
   readonly questions: ReadonlyArray<{ readonly id: string; readonly value: A }>
 }
 
 /**
  * Packs one question per value, in order, into as few requests sharing `state` and `media` as the question
- * and byte limits allow, laid out for `model`. Question ids are `i0`, `i1`, … within each request. A value
- * too large to send even alone is returned in `oversized`. The byte limit is on the text: media are
- * limited apart (`media.ts`).
+ * and byte limits of `model`'s format allow, laid out for `model`. Question ids are `i0`, `i1`, … within
+ * each request. A value too large to send even alone is returned in `oversized`. The byte limit is on the
+ * text: media are limited apart (`media.ts`).
  */
 const pack = <A>(
   model: Pick<Model, "format" | "model">,
@@ -477,19 +535,19 @@ const pack = <A>(
   let questions: Array<{ readonly id: string; readonly value: A }> = []
   let bytes = fixedBytes
   const flush = () => {
-    if (questions.length > 0) requests.push({ body: `${head}${entries.join(",")}${wire.tail}`, media, questions })
+    if (questions.length > 0) requests.push({ body: `${head}${entries.join(",")}${wire.tail}`, state, media, questions })
     entries = []
     questions = []
     bytes = fixedBytes
   }
   for (const value of values) {
     const alone = entry(value, 0)
-    if (fixedBytes + alone.bytes > maxRequestBytes) {
+    if (fixedBytes + alone.bytes > wire.maxBytes) {
       oversized.push({ value, bytes: fixedBytes + alone.bytes })
       continue
     }
     let next = entry(value, questions.length)
-    if (questions.length === maxQuestions || bytes + ",".length + next.bytes > maxRequestBytes) {
+    if (questions.length === wire.maxQuestions || bytes + ",".length + next.bytes > wire.maxBytes) {
       flush()
       next = alone
     }
@@ -504,32 +562,36 @@ const pack = <A>(
 /**
  * Plans the requests that ask `questions` under `state`: the state once per request and as many questions
  * as fit, laid out for `model` (default: Clef). A request shows its media for every question in it, so
- * questions share one only with questions showing the same media; groups are planned in order of their
+ * questions share one only with questions showing the same media; for Julia-1, whose questions each place
+ * their text in the state, only with questions placing the same state. Groups are planned in order of their
  * first question. Planned questions answer by index into `questions`.
  */
 export const planRequests = (state: string, questions: ReadonlyArray<Question>, model: Pick<Model, "format" | "model"> = clef) => {
-  const groups = new Map<string, Array<number>>()
-  questions.forEach((question, index) => {
-    const key = JSON.stringify(question.media ?? [])
+  const { place } = wires[model.format]
+  const groups = new Map<string, { readonly state: string; readonly media: ReadonlyArray<string>; readonly members: Array<number> }>()
+  const placed = questions.map((question, index) => {
+    const where = place === undefined ? { state, question } : place(state, question)
+    const media = question.media ?? []
+    const key = JSON.stringify([where.state, media])
     const group = groups.get(key)
-    if (group === undefined) groups.set(key, [index])
-    else group.push(index)
+    if (group === undefined) groups.set(key, { state: where.state, media, members: [index] })
+    else group.members.push(index)
+    return where.question
   })
   const requests: Array<Planned<number>> = []
   const oversized: Array<{ readonly value: number; readonly bytes: number }> = []
-  for (const indexes of groups.values()) {
-    const media = questions[indexes[0]!]!.media ?? []
-    const planned = pack(model, state, media, indexes, (index) => questions[index]!)
+  for (const group of groups.values()) {
+    const planned = pack(model, group.state, group.media, group.members, (index) => placed[index]!)
     requests.push(...planned.requests)
     oversized.push(...planned.oversized)
   }
   return { requests, oversized }
 }
 
-/** `body`, planned without media, with `media` encoded where `model`'s format takes them. */
-const withMedia = (model: Pick<Model, "format" | "model">, state: string, body: string, media: ReadonlyArray<Encoded>) => {
+/** `request`'s body, planned without media, with `media` encoded where `model`'s format takes them. */
+const withMedia = <A>(model: Pick<Model, "format" | "model">, request: Planned<A>, media: ReadonlyArray<Encoded>) => {
   const head = wires[model.format].head
-  return `${head(model.model, state, media)}${body.slice(head(model.model, state, []).length)}`
+  return `${head(model.model, request.state, media)}${request.body.slice(head(model.model, request.state, []).length)}`
 }
 
 // --- Answer cache -----------------------------------------------------------------------------------
@@ -706,7 +768,7 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
       bytes,
       message: target.name === "Clef"
         ? `request is ${bytes} bytes; Clef would truncate it`
-        : `request is ${bytes} bytes, over the ${maxRequestBytes}-byte request limit`
+        : `request is ${bytes} bytes, over the ${wire.maxBytes}-byte request limit`
     })
   const declined = new Declined({ message: `${target.name} declined to answer` })
 
@@ -756,26 +818,25 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
   }
 
   /** `request`'s body, its media read and encoded into it. */
-  const bodyOf = <A>(state: string, request: Planned<A>, media: ReadonlyMap<string, Medium>) =>
+  const bodyOf = <A>(request: Planned<A>, media: ReadonlyMap<string, Medium>) =>
     request.media.length === 0 ? Effect.succeed(request.body) : Effect.tryPromise({
       try: async () => {
         const encoded = await Promise.all(request.media.map(async (path) => {
           const medium = media.get(path)!
           return { ...medium, base64: await mediaBase64(medium) }
         }))
-        return withMedia(target, state, request.body, encoded)
+        return withMedia(target, request, encoded)
       },
       catch: (error) => new DecisionModelError({ message: `cannot read media: ${error instanceof Error ? error.message : String(error)}` })
     })
 
   /**
-   * Sends one planned request under `state` for `source` and returns each question's answer, keyed like
+   * Sends one planned request for `source` and returns each question's answer, keyed like
    * `request.questions`. Its media are read while it holds a permit, so at most as many requests' media
    * are in memory as requests are in flight.
    */
   const send = Effect.fn("DecisionModel.send")(function*<A>(
     source: string,
-    state: string,
     request: Planned<A>,
     media: ReadonlyMap<string, Medium>
   ) {
@@ -793,7 +854,7 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
         )
       )
     const reply: Reply = yield* record(source, { requests: 1 }).pipe(
-      Effect.andThen(bodyOf(state, request, media)),
+      Effect.andThen(bodyOf(request, media)),
       Effect.flatMap(post),
       permits.withPermit
     )
@@ -843,7 +904,7 @@ const make = Effect.fnUntraced(function*(target: Target, cacheDirectory: string 
     // returns, so a run that fails later keeps every answer it received. A declined question isn't
     // cached: it is asked again next run.
     yield* Effect.forEach(requests, (request) =>
-      send(source, state, request, media).pipe(Effect.tap((received) => {
+      send(source, request, media).pipe(Effect.tap((received) => {
         const answered: Array<Answered> = []
         for (const { value, answer } of received) {
           const index = sendable[value]!

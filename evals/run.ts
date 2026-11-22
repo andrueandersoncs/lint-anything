@@ -4,17 +4,19 @@
 //                    [--category all|semantic|control] [--wording <set>] [--thresholds floor,threshold]
 //                    [--selectors <dir>]… [--concurrency 8] [shape ...]
 // Variants: each shape judges the corpus selectors' items with that request shape: `production` (what the
-// CLI sends: the policy body as the state, one question per item) or `single` (the same state and
-// question, one request per item). Each `--selectors <dir>` adds the corpus policies with those in <dir>
-// replacing their namesakes (same rule text, other framing, criteria, or selector), judged with the
-// production shape. Without shapes the shape is `production`. The first variant is the baseline for the
-// paired intervals.
+// CLI sends: the policy body as the state, one question per item; for Julia-1, the body and the item as the
+// state, `criteria.true` as the question), `single` (the same state and question, one request per item), or
+// `rule-question` (System One models only: the item as the state and the policy body as the question, one
+// request per item; items production can't send are left out the same). Each `--selectors <dir>` adds the
+// corpus policies with those in <dir> replacing their namesakes (same rule text, other framing, criteria, or
+// selector), judged with the production shape. Without shapes the shape is `production`. The first variant
+// is the baseline for the paired intervals.
 // --wording judges the policies of corpus/wordings/<set> (same selectors) against that set's gold, on the
 // files labeled for it. --thresholds sets the item cut-offs (default: the CLI's).
 // Items are judged by the decision model the CLI would ask (Clef unless LINT_ANYTHING_ENDPOINT or
 // LINT_ANYTHING_MODEL says otherwise); another model's scores are stored under a `model-<name>` scope.
 import { resolve } from "node:path"
-import { clef } from "../src/decision-model.ts"
+import { clef, planRequests } from "../src/decision-model.ts"
 import { makeClient, model } from "./client.ts"
 import { type Case, categoryOf, loadCorpus } from "./corpus.ts"
 import {
@@ -47,7 +49,7 @@ import {
   writeScores
 } from "./selected.ts"
 
-const shapes = ["production", "single"] as const
+const shapes = ["production", "single", "rule-question"] as const
 type Shape = (typeof shapes)[number]
 
 const args = Bun.argv.slice(2)
@@ -113,7 +115,23 @@ const single: Plan = (policy, entries) => {
   }
 }
 
-const plans: Record<Shape, Plan> = { production: productionPlan, single }
+// The item as the state and the policy body as the question's instructions, as Julia-1's own examples
+// put the text judged and the question; laid out as System One as given, so no model's placement applies.
+const ruleQuestion: Plan = (policy, entries) => {
+  if (model.format !== "system-one" && model.format !== "julia") throw new Error("rule-question needs a System One model")
+  const planned = entries.map((entry, index) => {
+    const oversized = productionPlan(policy, [entry]).oversized.length > 0
+    const plan = planRequests(entry.text, [{ instructions: policy.body, criteria: policy.criteria }], { format: "system-one", model: model.model })
+    return { index, oversized, plan }
+  })
+  return {
+    requests: planned.flatMap(({ index, oversized, plan }) =>
+      oversized ? [] : plan.requests.map(({ body, questions }) => ({ body, questions: questions.map(({ id }) => ({ id, index })) }))),
+    oversized: planned.flatMap(({ index, oversized }) => (oversized ? [index] : []))
+  }
+}
+
+const plans: Record<Shape, Plan> = { production: productionPlan, single, "rule-question": ruleQuestion }
 
 // --- Variants ---------------------------------------------------------------------------------------
 

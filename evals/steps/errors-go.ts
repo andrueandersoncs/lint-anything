@@ -4,8 +4,7 @@
 // fmt print family, builtins, testing.T reporting, sync locking). Evidence, when the file shows it: the
 // callee's signature if the file declares exactly one of that name (`declared`), which result `_` takes
 // (`blank`), and the line that set the call's receiver (`receiver`).
-import { $ } from "bun"
-import { inputPaths } from "./step.ts"
+import { inputPaths, scanAstGrep } from "./step.ts"
 
 const rule = `
 id: dropped
@@ -115,15 +114,11 @@ const receiverOf = (lines: ReadonlyArray<string>, start: number, name: string) =
   return ""
 }
 
-const paths = await inputPaths("errors-go", Bun.argv.slice(2))
+export const run = async (args: ReadonlyArray<string>) => {
+const paths = await inputPaths("errors-go", args)
 const out: Array<string> = []
 if (paths.length > 0) {
-  const run = await $`ast-grep scan --inline-rules ${rule} --json=stream ${paths}`.nothrow().quiet()
-  if (run.exitCode !== 0) {
-    console.error(`errors-go: ast-grep failed: ${run.stderr.toString()}`)
-    process.exit(2)
-  }
-  const stream = run.stdout.toString()
+  const stream = scanAstGrep("errors-go", rule, paths)
   const seen = new Set<string>()
   for (const line of stream.split("\n")) {
     if (line.trim() === "") continue
@@ -157,3 +152,6 @@ if (paths.length > 0) {
   }
 }
 if (out.length > 0) await new Promise<void>((resolve) => process.stdout.write(`${out.join("\n")}\n`, () => resolve()))
+}
+
+if (import.meta.main) await run(Bun.argv.slice(2))

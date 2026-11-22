@@ -8,15 +8,7 @@
 //   rg --files | bun "$EVAL_STEPS/excerpts.ts" <bytes>
 import { inputPaths } from "./step.ts"
 
-const [limit, ...extra] = Bun.argv.slice(2)
-const maxBytes = Number(limit)
-if (!Number.isInteger(maxBytes) || maxBytes < 1) {
-  console.error("excerpts.ts: first argument must be the excerpt size in bytes")
-  process.exit(2)
-}
-const paths = await inputPaths("excerpts", extra)
-
-const excerpts = (source: string): Array<{ start: number; end: number; text: string }> => {
+const excerpts = (source: string, maxBytes: number): Array<{ start: number; end: number; text: string }> => {
   const lines = source.split("\n")
   if (Buffer.byteLength(source) <= maxBytes) return [{ start: 1, end: lines.length, text: source }]
   const afterBlank = (index: number) => index > 0 && lines[index - 1]!.trim() === "" && lines[index]!.trim() !== ""
@@ -43,14 +35,25 @@ const excerpts = (source: string): Array<{ start: number; end: number; text: str
   return result
 }
 
-const items: Array<string> = []
-for (const path of paths) {
-  const source = await Bun.file(path).text()
-  const count = source.split("\n").length
-  for (const { start, end, text } of excerpts(source)) {
-    if (text === "") continue
-    const location = start === 1 && end === count ? path : `${path} (lines ${start}-${end} of ${count})`
-    items.push(JSON.stringify({ id: `${path}:${start}`, path, lines: [start, end], text: `path: ${location}\n\nfile:\n${text}` }))
+export const run = async (args: ReadonlyArray<string>) => {
+  const [limit, ...extra] = args
+  const maxBytes = Number(limit ?? "1000")
+  if (!Number.isInteger(maxBytes) || maxBytes < 1) {
+    console.error("excerpts: first argument must be the excerpt size in bytes (default: 1000)")
+    process.exit(2)
   }
+  const paths = await inputPaths("excerpts", extra)
+  const items: Array<string> = []
+  for (const path of paths) {
+    const source = await Bun.file(path).text()
+    const count = source.split("\n").length
+    for (const { start, end, text } of excerpts(source, maxBytes)) {
+      if (text === "") continue
+      const location = start === 1 && end === count ? path : `${path} (lines ${start}-${end} of ${count})`
+      items.push(JSON.stringify({ id: `${path}:${start}`, path, lines: [start, end], text: `path: ${location}\n\nfile:\n${text}` }))
+    }
+  }
+  if (items.length > 0) await new Promise<void>((resolve) => process.stdout.write(`${items.join("\n")}\n`, () => resolve()))
 }
-if (items.length > 0) await new Promise<void>((resolve) => process.stdout.write(`${items.join("\n")}\n`, () => resolve()))
+
+if (import.meta.main) await run(Bun.argv.slice(2))

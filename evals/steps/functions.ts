@@ -28,37 +28,7 @@
 // Items: id `path:line name`, the function's lines (decorators included) as text, plus the flags' evidence.
 // Module-code items: id `path:line (module code)`, at most 60 lines each.
 
-import { inputPaths } from "./step.ts"
-
-const args = Bun.argv.slice(2)
-const option = (name: string) => {
-  const at = args.indexOf(name)
-  if (at === -1) return undefined
-  args.splice(at, 1)
-  return true
-}
-const value = (name: string) => {
-  const at = args.indexOf(name)
-  if (at === -1) return undefined
-  const found = args[at + 1]!
-  args.splice(at, 2)
-  return found
-}
-const minLines = Number(value("--min-lines") ?? "1")
-const chunk = Number(value("--chunk") ?? "Infinity")
-const outer = option("--outer") ?? false
-const named = option("--named") ?? false
-const moduleCode = option("--module") ?? false
-const flags = option("--flags") ?? false
-const noCallItems = option("--no-call-items") ?? false
-const globals = option("--globals") ?? false
-const context = option("--context") ?? false
-const docs = option("--docs") ?? false
-const hidden = option("--hidden") ?? false
-const names = option("--names") ?? false
-const effectsOn = option("--effects") ?? false
-const minMethods = Number(value("--classes") ?? "Infinity")
-const paths = await inputPaths("functions", args)
+import { inputPaths, scanAstGrep } from "./step.ts"
 
 type Language = "ts" | "py" | "go"
 const languageOf = (path: string): Language | undefined =>
@@ -83,22 +53,6 @@ interface Match {
   readonly file: string
   readonly range: { readonly start: { readonly line: number; readonly column: number }; readonly end: { readonly line: number } }
   readonly text: string
-}
-
-const wanted = paths.filter((path) => languageOf(path) !== undefined)
-const matches = new Map<string, Array<Match>>()
-if (wanted.length > 0) {
-  const astGrep = Bun.which("ast-grep") ?? `${import.meta.dir}/../../node_modules/.bin/ast-grep`
-  const run = Bun.spawnSync([astGrep, "scan", "--inline-rules", rules, "--json=stream", ...wanted], { stdout: "pipe", stderr: "pipe" })
-  if (run.exitCode !== 0) {
-    console.error(`functions: ast-grep failed: ${run.stderr.toString()}`)
-    process.exit(2)
-  }
-  for (const line of run.stdout.toString().split("\n")) {
-    if (line.trim() === "") continue
-    const match = JSON.parse(line) as Match
-    matches.set(match.file, [...(matches.get(match.file) ?? []), match])
-  }
 }
 
 interface Unit {
@@ -341,6 +295,46 @@ const effects = (language: Language, header: string, lines: ReadonlyArray<string
 const escape = (name: string) => name.replace(/[$]/g, "\\$")
 const cap = (text: string, length: number) => (text.length > length ? `${text.slice(0, length)}…` : text)
 
+export const run = async (rawArgs: ReadonlyArray<string>) => {
+const args = [...rawArgs]
+const option = (name: string) => {
+  const at = args.indexOf(name)
+  if (at === -1) return undefined
+  args.splice(at, 1)
+  return true
+}
+const value = (name: string) => {
+  const at = args.indexOf(name)
+  if (at === -1) return undefined
+  const found = args[at + 1]!
+  args.splice(at, 2)
+  return found
+}
+const minLines = Number(value("--min-lines") ?? "1")
+const chunk = Number(value("--chunk") ?? "Infinity")
+const outer = option("--outer") ?? false
+const named = option("--named") ?? false
+const moduleCode = option("--module") ?? false
+const flags = option("--flags") ?? false
+const noCallItems = option("--no-call-items") ?? false
+const globals = option("--globals") ?? false
+const context = option("--context") ?? false
+const docs = option("--docs") ?? false
+const hidden = option("--hidden") ?? false
+const names = option("--names") ?? false
+const effectsOn = option("--effects") ?? false
+const minMethods = Number(value("--classes") ?? "Infinity")
+const paths = await inputPaths("functions", args)
+const wanted = paths.filter((path) => languageOf(path) !== undefined)
+const matches = new Map<string, Array<Match>>()
+if (wanted.length > 0) {
+  const stream = scanAstGrep("functions", rules, wanted)
+  for (const line of stream.split("\n")) {
+    if (line.trim() === "") continue
+    const match = JSON.parse(line) as Match
+    matches.set(match.file, [...(matches.get(match.file) ?? []), match])
+  }
+}
 const out: Array<string> = []
 for (const path of wanted) {
   const language = languageOf(path)!
@@ -515,3 +509,6 @@ for (const path of wanted) {
   }
 }
 if (out.length > 0) await new Promise<void>((resolve) => process.stdout.write(`${out.join("\n")}\n`, () => resolve()))
+}
+
+if (import.meta.main) await run(Bun.argv.slice(2))

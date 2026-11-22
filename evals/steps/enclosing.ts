@@ -38,15 +38,23 @@ export const enclosingBlock = (lines: ReadonlyArray<string>, [start, end]: reado
   return `no enclosing block; lines ${end + 1}-${to} follow:\n${numbered(lines, end + 1, to)}`
 }
 
-const files = new Map<string, ReadonlyArray<string>>()
-await runStep("enclosing", (items) =>
-  Effect.forEach(items, (item) =>
-    Effect.gen(function*() {
-      if (item.path === undefined || item.lines === undefined) return item
-      const path = item.path
-      if (!files.has(path)) {
-        const source = yield* Effect.tryPromise({ try: () => Bun.file(path).text(), catch: () => new Error(`cannot read ${path}`) })
-        files.set(path, source.split("\n"))
-      }
-      return { ...item, evidence: [...item.evidence, ["enclosing", enclosingBlock(files.get(path)!, item.lines)] as const] }
-    })))
+export const run = async (args: ReadonlyArray<string>) => {
+  if (args.length > 0) {
+    console.error(`enclosing: unexpected arguments ${args.join(" ")}`)
+    process.exit(2)
+  }
+  const files = new Map<string, ReadonlyArray<string>>()
+  await runStep("enclosing", (items) =>
+    Effect.forEach(items, (item) =>
+      Effect.gen(function*() {
+        if (item.path === undefined || item.lines === undefined) return item
+        const path = item.path
+        if (!files.has(path)) {
+          const source = yield* Effect.tryPromise({ try: () => Bun.file(path).text(), catch: () => new Error(`cannot read ${path}`) })
+          files.set(path, source.split("\n"))
+        }
+        return { ...item, evidence: [...item.evidence, ["enclosing", enclosingBlock(files.get(path)!, item.lines)] as const] }
+      })))
+}
+
+if (import.meta.main) await run(Bun.argv.slice(2))

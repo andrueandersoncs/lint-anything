@@ -25,6 +25,7 @@ export {
   clef,
   clefInputTokenPrice,
   configuredModel,
+  configuredSecondaryTarget,
   configuredTarget,
   Declined,
   declinesAll,

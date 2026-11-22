@@ -421,10 +421,11 @@ export const numbered = (lines: ReadonlyArray<string>, from: number, to: number,
 
 /** Reads each path on stdin and runs `select` on it, writing the items it returns as JSONL. */
 export const selectFiles = async (
-  select: (path: string, source: string, language: Language) => ReadonlyArray<Record<string, unknown>>
+  select: (path: string, source: string, language: Language) => ReadonlyArray<Record<string, unknown>>,
+  args: ReadonlyArray<string> = Bun.argv.slice(2)
 ) => {
   const items: Array<string> = []
-  for (const path of await inputPaths("module", Bun.argv.slice(2))) {
+  for (const path of await inputPaths("module", args)) {
     const language = languageOf(path)
     if (language === undefined) continue
     const source = await Bun.file(path).text()

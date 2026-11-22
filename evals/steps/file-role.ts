@@ -44,16 +44,24 @@ const roleOf = (path: string) => {
   return promise
 }
 
-await runStep("file-role", (items) =>
-  Effect.promise(async () =>
-    Promise.all(items.map(async (item) => {
-      if (item.path === undefined) return item
-      const role = await roleOf(item.path)
-      if (role === "") return item
-      return {
-        ...item,
-        evidence: [["file role", role] as const, ...item.evidence]
-      }
-    }))
+export const run = async (args: ReadonlyArray<string>) => {
+  if (args.length > 0) {
+    console.error(`file-role: unexpected arguments ${args.join(" ")}`)
+    process.exit(2)
+  }
+  await runStep("file-role", (items) =>
+    Effect.promise(async () =>
+      Promise.all(items.map(async (item) => {
+        if (item.path === undefined) return item
+        const role = await roleOf(item.path)
+        if (role === "") return item
+        return {
+          ...item,
+          evidence: [["file role", role] as const, ...item.evidence]
+        }
+      }))
+    )
   )
-)
+}
+
+if (import.meta.main) await run(Bun.argv.slice(2))

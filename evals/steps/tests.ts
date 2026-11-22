@@ -10,7 +10,7 @@
 // These are eval helpers, not part of the CLI.
 
 import { resolve } from "node:path"
-import { inputPaths } from "./step.ts"
+import { inputPaths, scanAstGrep } from "./step.ts"
 
 // suite: a describe block or test class; wrapper: a function that declares tests (`function suite() { describe(…) }`).
 type Kind = "test" | "subtest" | "suite" | "wrapper" | "helper"
@@ -23,13 +23,6 @@ interface Unit {
   readonly bytes: readonly [number, number] // for nesting: units can share lines
   parent?: Unit
 }
-
-const [mode, ...extra] = Bun.argv.slice(2)
-if (mode !== "names" && mode !== "behavior") {
-  console.error(`tests: first argument must be names or behavior (got ${JSON.stringify(mode)})`)
-  process.exit(2)
-}
-const paths = await inputPaths("tests", extra)
 
 const jsCalls = "it|test|describe|context|suite|specify|beforeEach|afterEach|beforeAll|afterAll|before|after"
 // Rule ids must be unique in one scan; `call/TypeScript` is read as `call`.
@@ -92,15 +85,11 @@ interface Match {
   }
 }
 
-const scan = async (files: ReadonlyArray<string>): Promise<Array<Match>> => {
+const scan = (files: ReadonlyArray<string>): Array<Match> => {
   if (files.length === 0) return []
-  const result = await Bun.$`ast-grep scan --inline-rules ${rules} --json=stream ${files}`.quiet().nothrow()
-  if (result.exitCode !== 0) {
-    console.error(`tests: ast-grep failed: ${result.stderr.toString()}`)
-    process.exit(2)
-  }
+  const stream = scanAstGrep("tests", rules, files)
   // ast-grep streams matches in no fixed order; sort them so the output never depends on it.
-  return result.stdout.toString().split("\n").filter((line) => line.trim() !== "")
+  return stream.split("\n").filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line) as Match)
     .map((match) => ({ ...match, ruleId: match.ruleId.split("/")[0]! }))
     .sort((a, b) => a.file.localeCompare(b.file) || a.range.byteOffset.start - b.range.byteOffset.start ||
@@ -429,10 +418,17 @@ const behaviorEvidence = (facts: FileFacts, numbers: ReadonlyArray<number>) => {
 
 // ---- main ----
 
+export const run = async (args: ReadonlyArray<string>) => {
+const [mode, ...extra] = args
+if (mode !== "names" && mode !== "behavior") {
+  console.error(`tests: first argument must be names or behavior (got ${JSON.stringify(mode)})`)
+  process.exit(2)
+}
+const paths = await inputPaths("tests", extra)
 const items: Array<string> = []
 // ast-grep reports paths normalized (`./a.ts` as `a.ts`), so matches are keyed by absolute path.
 const byPath = new Map<string, Array<Match>>()
-for (const match of await scan(paths.filter((path) => languageOf(path) !== undefined))) {
+for (const match of scan(paths.filter((path) => languageOf(path) !== undefined))) {
   const key = resolve(match.file)
   byPath.set(key, [...(byPath.get(key) ?? []), match])
 }
@@ -508,3 +504,6 @@ for (const path of paths) {
   }
 }
 if (items.length > 0) await new Promise<void>((resolve) => process.stdout.write(`${items.join("\n")}\n`, () => resolve()))
+}
+
+if (import.meta.main) await run(Bun.argv.slice(2))

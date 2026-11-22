@@ -404,6 +404,61 @@ const choice = Effect.gen(function*() {
   return { kind: "workers-ai", model: name } as const
 })
 
+type Choice =
+  | { readonly kind: "endpoint"; readonly url: string; readonly model: string; readonly token: Redacted.Redacted<string> | undefined }
+  | { readonly kind: "workers-ai"; readonly model: string }
+
+/** Optional secondary model (`LINT_ANYTHING_SECONDARY_*`) for cross-family cascading on uncertain items. */
+const secondaryChoice: Effect.Effect<Option.Option<Choice>, DecisionModelError> = Effect.gen(function*() {
+  const endpoint = yield* setting("LINT_ANYTHING_SECONDARY_ENDPOINT")
+  const model = yield* setting("LINT_ANYTHING_SECONDARY_MODEL")
+  const apiKey = yield* setting("LINT_ANYTHING_SECONDARY_API_KEY")
+  if (Option.isSome(endpoint)) {
+    if (!isHttpUrl(endpoint.value)) {
+      return yield* configError(
+        `LINT_ANYTHING_SECONDARY_ENDPOINT must be an http or https URL, such as http://localhost:4000/v1/systemone`
+      )
+    }
+    if (Option.isNone(model)) {
+      return yield* configError(
+        `LINT_ANYTHING_SECONDARY_MODEL is not set; LINT_ANYTHING_SECONDARY_ENDPOINT needs the name of the model to ask`
+      )
+    }
+    return Option.some<Choice>({
+      kind: "endpoint",
+      url: endpoint.value,
+      model: model.value,
+      token: Option.getOrUndefined(Option.map(apiKey, Redacted.make))
+    })
+  }
+  if (Option.isSome(apiKey)) {
+    return yield* configError(
+      "LINT_ANYTHING_SECONDARY_API_KEY is set but LINT_ANYTHING_SECONDARY_ENDPOINT is not; set the endpoint the key is for (Clef on Workers AI uses CLOUDFLARE_AUTH_TOKEN)"
+    )
+  }
+  if (Option.isNone(model)) return Option.none()
+  const name = model.value
+  if (!/^[\w.-]+$/.test(name)) {
+    return yield* configError(
+      `LINT_ANYTHING_SECONDARY_MODEL ${name} is not a Cloudflare model; to ask it, set LINT_ANYTHING_SECONDARY_ENDPOINT to the decision endpoint that serves it`
+    )
+  }
+  return Option.some<Choice>({ kind: "workers-ai", model: name })
+})
+
+const resolveWorkersAi = (model: string): Effect.Effect<Target, DecisionModelError> =>
+  Effect.gen(function*() {
+    const required = <A>(name: string, config: Config.Config<A>) =>
+      config.pipe(Effect.mapError(() => configError(`${name} is not set; set it in the environment or in .env`)))
+    const accountId = yield* required("CLOUDFLARE_ACCOUNT_ID", Config.String("CLOUDFLARE_ACCOUNT_ID"))
+    const token = yield* required("CLOUDFLARE_AUTH_TOKEN", Config.Redacted("CLOUDFLARE_AUTH_TOKEN"))
+    const baseUrl = yield* Config.String("CLOUDFLARE_API_BASE_URL").pipe(
+      Config.withDefault(defaultCloudflareBaseUrl),
+      Effect.mapError((error) => configError(`CLOUDFLARE_API_BASE_URL: ${error.message}`))
+    )
+    return workersAiTarget({ accountId, token, model, baseUrl })
+  })
+
 /**
  * The decision model the environment configures, without what it takes to reach it: Clef unless
  * `LINT_ANYTHING_ENDPOINT` or `LINT_ANYTHING_MODEL` says otherwise. Needs no credentials.
@@ -425,15 +480,19 @@ export const configuredModel: Effect.Effect<Model, DecisionModelError> = Effect.
 export const configuredTarget: Effect.Effect<Target, DecisionModelError> = Effect.gen(function*() {
   const chosen = yield* choice
   if (chosen.kind === "endpoint") return endpointTarget(chosen)
-  const required = <A>(name: string, config: Config.Config<A>) =>
-    config.pipe(Effect.mapError(() => configError(`${name} is not set; set it in the environment or in .env`)))
-  const accountId = yield* required("CLOUDFLARE_ACCOUNT_ID", Config.String("CLOUDFLARE_ACCOUNT_ID"))
-  const token = yield* required("CLOUDFLARE_AUTH_TOKEN", Config.Redacted("CLOUDFLARE_AUTH_TOKEN"))
-  const baseUrl = yield* Config.String("CLOUDFLARE_API_BASE_URL").pipe(
-    Config.withDefault(defaultCloudflareBaseUrl),
-    Effect.mapError((error) => configError(`CLOUDFLARE_API_BASE_URL: ${error.message}`))
-  )
-  return workersAiTarget({ accountId, token, model: chosen.model, baseUrl })
+  return yield* resolveWorkersAi(chosen.model)
+})
+
+/**
+ * The optional secondary decision model the environment configures for cascading (`LINT_ANYTHING_SECONDARY_ENDPOINT`,
+ * `LINT_ANYTHING_SECONDARY_MODEL`, `LINT_ANYTHING_SECONDARY_API_KEY`). Returns `Option.none()` when unset.
+ * Setting `LINT_ANYTHING_SECONDARY_MODEL` alone (for example `clef`) asks that Cloudflare model on Workers AI.
+ */
+export const configuredSecondaryTarget: Effect.Effect<Option.Option<Target>, DecisionModelError> = Effect.gen(function*() {
+  const chosen = yield* secondaryChoice
+  if (Option.isNone(chosen)) return Option.none()
+  if (chosen.value.kind === "endpoint") return Option.some(endpointTarget(chosen.value))
+  return Option.some(yield* resolveWorkersAi(chosen.value.model))
 })
 
 // --- Packing ----------------------------------------------------------------------------------------
@@ -649,9 +708,9 @@ const jsonRetryDelayMs = (text: string): number | undefined => {
 
 /** Configuration for cascading two decision models: a fast primary and a secondary tiebreaker. */
 export interface CascadeOptions {
-  /** Primary probabilities below `low` are accepted directly without calling `secondary` (default: 0.15). */
+  /** Primary probabilities below `low` are accepted directly without calling `secondary` (default: 0.10). */
   readonly low?: number
-  /** Primary probabilities above `high` are accepted directly without calling `secondary` (default: 0.85). */
+  /** Primary probabilities above `high` are accepted directly without calling `secondary` (default: 0.90). */
   readonly high?: number
   /** Combines primary and secondary probabilities for items sent to both (default: arithmetic mean). */
   readonly combine?: (primary: number, secondary: number) => number
@@ -673,14 +732,26 @@ export class DecisionModel extends Context.Service<DecisionModel, {
   readonly stats: Effect.Effect<ReadonlyMap<string, Usage>>
 }>()("lint-anything/DecisionModel") {
   /**
-   * The decision model the environment configures (`configuredTarget`): Clef on Workers AI by default. With
-   * `cacheDirectory`, answers are cached in a database there per question across runs, and answers older
-   * than `cacheMaxAgeMs` are deleted and asked again.
+   * The decision model the environment configures (`configuredTarget`): Clef on Workers AI by default, or
+   * a cross-family cascade when `LINT_ANYTHING_SECONDARY_*` (`configuredSecondaryTarget`) is also set.
+   * With `cacheDirectory`, answers are cached in a database there per question across runs, and answers
+   * older than `cacheMaxAgeMs` are deleted and asked again.
    */
   static readonly layer = (cacheDirectory?: string) =>
-    Layer.effect(DecisionModel, Effect.flatMap(configuredTarget, (target) => make(target, cacheDirectory))).pipe(
-      Layer.provide(FetchHttpClient.layer)
-    )
+    Layer.effect(
+      DecisionModel,
+      Effect.gen(function*() {
+        const primary = yield* configuredTarget
+        const secondary = yield* configuredSecondaryTarget
+        if (Option.isNone(secondary)) return yield* make(primary, cacheDirectory)
+        if (secondary.value.cacheKey === primary.cacheKey) {
+          return yield* configError(
+            `secondary decision model (${secondary.value.name}) is the same as the primary model; use a different model for cascading`
+          )
+        }
+        return yield* makeCascade(primary, secondary.value, cacheDirectory)
+      })
+    ).pipe(Layer.provide(FetchHttpClient.layer))
 
   /** `target`, whatever the environment says; answers are cached as with `layer`. */
   static readonly layerFor = (target: Target, cacheDirectory?: string) =>
@@ -708,8 +779,8 @@ const makeCascade = Effect.fnUntraced(function*(
   cacheDirectory: string | undefined,
   options?: CascadeOptions
 ) {
-  const low = options?.low ?? 0.15
-  const high = options?.high ?? 0.85
+  const low = options?.low ?? 0.10
+  const high = options?.high ?? 0.90
   const combine = options?.combine ?? ((a: number, b: number) => (a + b) / 2)
   const primary = yield* make(primaryTarget, cacheDirectory)
   const secondary = yield* make(secondaryTarget, cacheDirectory)

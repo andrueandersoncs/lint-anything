@@ -6,7 +6,8 @@ import { declarations, scan, selectFiles } from "./module.ts"
 
 const maxMembers = 25
 
-await selectFiles((path, source, language) => {
+export const run = (args: ReadonlyArray<string>) =>
+  selectFiles((path, source, language) => {
   const scanned = scan(source, language)
   const { lines, code } = scanned
   const all = declarations(scanned, language)
@@ -56,4 +57,6 @@ await selectFiles((path, source, language) => {
     if (methods.length > 0) out.push(`    methods: ${list(methods)}`)
   }
   return [{ id: path, path, lines: [1, lines.length], text: out.join("\n") }]
-})
+}, args)
+
+if (import.meta.main) await run(Bun.argv.slice(2))

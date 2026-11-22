@@ -12,7 +12,8 @@ const describe = (d: Declaration) => `${d.owner === undefined ? "" : `${d.owner}
 const listNames = (ds: ReadonlyArray<Declaration>) =>
   ds.length === 0 ? "none" : `${ds.slice(0, maxNames).map(describe).join(", ")}${ds.length > maxNames ? `, … (${ds.length - maxNames} more)` : ""}`
 
-await selectFiles((path, source, language) => {
+export const run = (args: ReadonlyArray<string>) =>
+  selectFiles((path, source, language) => {
   const scanned = scan(source, language)
   const all = declarations(scanned, language)
   const ownerExported = new Map(all.filter((d) => d.owner === undefined).map((d) => [d.name, d.exported]))
@@ -61,4 +62,6 @@ await selectFiles((path, source, language) => {
         text: numbered(scanned.lines, d.start, end, maxLines) + memberList
       }
     })
-})
+}, args)
+
+if (import.meta.main) await run(Bun.argv.slice(2))

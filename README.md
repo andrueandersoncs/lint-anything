@@ -29,8 +29,11 @@ The CLI takes no arguments, and one flag, `--debug`: each run checks every polic
 | `LINT_ANYTHING_ENDPOINT` | no | The decision endpoint to ask, as a full URL: any System One, OpenAI Decisions, or Gemini Decisions endpoint. Without it, the model is asked on Workers AI |
 | `LINT_ANYTHING_MODEL` | with `LINT_ANYTHING_ENDPOINT` | The model to ask. Without an endpoint, a Cloudflare model on Workers AI: `clef` unless set, or, for example, `clef-flash` |
 | `LINT_ANYTHING_API_KEY` | no | API key or token for `LINT_ANYTHING_ENDPOINT`, if it needs one: sent as a bearer token, or to Google's Gemini API as `x-goog-api-key` |
-| `CLOUDFLARE_ACCOUNT_ID` | without an endpoint | Workers AI account |
-| `CLOUDFLARE_AUTH_TOKEN` | without an endpoint | Workers AI API token |
+| `LINT_ANYTHING_SECONDARY_ENDPOINT` | no | Optional second decision endpoint for cross-family cascading: items whose primary probability lands in `[0.10, 0.90]` are also asked here and averaged with the primary score |
+| `LINT_ANYTHING_SECONDARY_MODEL` | with `LINT_ANYTHING_SECONDARY_ENDPOINT` | Optional secondary model name. Set alone without `LINT_ANYTHING_SECONDARY_ENDPOINT` (for example `clef`) to cascade into a Cloudflare model on Workers AI using `CLOUDFLARE_*` |
+| `LINT_ANYTHING_SECONDARY_API_KEY` | no | API key or token for `LINT_ANYTHING_SECONDARY_ENDPOINT`, if it needs one |
+| `CLOUDFLARE_ACCOUNT_ID` | without an endpoint (or for a Workers AI secondary) | Workers AI account |
+| `CLOUDFLARE_AUTH_TOKEN` | without an endpoint (or for a Workers AI secondary) | Workers AI API token |
 | `CLOUDFLARE_API_BASE_URL` | no | Defaults to `https://api.cloudflare.com/client/v4` |
 
 Bun loads `.env` and `.env.local` from the current directory automatically. An empty variable counts as unset.
@@ -75,7 +78,16 @@ LINT_ANYTHING_API_KEY=AIza...
 
 # Clef-flash on Workers AI, with the CLOUDFLARE_ credentials
 LINT_ANYTHING_MODEL=clef-flash
+
+# Cross-family cascade: Gemini Decision 1 primary, escalating uncertain [0.10, 0.90] items to Clef on Workers AI
+LINT_ANYTHING_ENDPOINT=https://generativelanguage.googleapis.com/v1beta/decisions
+LINT_ANYTHING_MODEL=gemini-decision-1
+LINT_ANYTHING_API_KEY=AIza...
+LINT_ANYTHING_SECONDARY_MODEL=clef
+# (plus CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AUTH_TOKEN)
 ```
+
+- **Cross-family cascading**: setting `LINT_ANYTHING_SECONDARY_MODEL` (and optionally `LINT_ANYTHING_SECONDARY_ENDPOINT` and `LINT_ANYTHING_SECONDARY_API_KEY`) asks the primary model first and escalates only items whose probability falls in `[0.10, 0.90]` to the secondary model, averaging both probabilities. Both models share the same SQLite cache under their own keys, so single-model and cascaded runs reuse cached answers. On the 216-file unseen holdout (`evals/RESEARCH.md`, H32/H34), `Gemini Decision 1 → Clef` escalated 31.6% of items, cut false alarms nearly in half (12.8% → 6.8%), raised TPR at 5% FPR to 63.3%, and improved File AUROC (0.920) and File Brier (0.080) for less than single-model Clef.
 
 - Every model is asked the same way: the same request text, at most 64 questions and 64,000 bytes per request, the same 0.5 / 0.65 cut-offs. A model whose context window is under 64K tokens may truncate a full request. Serve a local model with a context of at least that size.
 - Answers are cached per model, and per endpoint, so switching models never reuses another model's answers. Switching back finds the earlier model's answers still cached.
@@ -117,7 +129,7 @@ A missing rules directory, one with no `.md` files, or an invalid policy stops t
 
 Policies are meant to be written and tuned by a coding agent: give it the rule you want and let it iterate on the selector, the body, and the criteria together, measured against labeled code (below). Because the CLI adds nothing, any way of asking the model that a request can express is available to a policy. `evals/corpus/selectors-excerpts/` is the earlier CLI's whole-file judging written as policies: its selector cuts files into 1,000-byte excerpts, and its body and criteria are that CLI's own words.
 
-`skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, sorting a project's AGENTS.md or contributor docs into what becomes a policy and what doesn't, writing and tuning policies, and the pitfalls selectors run into. It ships in the package (`node_modules/@andrueandersoncs/lint-anything/skills/lint-anything/`) with its score script; copy that directory into a coding agent's skills directory.
+`skills/lint-anything/SKILL.md` is an agent skill covering running the CLI, acting on findings, sorting a project's AGENTS.md or contributor docs into what becomes a policy and what doesn't, writing and tuning policies, and the pitfalls selectors run into. It ships in the package (`node_modules/@andrueandersoncs/lint-anything/skills/lint-anything/`) with its bundled `scripts/score.js` and `scripts/select.js` helpers; copy that directory into a coding agent's skills directory.
 
 ### Tuning against labels
 
@@ -159,7 +171,7 @@ An item counts as a violation when its lines overlap a labeled violation, and a 
   - Context belongs in each item's text, and computed facts beat raw data: a TODO's age in days lets the model judge "older than 90 days" at 99% accuracy; its commit date and today's date do not. Context costs input tokens.
   - Packing a policy's items as questions of one request matches one request per item and costs 2.4× less.
 - An item's answer is cached by its text and the contents of its media, so whatever they hold decides when it is asked again. Line numbers in the text (as in the example above) re-ask every item below an edit in that file; text without them stays cached until the item itself changes. `path` and `lines` set the finding's location either way.
-- Structural units (functions, classes, handlers, tests) are easiest to select with a syntax-aware tool such as [ast-grep](https://ast-grep.github.io/). The eval corpus's policies (`evals/corpus/policies/`) and their scripts (`evals/steps/`) are worked examples: a selector lists the files it judges (`rg --files -g '*.ts'`) and pipes their paths to a script that cuts out the units.
+- Structural units (functions, classes, handlers, tests, comments, exports, mutable state, magic literals) are easiest to select with the skill's bundled `scripts/select.js` helper (built from `evals/steps/`, run as `bun <skill>/scripts/select.js --help`) or directly with [ast-grep](https://ast-grep.github.io/). A selector lists the files it judges (`rg --files -g '*.{ts,tsx,js,py,go}'`) and pipes their paths through a file-cutting step (`functions`, `comments`, `errors`, `errors-go`, `literals`, `module-exports`, `module-state`, `module-outline`, `tests`, `duplicates`, `excerpts`), optional context steps (`file-role`, `enclosing`, `blame`), and `present` (pass `--no-lines` to omit line numbers from `text` for cache hits). Steps that parse ASTs (`functions`, `errors`, `errors-go`, `literals`, `tests`) resolve `ast-grep` from `PATH` or `./node_modules/.bin/ast-grep`.
 - Policies with the same `select` command share one run of it per lint run, so a selector several policies use can live in a script (for example `.lint-anything/lib/functions.sh`) that each calls.
 
 ## How it works
@@ -222,8 +234,8 @@ An error that stops the run (exit `2`) is printed to stderr as one line, `error:
 bun install
 bunx tsc --noEmit
 bun index.ts              # run from source
-bun run build             # dist/cli.js (the `lint-anything` bin), skills/lint-anything/scripts/score.js (the skill's score script), dist/lib.js and dist/types (the library)
-bun pm pack               # the tarball npm would get: dist/cli.js, dist/lib.js, dist/types, skills/ (with score.js), README, LICENSE
+bun run build             # dist/cli.js (the `lint-anything` bin), skills/lint-anything/scripts/{score,select}.js, dist/lib.js and dist/types (the library)
+bun pm pack               # the tarball npm would get: dist/cli.js, dist/lib.js, dist/types, skills/ (with score.js and select.js), README, LICENSE
 npm publish               # runs prepublishOnly (type check, build) first; the package is public
 ```
 
@@ -240,9 +252,9 @@ The package also exports the stages a run composes as an [Effect](https://effect
 | `decide(policy, items, answers, threshold)` | One finding per item from those answers; pure |
 | `lint(policies, threshold)` | All three for every policy, as the CLI runs them |
 | `DecisionModel.ask(source, state, questions)` | Yes/no questions under a shared state, packed, cached, retried; no policy needed |
-| `DecisionModel.layer(cacheDirectory?)` | The `DecisionModel` service for the model the environment variables above configure (`configuredTarget`) |
+| `DecisionModel.layer(cacheDirectory?)` | The `DecisionModel` service for the model the environment variables above configure (`configuredTarget`, automatically cascading into `configuredSecondaryTarget` when set) |
 | `DecisionModel.layerFor(target, cacheDirectory?)` | The same for a model given in code: `workersAiTarget({ accountId, token, model? })` or `endpointTarget({ url, model, token? })` |
-| `DecisionModel.cascadeLayer(primary, secondary, cacheDirectory?, options?)` | Cross-family cascade: asks `primary` first and escalates only `[low, high]` probabilities to `secondary`, combining both answers |
+| `DecisionModel.cascadeLayer(primary, secondary, cacheDirectory?, options?)` | Cross-family cascade: asks `primary` first and escalates only `[low, high]` (default `[0.10, 0.90]`) probabilities to `secondary`, combining both answers |
 | `planRequests(state, questions, model?)` | The exact request bodies a model would be sent (default: Clef's) |
 | `loadPolicies(directory)`, `parsePolicy(name, source)` | Policies from Markdown (`loadPolicies` needs `FileSystem` and `Path`, e.g. `BunServices.layer` from `@effect/platform-bun`) |
 | `loadLabels(policy)`, `scorePolicy(policy, labels, cwd?)` | A policy scored against `.lint-anything/labels/<policy>.jsonl`: per labeled file and item, with reach (`labelFileItems`) |

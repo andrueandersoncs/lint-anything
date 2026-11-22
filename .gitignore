@@ -4,8 +4,9 @@ node_modules
 # output
 out
 dist
-# the skill's score script, bundled from score.ts by `bun run build`
+# the skill's bundled scripts, built by `bun run build`
 skills/lint-anything/scripts/score.js
+skills/lint-anything/scripts/select.js
 *.tgz
 
 # code coverage

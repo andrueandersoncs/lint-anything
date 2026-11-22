@@ -46,8 +46,9 @@ const normalize = (line: string) => line.trim().replace(/\s+/g, " ")
 const trivialLine = (line: string) =>
   line.length < 24 || /^(?:import\b|from\s+\S+\s+import\b|if err != nil\b|return (?:nil, )?err\b|\} else \{$|[})\]]+[;,]?$)/.test(line)
 
+export const run = async (args: ReadonlyArray<string>) => {
 const items: Array<string> = []
-for (const path of await inputPaths("duplicates", Bun.argv.slice(2))) {
+for (const path of await inputPaths("duplicates", args)) {
   const language = languageOf(path)
   const source = await Bun.file(path).text()
   if (source.trim() === "") continue
@@ -144,3 +145,6 @@ for (const path of await inputPaths("duplicates", Bun.argv.slice(2))) {
   }
 }
 if (items.length > 0) await new Promise<void>((resolve) => process.stdout.write(`${items.join("\n")}\n`, () => resolve()))
+}
+
+if (import.meta.main) await run(Bun.argv.slice(2))

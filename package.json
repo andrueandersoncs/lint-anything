@@ -1,6 +1,6 @@
 {
   "name": "@andrueandersoncs/lint-anything",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Check anything against plain-English policies, judged by the decision model of your choice: any System One, OpenAI Decisions, or Gemini Decisions endpoint, or Workers AI",
   "license": "MIT",
   "author": "Andrue Anderson",
@@ -33,7 +33,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build index.ts --target=bun --minify --outfile dist/cli.js && bun build score.ts --target=bun --minify --outfile skills/lint-anything/scripts/score.js && bun build src/lib.ts --target=bun --external effect --external 'effect/*' --outfile dist/lib.js && rm -rf dist/types && tsc -p tsconfig.lib.json",
+    "build": "bun build index.ts --target=bun --minify --outfile dist/cli.js && bun build score.ts --target=bun --minify --outfile skills/lint-anything/scripts/score.js && bun build select-steps.ts --target=bun --minify --outfile skills/lint-anything/scripts/select.js && bun build src/lib.ts --target=bun --external effect --external 'effect/*' --outfile dist/lib.js && rm -rf dist/types && tsc -p tsconfig.lib.json",
     "prepublishOnly": "bunx tsc --noEmit && bun run build"
   },
   "peerDependencies": {

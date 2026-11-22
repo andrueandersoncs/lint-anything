@@ -24,6 +24,7 @@ If `lint-anything` isn't found, install it with `bun add -d @andrueandersoncs/li
 - **The working directory matters.** Policies are read from `./.lint-anything/rules`, and selectors run in the current directory. Run from a subdirectory and you get `error: cannot read policies in .lint-anything/rules`: there is no upward search.
 - **The decision model** is the project's choice, set in the environment or in `.env` / `.env.local` in the current directory. Don't change it to make findings go away. With `LINT_ANYTHING_ENDPOINT` (a full URL), the model named by `LINT_ANYTHING_MODEL` is asked there, and `LINT_ANYTHING_API_KEY` is its key if it needs one. An endpoint on `generativelanguage.googleapis.com` speaks Google's Decisions API (`gemini-decision-1`, keyed by a Gemini API key); any other whose path ends in `/decisions` speaks OpenAI's; any other speaks System One (`/v1/systemone`: Jev, LiteLLM, LLM Gateway, and most decision-model servers).
 - **Without an endpoint**, a Cloudflare model on Workers AI is asked: `clef`, or another that `LINT_ANYTHING_MODEL` names (`clef-flash`). `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_AUTH_TOKEN` are then required on every run, even when every answer would come from the cache. `CLOUDFLARE_API_BASE_URL` is optional.
+- **Optional cross-family cascading**: setting `LINT_ANYTHING_SECONDARY_MODEL` (plus optionally `LINT_ANYTHING_SECONDARY_ENDPOINT` and `LINT_ANYTHING_SECONDARY_API_KEY`; or `LINT_ANYTHING_SECONDARY_MODEL=clef` alone for Workers AI) asks the primary model first and escalates only uncertain items in `[0.10, 0.90]` to the secondary model, averaging both answers. On the 216-file unseen holdout (H32/H34), `Gemini Decision 1 → Clef` cut false alarms nearly in half (`12.8% → 6.8%`) and cost less than single-model Clef while sharing the same SQLite cache.
 - **What the model can see** besides text depends on it: Gemini Decision 1 and `clef-omni` take images, audio, and video; OpenAI Decisions, `clef`, and `clef-flash` take images only; another System One server takes what it takes. An item whose media the model can't take stops the run before anything is sent (`Clef takes text and images, not audio clips: …`).
 - **Accuracy numbers in this skill were measured on Clef**, on text. A project on another model, or with media, should score its policies on its labels before trusting them.
 - **Add `.lint-anything/cache` to `.gitignore`.** The answer cache (`answers.sqlite` plus `-wal`/`-shm` files) is written there.
@@ -198,7 +199,19 @@ rg --json -U -P '^(?:[ \t]*(?://|#).*\n)+.*' -g '*.{ts,py,go}' |
      lines: [.data.line_number, .data.line_number + ($t | split("\n") | length) - 1], text: $t}'
 ```
 
-Structural units with ast-grep:
+Structural units with the bundled selector helper (`scripts/select.js`, run `--help` to see every step and flag):
+
+```yaml
+select: |
+  rg --files -g '*.{ts,tsx,js,py,go}' |
+    bun <this skill's directory>/scripts/select.js functions --flags --no-call-items |
+    bun <this skill's directory>/scripts/select.js file-role |
+    bun <this skill's directory>/scripts/select.js present --no-lines
+```
+
+`scripts/select.js` bundles the eval-proven file cutters (`functions`, `comments`, `errors`, `errors-go`, `literals`, `module-exports`, `module-state`, `module-outline`, `tests`, `duplicates`, `excerpts`, `whole-file`) and pipe steps (`file-role`, `enclosing`, `blame`, `present`). Steps that parse ASTs resolve `ast-grep` from `PATH` or `./node_modules/.bin/ast-grep` (install with `bun add -d @ast-grep/cli`). Copy `scripts/select.js` into `.lint-anything/lib/select.js` (or reference it from `node_modules/@andrueandersoncs/lint-anything/skills/lint-anything/scripts/select.js`) so CI and teammates share the exact same selector path. Pass `--no-lines` to `present` to omit `(lines start-end)` from `text` and preserve cache hits when lines above shift.
+
+Or write a custom ast-grep selector directly:
 
 ```sh
 ast-grep run -p 'function $NAME($$$PARAMS) { $$$BODY }' -l ts --json=stream |
@@ -265,7 +278,7 @@ One JSON object per line, one per labeled file:
 - Where they disagree, or any of them calls it ambiguous, **ask the user** about that file, showing the rule, the code, and each model's reasoning. Record what the user decides; if the user says reasonable reviewers could disagree, record `ambiguous`. Ambiguous files are left out of AUROC and counted as right when they land in `review`.
 - One model alone labels with its own reading of the rule, and tuning against those labels only makes the policy agree with that reading.
 
-The lint-anything repository has worked examples: 21 policies in `evals/corpus/policies/` and the scripts their selectors call in `evals/steps/`. Its evals score them the same way, against a labeled corpus. `$EVAL_STEPS` exists only inside those evals; copy a script into your project before using it.
+The lint-anything repository has worked examples: 21 policies in `evals/corpus/policies/` and the source of the bundled `scripts/select.js` helpers in `evals/steps/`. Its evals score them the same way, against a labeled corpus. `$EVAL_STEPS` exists only inside those evals; in real projects use `scripts/select.js` (or copy it into `.lint-anything/lib/`).
 
 ## Cache and cost
 

@@ -6,8 +6,7 @@
 // 25 lines); evidence: the code whose error it handles (`handles`, at most 12 lines: the `try` body, the
 // statement before an `if err != nil`, or the expression `.catch` is called on) and the line that opens
 // the enclosing function (`function`).
-import { $ } from "bun"
-import { inputPaths } from "./step.ts"
+import { inputPaths, scanAstGrep } from "./step.ts"
 
 const handlerProperty = "^(catch|catchAll|catchTag|catchTags|catchAllCause|catchError|mapError|orElse|tapError)$"
 const script = (language: string) => `
@@ -185,15 +184,11 @@ const linesOf = async (path: string) => {
   return files.get(path)!
 }
 
-const paths = await inputPaths("errors", Bun.argv.slice(2))
+export const run = async (args: ReadonlyArray<string>) => {
+const paths = await inputPaths("errors", args)
 const out: Array<string> = []
 if (paths.length > 0) {
-  const run = await $`ast-grep scan --inline-rules ${rules} --json=stream ${paths}`.nothrow().quiet()
-  if (run.exitCode !== 0) {
-    console.error(`errors: ast-grep failed: ${run.stderr.toString()}`)
-    process.exit(2)
-  }
-  const stream = run.stdout.toString()
+  const stream = scanAstGrep("errors", rules, paths)
   // ast-grep streams matches in no fixed order, and the first match at a line wins below; sort them so the
   // output never depends on it (as tests.ts does).
   const matches = stream.split("\n").filter((line) => line.trim() !== "").map((line) => JSON.parse(line) as Match)
@@ -255,3 +250,6 @@ if (paths.length > 0) {
   }
 }
 if (out.length > 0) await new Promise<void>((resolve) => process.stdout.write(`${out.join("\n")}\n`, () => resolve()))
+}
+
+if (import.meta.main) await run(Bun.argv.slice(2))

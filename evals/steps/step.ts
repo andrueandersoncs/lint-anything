@@ -7,7 +7,36 @@
 //
 // Steps that cut files into items (functions.ts, literals.ts, …) start a pipeline instead: they read file
 // paths on stdin, one per line, as `rg --files` prints them.
+import { existsSync } from "node:fs"
+import { join } from "node:path"
 import { Effect } from "effect"
+
+/** Resolves `ast-grep` on PATH, in the current project's `node_modules/.bin`, or relative to this package. */
+export const astGrepBin = (): string | undefined => {
+  const onPath = Bun.which("ast-grep")
+  if (onPath !== null) return onPath
+  const local = join(process.cwd(), "node_modules", ".bin", "ast-grep")
+  if (existsSync(local)) return local
+  const pkg = join(import.meta.dir, "..", "..", "node_modules", ".bin", "ast-grep")
+  if (existsSync(pkg)) return pkg
+  return undefined
+}
+
+/** Runs `ast-grep scan --inline-rules <rules> --json=stream <paths>` and returns stdout, or exits 2 with a clear message. */
+export const scanAstGrep = (stepName: string, rules: string, paths: ReadonlyArray<string>): string => {
+  if (paths.length === 0) return ""
+  const bin = astGrepBin()
+  if (bin === undefined) {
+    console.error(`${stepName}: ast-grep not found on PATH or in ./node_modules/.bin (install with: bun add -d @ast-grep/cli)`)
+    process.exit(2)
+  }
+  const run = Bun.spawnSync([bin, "scan", "--inline-rules", rules, "--json=stream", ...paths], { stdout: "pipe", stderr: "pipe" })
+  if (run.exitCode !== 0) {
+    console.error(`${stepName}: ast-grep failed: ${run.stderr.toString()}`)
+    process.exit(2)
+  }
+  return run.stdout.toString()
+}
 
 export interface StepItem {
   readonly id: string

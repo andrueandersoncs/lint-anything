@@ -7,8 +7,7 @@
 // Evidence: the literals the line holds (`literals`), and where the same literals appear elsewhere in the
 // file and the constants already named with those values (`elsewhere`). Pipe the items through
 // `enclosing.ts` for the code around them.
-import { $ } from "bun"
-import { inputPaths } from "./step.ts"
+import { inputPaths, scanAstGrep } from "./step.ts"
 
 // Calls whose arguments are messages, not decisions: logging, printing, test names, assertions.
 const messageCall = "(?i)(^|\\\\.)(log\\\\w*|logger|print\\\\w*|printf|sprintf|errorf|fatal\\\\w*|panic\\\\w*|warn\\\\w*|info\\\\w*|debug\\\\w*|trace|error|exception|assert\\\\w*|t\\\\.run|describe|it|test|skip|gettext|_)$"
@@ -154,16 +153,13 @@ const elsewhereOf = (lines: ReadonlyArray<string>, line: number, literals: Reado
     return [`${literal} also on line${others.length > 1 ? "s" : ""} ${shown}${names === "" ? "" : `; named at ${names}`}`]
   }).join("\n")
 
-const paths = await inputPaths("literals", Bun.argv.slice(2))
+export const run = async (args: ReadonlyArray<string>) => {
+const paths = await inputPaths("literals", args)
 const out: Array<string> = []
 if (paths.length > 0) {
-  const run = await $`ast-grep scan --inline-rules ${rules} --json=stream ${paths}`.nothrow().quiet()
-  if (run.exitCode !== 0) {
-    console.error(`literals: ast-grep failed: ${run.stderr.toString()}`)
-    process.exit(2)
-  }
+  const stream = scanAstGrep("literals", rules, paths)
   const byLine = new Map<string, { file: string; line: number; literals: Array<string> }>()
-  for (const raw of run.stdout.toString().split("\n")) {
+  for (const raw of stream.split("\n")) {
     if (raw.trim() === "") continue
     const match = JSON.parse(raw) as Match
     const line = match.range.start.line + 1
@@ -188,3 +184,6 @@ if (paths.length > 0) {
   }
 }
 if (out.length > 0) await new Promise<void>((resolve) => process.stdout.write(`${out.join("\n")}\n`, () => resolve()))
+}
+
+if (import.meta.main) await run(Bun.argv.slice(2))

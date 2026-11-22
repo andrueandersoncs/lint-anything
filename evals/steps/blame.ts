@@ -6,13 +6,8 @@ import { runStep } from "./step.ts"
 
 const day = 86_400_000
 const isoDate = (epochMs: number) => new Date(epochMs).toISOString().slice(0, 10)
-const today = Bun.argv[2] ?? ""
-if (Number.isNaN(Date.parse(today))) {
-  console.error(`blame: pass the date ages are counted to, YYYY-MM-DD (got ${JSON.stringify(today)})`)
-  process.exit(2)
-}
 
-const lastChanged = (path: string, [start, end]: readonly [number, number]) =>
+const lastChanged = (path: string, [start, end]: readonly [number, number], today: string) =>
   Effect.promise(() => Bun.$`git blame --porcelain -L ${start},${end} -- ${path}`.quiet().nothrow()).pipe(
     Effect.map((result) => {
       const porcelain = result.stdout.toString()
@@ -25,10 +20,23 @@ const lastChanged = (path: string, [start, end]: readonly [number, number]) =>
     })
   )
 
-await runStep("blame", (items) =>
-  Effect.forEach(items, (item) =>
-    item.path === undefined || item.lines === undefined
-      ? Effect.succeed(item)
-      : lastChanged(item.path, item.lines).pipe(
-        Effect.map((changed) => (changed === undefined ? item : { ...item, evidence: [...item.evidence, ["changed", changed] as const] }))
-      ), { concurrency: 8 }))
+export const run = async (args: ReadonlyArray<string>) => {
+  if (args.length > 1) {
+    console.error(`blame: unexpected arguments ${args.slice(1).join(" ")}`)
+    process.exit(2)
+  }
+  const today = args[0] ?? isoDate(Date.now())
+  if (Number.isNaN(Date.parse(today))) {
+    console.error(`blame: pass the date ages are counted to, YYYY-MM-DD (got ${JSON.stringify(today)})`)
+    process.exit(2)
+  }
+  await runStep("blame", (items) =>
+    Effect.forEach(items, (item) =>
+      item.path === undefined || item.lines === undefined
+        ? Effect.succeed(item)
+        : lastChanged(item.path, item.lines, today).pipe(
+          Effect.map((changed) => (changed === undefined ? item : { ...item, evidence: [...item.evidence, ["changed", changed] as const] }))
+        ), { concurrency: 8 }))
+}
+
+if (import.meta.main) await run(Bun.argv.slice(2))

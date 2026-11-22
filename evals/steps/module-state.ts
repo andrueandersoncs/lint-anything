@@ -70,7 +70,8 @@ const signatureText = (scanned: Scanned, d: Declaration) => {
   return parts.join(" ")
 }
 
-await selectFiles((path, source, language) => {
+export const run = (args: ReadonlyArray<string>) =>
+  selectFiles((path, source, language) => {
   const scanned = scan(source, language)
   const { lines, code } = scanned
   const all = declarations(scanned, language)
@@ -239,4 +240,6 @@ await selectFiles((path, source, language) => {
     item(name, d.start, d.end, numbered(lines, d.start, d.end, maxLines), "", `Module-level mutable ${d.kind} \`${name}\`, ${d.exported ? "public" : "not public"}${returnsModuleValue.has(name) ? ", returned or spread by a function" : ""}.`)
   }
   return items.sort((a, b) => (a.lines as [number, number])[0] - (b.lines as [number, number])[0])
-})
+}, args)
+
+if (import.meta.main) await run(Bun.argv.slice(2))

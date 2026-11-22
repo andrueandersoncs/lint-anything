@@ -6,8 +6,8 @@ select: |
   bun "$EVAL_STEPS/errors.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "The error handler replaces or logs the error with a generic message or new error while dropping the original cause or operation context."
+  "false": "The handler wraps/chains/preserves the original error with context, or deliberately maps a specific expected error (like 404 or ENOENT) to a normal outcome."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

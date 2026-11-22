@@ -50,6 +50,7 @@ const outer = option("--outer") ?? false
 const named = option("--named") ?? false
 const moduleCode = option("--module") ?? false
 const flags = option("--flags") ?? false
+const noCallItems = option("--no-call-items") ?? false
 const globals = option("--globals") ?? false
 const context = option("--context") ?? false
 const docs = option("--docs") ?? false
@@ -406,19 +407,21 @@ for (const path of wanted) {
         const sites = lines.flatMap((line, index) =>
           (index + 1 < unit.start || index + 1 > unit.nodeLine) && isCall(line) ? [`line ${index + 1}: ${cap(line.trim(), 160)}`] : [])
         evidence.push(["call sites", sites.length === 0 ? "none in this file" : sites.slice(0, 8).join("\n") + (sites.length > 8 ? `\n(${sites.length - 8} more)` : "")])
-        // A call that passes a bare boolean, outside every function judged here, is its own item: the rule's
-        // `render(doc, true)`. Calls inside a judged function are already part of its item.
-        for (const [index, line] of lines.entries()) {
-          if (flagged.some((each) => each.start <= index + 1 && index + 1 <= each.end)) continue
-          if (!isCall(line) || !/(?<![\w$.])(?:true|false|True|False)(?![\w$])/.test(line)) continue
-          out.push(JSON.stringify({
-            id: `${path}:${index + 1} call of ${unit.name}`,
-            path,
-            lines: [index + 1, index + 1],
-            "called function": `${cap(lines[unit.nodeLine - 1]!.trim(), 200)} (line ${unit.nodeLine})`,
-            "boolean parameters": booleans.join(", "),
-            text: line.trim()
-          }))
+        // A call that passes a bare boolean, outside every function judged here, is its own item unless
+        // `--no-call-items` keeps the judgment on the function definition (which already has call sites).
+        if (!noCallItems) {
+          for (const [index, line] of lines.entries()) {
+            if (flagged.some((each) => each.start <= index + 1 && index + 1 <= each.end)) continue
+            if (!isCall(line) || !/(?<![\w$.])(?:true|false|True|False)(?![\w$])/.test(line)) continue
+            out.push(JSON.stringify({
+              id: `${path}:${index + 1} call of ${unit.name}`,
+              path,
+              lines: [index + 1, index + 1],
+              "called function": `${cap(lines[unit.nodeLine - 1]!.trim(), 200)} (line ${unit.nodeLine})`,
+              "boolean parameters": booleans.join(", "),
+              text: line.trim()
+            }))
+          }
         }
       }
     }

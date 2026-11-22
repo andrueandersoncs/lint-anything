@@ -5,8 +5,8 @@ select: |
   bun "$EVAL_STEPS/module-outline.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "The file bundles unrelated concerns that change for different reasons and belong in separate modules."
+  "false": "The file is cohesive around one topic, feature, type, or closely related set of helpers."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

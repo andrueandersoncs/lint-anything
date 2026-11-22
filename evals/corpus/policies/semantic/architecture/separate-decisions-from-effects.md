@@ -5,8 +5,8 @@ select: |
   bun "$EVAL_STEPS/functions.ts" --min-lines 8 |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "The function mixes non-trivial domain decisions (rules, eligibility, pricing, state transitions) directly with I/O (DB, network, filesystem, queue, email) in the same body."
+  "false": "The function separates decisions from I/O, is thin orchestration glue calling a decision function, or does only I/O or only pure computation."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

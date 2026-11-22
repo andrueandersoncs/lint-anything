@@ -1,0 +1,339 @@
+"""Typed deploy targets (#475).
+
+Deploy hooks are raw shell commands. A *typed* deploy target is a small,
+declarative alternative for the common cases where hand-rolling a shell hook
+(with kubectl + credentials) is friction. The first typed target writes a
+renewed certificate straight into a **Kubernetes TLS Secret**.
+
+Targets are configured under ``deploy_hooks.targets`` in settings and fire from
+the same lifecycle points as shell hooks (issuance + every renewal), and are
+equally failure-isolated: a target that fails logs and reports, but never blocks
+the certificate operation.
+
+Scope is deliberately narrow — typed targets only, no agent/fleet delegation.
+Credentials (e.g. a Kubernetes API token) live in settings and are masked by the
+existing secret machinery (the field name ``token`` matches the secret regex).
+"""
+
+import base64
+import logging
+import os
+import tempfile
+
+from .secret_scrub import scrub
+
+logger = logging.getLogger(__name__)
+
+# Well-known in-cluster service-account locations (mounted into every pod).
+_SA_DIR = '/var/run/secrets/kubernetes.io/serviceaccount'
+_SA_TOKEN = f'{_SA_DIR}/token'
+_SA_CA = f'{_SA_DIR}/ca.crt'
+_SA_NAMESPACE = f'{_SA_DIR}/namespace'
+
+# Recognised target types.
+TARGET_KUBERNETES_SECRET = 'kubernetes-secret'
+# Delivers the certificate, and optionally the key, to an HTTPS endpoint (#218).
+# Its implementation lives in deploy_target_webhook and is imported where it is
+# built, so importing this module stays cheap.
+TARGET_WEBHOOK = 'webhook'
+TARGET_TYPES = (TARGET_KUBERNETES_SECRET, TARGET_WEBHOOK)
+
+
+class DeployTargetError(Exception):
+    """A typed deploy target could not be built or executed."""
+
+
+class KubernetesSecretTarget:
+    """Publish a certificate to a Kubernetes ``kubernetes.io/tls`` Secret.
+
+    Uses **Server-Side Apply** (a single idempotent PATCH that creates or
+    updates the Secret), so issuance and every renewal converge the Secret to
+    the current cert without create-vs-update bookkeeping.
+
+    Config keys:
+      - ``secret_name`` (required), ``namespace`` (required unless in-cluster
+        default is used).
+      - ``in_cluster`` (bool): read the API server, token, CA and default
+        namespace from the mounted service account. Otherwise:
+      - ``api_server`` (e.g. ``https://10.0.0.1:6443``), ``token`` (bearer),
+        ``ca_cert`` (PEM string, optional), ``verify_ssl`` (bool, default True).
+    """
+
+    def __init__(self, config, http_patch=None):
+        self.config = config or {}
+        # Injection point for tests; defaults to requests.patch.
+        self._http_patch = http_patch
+
+    # --- connection resolution --------------------------------------------- #
+
+    def _resolve_connection(self):
+        """Return (api_server, token, verify, namespace).
+
+        ``verify`` is either a CA-bundle file path, True (system CAs) or False.
+        Raises DeployTargetError when required pieces are missing.
+        """
+        cfg = self.config
+        if cfg.get('in_cluster'):
+            host = os.getenv('KUBERNETES_SERVICE_HOST')
+            port = os.getenv('KUBERNETES_SERVICE_PORT', '443')
+            if not host:
+                raise DeployTargetError(
+                    'in_cluster set but KUBERNETES_SERVICE_HOST is not present')
+            try:
+                with open(_SA_TOKEN) as f:
+                    token = f.read().strip()
+            except OSError as e:
+                raise DeployTargetError(f'cannot read in-cluster token: {e}')
+            verify = _SA_CA if os.path.exists(_SA_CA) else True
+            namespace = cfg.get('namespace')
+            if not namespace and os.path.exists(_SA_NAMESPACE):
+                with open(_SA_NAMESPACE) as f:
+                    namespace = f.read().strip()
+            return f'https://{host}:{port}', token, verify, namespace
+
+        api_server = (cfg.get('api_server') or '').rstrip('/')
+        token = cfg.get('token')
+        if not api_server or not token:
+            raise DeployTargetError(
+                'kubernetes-secret target needs api_server + token '
+                '(or in_cluster)')
+        verify = self._resolve_verify()
+        return api_server, token, verify, cfg.get('namespace')
+
+    def _resolve_verify(self):
+        """Return the TLS-verify spec: a CA PEM string, False, or True.
+
+        Returns the PEM *content* (not a temp file). Materialization is deferred
+        to :func:`_materialize_verify`, called only after every config check
+        passes, so a validation error can't leak a temp CA bundle.
+        """
+        ca_pem = self.config.get('ca_cert')
+        if ca_pem:
+            return ca_pem
+        if self.config.get('verify_ssl', True) is False:
+            return False
+        return True
+
+    # --- manifest ---------------------------------------------------------- #
+
+    @staticmethod
+    def build_manifest(secret_name, namespace, cert_pem, key_pem):
+        """Return the Secret manifest (dict) for Server-Side Apply."""
+        return {
+            'apiVersion': 'v1',
+            'kind': 'Secret',
+            'metadata': {
+                'name': secret_name,
+                'namespace': namespace,
+                'labels': {'app.kubernetes.io/managed-by': 'certmate'},
+            },
+            'type': 'kubernetes.io/tls',
+            'data': {
+                'tls.crt': base64.b64encode(cert_pem).decode('ascii'),
+                'tls.key': base64.b64encode(key_pem).decode('ascii'),
+            },
+        }
+
+    # --- what it reads ----------------------------------------------------- #
+
+    @staticmethod
+    def required_files():
+        """The files a run reads: this target always publishes the key with the certificate."""
+        return ('fullchain.pem', 'privkey.pem')
+
+    def deploy_from(self, material, domain, event_type):
+        """Read what it needs through *material* and deploy it."""
+        return self.deploy(material('fullchain.pem'), material('privkey.pem'))
+
+    # --- deploy ------------------------------------------------------------ #
+
+    def deploy(self, cert_pem, key_pem):
+        """Apply the certificate to the configured Secret.
+
+        Returns a result dict ``{success, message, status_code}``. Never raises
+        for an operational failure — the caller (DeployManager) is
+        failure-isolated — but a misconfiguration raises DeployTargetError so
+        it surfaces at save time / manual test.
+        """
+        secret_name = self.config.get('secret_name')
+        if not secret_name:
+            raise DeployTargetError('kubernetes-secret target needs secret_name')
+
+        api_server, token, verify_spec, namespace = self._resolve_connection()
+        if not namespace:
+            raise DeployTargetError('kubernetes-secret target needs a namespace')
+
+        manifest = self.build_manifest(secret_name, namespace, cert_pem, key_pem)
+        url = (f'{api_server}/api/v1/namespaces/{namespace}/secrets/{secret_name}'
+               '?fieldManager=certmate&force=true')
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/apply-patch+yaml',
+            'Accept': 'application/json',
+        }
+
+        patch = self._http_patch or _default_patch
+        # Materialize the CA bundle only now — after every validation above —
+        # inside the try/finally, so a config error can never leak a temp file.
+        verify, ca_tempfile = _materialize_verify(verify_spec)
+        try:
+            # Redirects are refused, not followed. A 307/308 keeps the method
+            # and the body, so following one would send the private key to
+            # whichever host the answer names while the operator is told the
+            # deploy went to the server they configured.
+            resp = patch(url, json=manifest, headers=headers, verify=verify, timeout=15,
+                         allow_redirects=False)
+        except Exception as e:
+            # Broad because `requests` raises a family of them and they all
+            # mean the same thing to the caller. The exception reaches the
+            # operator in `message`, scrubbed of the bearer token AND the key
+            # first — which is the reason this cannot simply propagate.
+            return {'success': False, 'status_code': None,
+                    'message': 'Kubernetes API request failed: '
+                               + scrub(str(e), token=token, key_pem=key_pem)}
+        finally:
+            if ca_tempfile:
+                try:
+                    os.remove(ca_tempfile)
+                except OSError:
+                    pass
+
+        status = getattr(resp, 'status_code', None)
+        if status is not None and 200 <= status < 300:
+            return {'success': True, 'status_code': status,
+                    'message': f'Applied Secret {namespace}/{secret_name}'}
+        if status is not None and 300 <= status < 400:
+            # Said plainly, and without the Location: it can carry credentials
+            # in its query, and it names a host the operator did not configure.
+            return {'success': False, 'status_code': status,
+                    'message': f'Kubernetes API answered with a redirect ({status}). '
+                               f'Redirects are not followed, so the request was not '
+                               f'repeated anywhere else; point api_server at the address '
+                               f'that answers directly.'}
+        body = _answer_excerpt(resp, token, key_pem)
+        return {'success': False, 'status_code': status,
+                'message': f'Kubernetes API returned {status}: {body}'}
+
+
+def _materialize_verify(spec):
+    """Turn a verify spec into a value the HTTP client accepts.
+
+    A CA PEM string is written to a short-lived temp file (its path is returned
+    as the second element so the caller can delete it); a file path (in-cluster
+    SA CA) or a bool passes through with no temp file to clean up.
+    """
+    if isinstance(spec, str) and '-----BEGIN' in spec:
+        fd, path = tempfile.mkstemp(suffix='.crt', prefix='certmate-k8s-ca-')
+        with os.fdopen(fd, 'w') as f:
+            f.write(spec)
+        return path, path
+    return spec, None
+
+
+def _default_patch(url, timeout=15, **kwargs):
+    import requests
+    return requests.patch(url, timeout=timeout, **kwargs)
+
+
+# How much of an answer is read before scrubbing, and how much of the scrubbed
+# text is kept. The first is large so the scrub sees the whole of what a
+# receiver could echo; the second is what reaches the records.
+_ANSWER_READ_LIMIT = 64 * 1024
+_ANSWER_KEEP = 300
+
+
+def _answer_excerpt(resp, token, key_pem):
+    """The start of a response body, for the operator, with no secret in it.
+
+    Scrubbed BEFORE it is shortened. The other order (cut to a few hundred
+    characters, then scrub) leaves whatever fragment of the key fell inside the
+    cut, because a fragment matches none of the whole forms the scrub looks for.
+    """
+    try:
+        text = (resp.text or '')[:_ANSWER_READ_LIMIT]
+    except Exception:
+        # A response body is only ever quoted back to the operator here, so
+        # any failure to read one has to be a string rather than an exception
+        # that replaces the status code the caller is reporting.
+        return '<unreadable response>'
+    return scrub(text, token=token, key_pem=key_pem)[:_ANSWER_KEEP]
+
+
+def build_target(target, http_patch=None):
+    """Instantiate a typed deploy target from its config dict."""
+    ttype = (target or {}).get('type')
+    if ttype == TARGET_KUBERNETES_SECRET:
+        return KubernetesSecretTarget(target.get('config') or {}, http_patch=http_patch)
+    if ttype == TARGET_WEBHOOK:
+        from .deploy_target_webhook import WebhookTarget
+        return WebhookTarget(target)
+    raise DeployTargetError(f'unknown deploy target type: {ttype!r}')
+
+
+def target_needs_key(target):
+    """Whether running *target* reads the private key.
+
+    Decided from the configuration, before any file is opened, because it is what
+    lets a certificate whose key lives on another device (a CSR issuance) still be
+    delivered by a target that only sends the certificate.
+    """
+    try:
+        return 'privkey.pem' in build_target(target).required_files()
+    except DeployTargetError:
+        return False
+
+
+def target_applies(target, domain, event_type):
+    """True if *target* is enabled, covers *domain*, and fires on *event_type*.
+
+    ``domains`` empty/absent means "all managed domains". ``on_events`` empty
+    means "created + renewed".
+    """
+    if not target.get('enabled'):
+        return False
+    domains = target.get('domains') or []
+    if domains and domain not in domains:
+        return False
+    on_events = target.get('on_events') or ['created', 'renewed']
+    return event_type in on_events or event_type == 'manual'
+
+
+def run_targets(targets, domain, cert_pem, key_pem, event_type, http_patch=None, *, material=None):
+    """Run every applicable typed target for *domain*, failure-isolated.
+
+    Returns a list of per-target result dicts. A build/deploy error for one
+    target is captured and never aborts the others (or the cert operation).
+
+    *material* is a callable ``name -> bytes`` that reads a file of the
+    certificate on demand, so a target that does not use the private key never
+    causes it to be opened. Without it the two byte strings given are used, which
+    is how the tests and the older callers supply them.
+    """
+    if material is None:
+        given = {'fullchain.pem': cert_pem, 'cert.pem': cert_pem, 'privkey.pem': key_pem}
+
+        def material(name):
+            if given.get(name) is None:
+                raise FileNotFoundError(name)
+            return given[name]
+    results = []
+    for target in targets or []:
+        if not target_applies(target, domain, event_type):
+            continue
+        name = target.get('name') or target.get('id') or target.get('type')
+        try:
+            instance = build_target(target, http_patch=http_patch)
+            outcome = instance.deploy_from(material, domain, event_type)
+        except DeployTargetError as e:
+            outcome = {'success': False, 'status_code': None, 'message': str(e)}
+        except OSError:
+            # Not the path: it names the certificate directory, and this message is recorded.
+            outcome = {'success': False, 'status_code': None,
+                       'message': 'certificate files unreadable'}
+        except Exception as e:  # pragma: no cover - defensive isolation
+            logger.exception('Deploy target %s crashed', name)
+            outcome = {'success': False, 'status_code': None,
+                       'message': f'unexpected error: {e}'}
+        outcome.update({'target': name, 'type': target.get('type'), 'domain': domain})
+        results.append(outcome)
+    return results

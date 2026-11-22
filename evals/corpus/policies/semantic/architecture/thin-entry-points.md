@@ -5,8 +5,8 @@ select: |
   bun "$EVAL_STEPS/functions.ts" --min-lines 10 --module |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "An HTTP/RPC/CLI/message/UI entry point embeds substantial multi-step business logic, domain rules, or state machines inline instead of delegating."
+  "false": "The code is not an entry point, or it only parses/validates request shape, delegates to domain code, and formats the response."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

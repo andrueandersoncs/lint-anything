@@ -3,10 +3,11 @@
 select: |
   rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
   bun "$EVAL_STEPS/functions.ts" --outer --module --globals --hidden |
+  bun "$EVAL_STEPS/file-role.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "Business logic secretly reaches for a module-level mutable singleton, process global/env var, clock/random, or internally constructs an external collaborator instead of receiving it."
+  "false": "Dependencies are passed in explicitly, the code is a composition root/entry point/wiring or factory module, or it only calls pure library functions."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

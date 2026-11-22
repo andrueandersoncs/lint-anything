@@ -18,6 +18,7 @@ import { clef } from "../src/decision-model.ts"
 import { makeClient, model } from "./client.ts"
 import { type Case, categoryOf, loadCorpus } from "./corpus.ts"
 import {
+  auprc,
   auroc,
   bootstrapInterval,
   brier,
@@ -29,8 +30,10 @@ import {
   reachedRanges,
   type Scored,
   type Thresholds,
+  tprAtFpr,
   tuneThresholds,
-  verdictF1
+  verdictF1,
+  violationPrecision
 } from "../src/score.ts"
 import { pairAccuracy } from "./metrics.ts"
 import {
@@ -189,7 +192,44 @@ const reached = (run: Run, fileCases: ReadonlyArray<Case>) => {
 }
 const count = (scored: ReadonlyArray<Scored<Case>>, label: Label) => scored.filter((entry) => entry.label === label).length
 
+const applicable = (files: ReadonlyArray<Scored<Case>>) => files.filter((entry) => entry.subject.gold.label !== "not-applicable")
+const localizedCaught = (run: Run) => {
+  const byCase = new Map<string, Array<Scored<ItemCase>>>()
+  for (const item of run.scored) {
+    const key = caseKey(item.subject)
+    const list = byCase.get(key)
+    if (list === undefined) byCase.set(key, [item])
+    else list.push(item)
+  }
+  const violating = run.files.filter((entry) => entry.label === "violates")
+  if (violating.length === 0) return Number.NaN
+  const hit = violating.filter((entry) =>
+    (byCase.get(caseKey(entry.subject)) ?? []).some((item) => item.label === "violates" && (item.score ?? 0) >= thresholds.threshold)
+  ).length
+  return hit / violating.length
+}
+const withinPolicyAuroc = (files: ReadonlyArray<Scored<Case>>) => {
+  const byPolicy = new Map<string, Array<Scored<Case>>>()
+  for (const entry of files) {
+    const list = byPolicy.get(entry.subject.policy.name)
+    if (list === undefined) byPolicy.set(entry.subject.policy.name, [entry])
+    else list.push(entry)
+  }
+  let weighted = 0
+  let totalV = 0
+  for (const list of byPolicy.values()) {
+    const nV = list.filter((entry) => entry.label === "violates").length
+    const auc = auroc(list)
+    if (nV > 0 && !Number.isNaN(auc)) {
+      weighted += auc * nV
+      totalV += nV
+    }
+  }
+  return totalV === 0 ? Number.NaN : weighted / totalV
+}
+
 const baseItems = clearItems(baseline.scored)
+const baseApplicable = applicable(baseline.files)
 console.log(`\n${scope}: ${cases.length} cases in ${fileCount} files: ${count(baseline.files, "violates")} violating, ` +
   `${count(baseline.files, "ambiguous")} ambiguous; ${model.name} judges ${baseline.name}'s ${baseline.items.length} items ` +
   `(${count(baseItems, "violates")} violating, ${baseline.scored.length - baseItems.length} in ambiguous cases, ` +
@@ -197,21 +237,26 @@ console.log(`\n${scope}: ${cases.length} cases in ${fileCount} files: ${count(ba
   `${floor} / ${threshold}; "tuned" re-picks both on these same cases (in-sample: tune on dev, then pass them to test ` +
   `with --thresholds). Intervals: 95% paired bootstrap vs ${baseline.name}, resampling files. Cost covers the ` +
   `policies in scope.\n`)
-console.log("| Variant | File AUROC (clear) | Concordance | Brier | Verdict F1 | Caught | Surfaced | Ambiguous→review | " +
-  "False alarms | Tuned (floor/threshold → F1) | Pairs | Item AUROC | Item Brier | Gold ranges reached | Items (oversized) | " +
+console.log("| Variant | File AUROC (clear) | Appl. AUROC | Within-pol AUROC | TPR@5% | Concordance | Brier | Verdict F1 | Caught (Loc.) | Surfaced | Ambiguous→review | " +
+  "False alarms | Tuned (floor/threshold → F1) | Pairs | Item AUROC | Item PR-AUC | Item Prec(V) | Item Brier | Gold ranges reached | Items (oversized) | " +
   "Requests | $ / 1k files |")
-console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
 for (const run of runs) {
   const q = quality(run.files, thresholds)
   const tuned = tuneThresholds(run.files)
+  const runApp = applicable(run.files)
+  const runItems = clearItems(run.scored)
   const files = (metric: (cases: ReadonlyArray<Scored<unknown>>) => number) => run === baseline ? "" : delta(baseline.files, run.files, metric)
+  const appDelta = (metric: (cases: ReadonlyArray<Scored<unknown>>) => number) => run === baseline ? "" : delta(baseApplicable, runApp, metric)
   const items = (metric: (cases: ReadonlyArray<Scored<unknown>>) => number) =>
-    run === baseline || !sameItems(run) ? "" : delta(baseItems, clearItems(run.scored), metric)
-  console.log(`| ${run.name} | ${fixed(q.auroc)}${files(auroc)} | ${fixed(q.concordance)}${files(concordance)} | ` +
-    `${fixed(q.brier)}${files(brier)} | ${fixed(q.f1)} | ${percent(q.caught)} | ${percent(q.surfaced)} | ` +
+    run === baseline || !sameItems(run) ? "" : delta(baseItems, runItems, metric)
+  console.log(`| ${run.name} | ${fixed(q.auroc)}${files(auroc)} | ${fixed(auroc(runApp))}${appDelta(auroc)} | ${fixed(withinPolicyAuroc(run.files))} | ` +
+    `${percent(tprAtFpr(run.files, 0.05))} | ${fixed(q.concordance)}${files(concordance)} | ` +
+    `${fixed(q.brier)}${files(brier)} | ${fixed(q.f1)} | ${percent(q.caught)} (${percent(localizedCaught(run))}) | ${percent(q.surfaced)} | ` +
     `${percent(q.ambiguousToReview)} | ${percent(q.falseAlarms)} | ${tuned.floor}/${tuned.threshold} → ` +
-    `${fixed(verdictF1(run.files, tuned))} | ${percent(pairAccuracy(run.files))} | ${fixed(auroc(clearItems(run.scored)))}${items(auroc)} | ` +
-    `${fixed(brier(clearItems(run.scored)))}${items(brier)} | ${reached(run, cases)} | ${run.items.length} ` +
+    `${fixed(verdictF1(run.files, tuned))} | ${percent(pairAccuracy(run.files))} | ${fixed(auroc(runItems))}${items(auroc)} | ` +
+    `${fixed(auprc(runItems))}${items(auprc)} | ${percent(violationPrecision(runItems, thresholds))} | ` +
+    `${fixed(brier(runItems))}${items(brier)} | ${reached(run, cases)} | ${run.items.length} ` +
     `(${run.scored.filter((entry) => entry.score === null).length}) | ${run.requests} | ` +
     `${costPerThousand(run.inputTokens, fileCount)} |`)
 }

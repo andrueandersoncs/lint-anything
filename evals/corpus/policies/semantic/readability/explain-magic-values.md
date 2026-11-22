@@ -4,10 +4,11 @@
 select: |
   rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
   bun "$EVAL_STEPS/literals.ts" | bun "$EVAL_STEPS/enclosing.ts" |
+  bun "$EVAL_STEPS/file-role.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "An inline literal number or string encodes an unnamed business or operational decision (threshold, limit, timeout, retry count, rate, status code, special id)."
+  "false": "The literal is self-explanatory (0, 1, -1, empty string, simple math, index, format/log message, test assertion value) or already named by a constant/field/keyword arg."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

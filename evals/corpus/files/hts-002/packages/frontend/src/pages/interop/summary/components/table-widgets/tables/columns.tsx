@@ -1,0 +1,195 @@
+import type { KnownInteropBridgeType, ProjectId } from '@l2beat/shared-pure'
+import { formatCurrency } from '@l2beat/shared-pure'
+import { type ColumnHelper, createColumnHelper } from '@tanstack/react-table'
+import type { BasicTableRow } from '~/components/table/BasicTable'
+import { EM_DASH } from '~/consts/characters'
+import { InteropNoDataBadge } from '~/pages/interop/components/InteropNoDataBadge'
+import { TopTokensCell } from '~/pages/interop/components/tokens/TopTokensCell'
+import { formatNetFlow } from '~/pages/interop/utils/formatNetFlow'
+import type { InteropSelection } from '~/pages/interop/utils/types'
+import type { TokenData } from '~/server/features/layer2s/interop/types'
+import type { TopItems } from '~/server/features/layer2s/interop/utils/getTopItems'
+import type {
+  BurnAndMintProtocolEntry,
+  LockAndMintProtocolEntry,
+  NonMintingProtocolEntry,
+} from './getBridgeTypeEntries'
+import { InteropNameCell } from './InteropNameCell'
+
+export type NonMintingProtocolRow = NonMintingProtocolEntry & BasicTableRow
+export type LockAndMintProtocolRow = LockAndMintProtocolEntry & BasicTableRow
+export type BurnAndMintProtocolRow = BurnAndMintProtocolEntry & BasicTableRow
+
+const nonMintingColumnHelper = createColumnHelper<NonMintingProtocolRow>()
+const lockAndMintColumnHelper = createColumnHelper<LockAndMintProtocolRow>()
+const burnAndMintColumnHelper = createColumnHelper<BurnAndMintProtocolRow>()
+
+function getCommonColumns<
+  T extends {
+    iconUrl: string
+    slug: string
+    name: string
+    shortName: string | undefined
+    description: string | undefined
+    subgroup: { name: string; iconUrl: string } | undefined
+    isAggregate: boolean | undefined
+  },
+>(columnHelper: ColumnHelper<T>) {
+  return [
+    columnHelper.display({
+      id: 'logo',
+      cell: (ctx) => (
+        <img
+          className="min-h-[20px] min-w-[20px]"
+          src={ctx.row.original.iconUrl}
+          width={20}
+          height={20}
+          alt={`${ctx.row.original.name} logo`}
+        />
+      ),
+      meta: {
+        headClassName: 'w-0',
+        cellClassName: 'lg:pr-1.5!',
+      },
+      size: 28,
+      enableHiding: false,
+    }),
+    columnHelper.accessor((row) => row.shortName ?? row.name, {
+      header: 'Name',
+      cell: (ctx) => <InteropNameCell {...ctx.row.original} />,
+      meta: {
+        cellClassName: 'whitespace-normal md:pl-2!',
+        headClassName: 'text-2xs md:pl-2!',
+      },
+    }),
+  ]
+}
+
+function getLast24hVolumeColumn<T extends { volume: number }>(
+  columnHelper: ColumnHelper<T>,
+) {
+  return columnHelper.accessor((row) => row.volume, {
+    header: 'Last 24h\nvolume',
+    cell: (ctx) => {
+      if (!ctx.row.original.volume) return EM_DASH
+      return (
+        <span className="font-medium text-label-value-15">
+          {formatCurrency(ctx.row.original.volume, 'usd')}
+        </span>
+      )
+    },
+    meta: {
+      align: 'right',
+      headClassName: 'text-2xs text-right',
+      tooltip:
+        'The total USD value of all token transfers completed in the past 24 hours.',
+    },
+  })
+}
+
+function getTokensByVolumeColumn<
+  T extends {
+    tokens: TopItems<TokenData>
+    id: ProjectId
+    name: string
+    slug: string
+    iconUrl: string
+  },
+>(
+  columnHelper: ColumnHelper<T>,
+  type: KnownInteropBridgeType,
+  apiSelection: InteropSelection,
+) {
+  return columnHelper.accessor((row) => row.tokens, {
+    header: 'Tokens\nby volume',
+    meta: {
+      cellClassName: '!pr-0',
+      headClassName: 'text-2xs',
+      tooltip:
+        'Tokens involved in transfers over the past 24 hours, ranked by total transfer volume. For each transfer, value is counted towards both the source and the destination token.',
+    },
+    cell: (ctx) => (
+      <TopTokensCell
+        topItems={ctx.row.original.tokens}
+        type={type}
+        apiSelection={apiSelection}
+        showNetMintedValueColumn={type === 'lockAndMint'}
+        protocol={{
+          id: ctx.row.original.id,
+          name: ctx.row.original.name,
+          slug: ctx.row.original.slug,
+          iconUrl: ctx.row.original.iconUrl,
+        }}
+      />
+    ),
+  })
+}
+
+export function getNonMintingColumns(apiSelection: InteropSelection) {
+  return [
+    ...getCommonColumns(nonMintingColumnHelper),
+    getLast24hVolumeColumn(nonMintingColumnHelper),
+    nonMintingColumnHelper.accessor('averageValueInFlight', {
+      header: 'Last 24h avg.\nin-flight value',
+      invertSorting: true,
+      meta: {
+        align: 'right',
+        headClassName: 'text-2xs',
+        tooltip:
+          'The average USD value of funds in transit at any given second over the past 24 hours.',
+      },
+      cell: (ctx) => {
+        if (ctx.row.original.averageValueInFlight === undefined)
+          return <InteropNoDataBadge />
+        return (
+          <span className="font-medium text-label-value-15">
+            {formatCurrency(ctx.row.original.averageValueInFlight, 'usd')}
+          </span>
+        )
+      },
+    }),
+    getTokensByVolumeColumn(nonMintingColumnHelper, 'nonMinting', apiSelection),
+  ]
+}
+
+export function getLockAndMintColumns(apiSelection: InteropSelection) {
+  return [
+    ...getCommonColumns(lockAndMintColumnHelper),
+    getLast24hVolumeColumn(lockAndMintColumnHelper),
+    lockAndMintColumnHelper.accessor('netMintedValue', {
+      header: 'Last 24h net\nminted value',
+      meta: {
+        align: 'right',
+        headClassName: 'text-2xs',
+        tooltip:
+          "The USD value of tokens minted through the protocol minus the USD value of tokens that were bridged back, or burned. It represents the net USD value added to the protocol's total value locked.",
+      },
+      cell: (ctx) => {
+        if (ctx.row.original.netMintedValue === undefined)
+          return <InteropNoDataBadge />
+        return (
+          <span className="font-medium text-label-value-15">
+            {formatNetFlow(ctx.row.original.netMintedValue)}
+          </span>
+        )
+      },
+    }),
+    getTokensByVolumeColumn(
+      lockAndMintColumnHelper,
+      'lockAndMint',
+      apiSelection,
+    ),
+  ]
+}
+
+export function getBurnAndMintColumns(apiSelection: InteropSelection) {
+  return [
+    ...getCommonColumns(burnAndMintColumnHelper),
+    getLast24hVolumeColumn(burnAndMintColumnHelper),
+    getTokensByVolumeColumn(
+      burnAndMintColumnHelper,
+      'burnAndMint',
+      apiSelection,
+    ),
+  ]
+}

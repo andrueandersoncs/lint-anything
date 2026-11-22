@@ -5,8 +5,8 @@ select: |
   bun "$EVAL_STEPS/tests.ts" names |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "The test name is vague, numbered, or only names the function under test without stating the scenario and expected behavior the test body checks."
+  "false": "The test name clearly describes the situation exercised and expected outcome, or is not a test."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

@@ -5,8 +5,8 @@ select: |
   bun "$EVAL_STEPS/functions.ts" --min-lines 8 |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "The function mixes high-level domain orchestration calls with inline low-level mechanics (byte/string parsing, regexes, raw SQL, manual HTTP headers) that should be behind a helper."
+  "false": "The function stays at one consistent level of detail — either entirely high-level orchestration or a focused low-level function."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

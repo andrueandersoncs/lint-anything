@@ -1,12 +1,12 @@
 ---
 # Each run of comment lines with the line after it.
 select: |
-  rg --json -U -P '^(?:[ \t]*(?://|#|/\*|\*).*\n)+.*' --hidden -g '*.{ts,tsx,js,jsx,py,go}' |
-    jq -c 'select(.type == "match") | (.data.lines.text | rtrimstr("\n")) as $t | {id: "\(.data.path.text):\(.data.line_number)", path: .data.path.text, lines: [.data.line_number, .data.line_number + ($t | split("\n") | length) - 1], text: $t}' |
+  rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
+  bun "$EVAL_STEPS/comments.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "The comment merely narrates what the immediately following code obviously does, or directly contradicts what the following code actually does."
+  "false": "The comment explains why/constraints/intent, or is a public API doc comment, license header, or tool directive."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

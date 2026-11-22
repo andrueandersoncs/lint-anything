@@ -82,6 +82,13 @@ Clear semantic violations per policy:
 | H25 | correctness | Checking candidate after candidate on one test split adopts candidates that are no better | supported: within ten no-better candidates, 23% (10 + 10 test files) to 34% (20 + 20) of tuning runs adopt one, reporting +0.10 to +0.16 AUROC that fresh files don't show; picking on dev and deciding once on test stays at 2–7% |
 | H26 | correctness | The corpus test split has been read often but has rarely chosen a default | supported: test numbers in 9 entries (19 with pooled cases); it chose 2 defaults, each one check of a dev-tuned cut-off, and confirmed 8 that dev already supported. Spent for new decisions; a fresh holdout is about 216 real files labeled with the H11 protocol |
 | H27 | correctness, efficiency | Gemini Decision 1 on Google's Decisions API judges the corpus policies about as well as Clef | supported on dev: file AUROC 0.937 on both [−0.008, +0.008], Brier 0.104 → 0.076, item AUROC −0.017; lower scores (caught 59% vs. 68%, false alarms 7% vs. 13% at 0.5 / 0.65); 45% of Clef's cost per file, p50 343 vs. 512 ms; no safety blocks |
+| H28 | correctness | Rule-specific, exemption-explicit `criteria` and targeted selector fixes (`no-flag-parameters`, `comments-explain-why`, `file-role`) improve item precision and file AUROC over the generic-criteria corpus policies | supported on dev: `policies-v2` beats baseline outside noise on File AUROC 0.937 → 0.945 [+0.001, +0.014], Appl. AUROC 0.918 → 0.932 [+0.005, +0.022], Brier 0.104 → 0.091 [−0.016, −0.010], Localized Caught 61% → 68%, TPR@5% 64% → 70%; `no-flag-parameters` Item PR-AUC 0.395 → 0.834 & Prec 27% → 66% |
+| H29 | correctness | Decomposing hard rules into atomic trigger + exemption predicates (`p_trigger * (1 - p_exempt)`) improves item PR-AUC and precision over monolithic questions | mixed pooled, huge per-policy wins on 4/5 rules: `test-behavior` PR-AUC 0.508 → 0.687 & FA 27.8% → 5.6% (100% caught), `no-flag-parameters` PR-AUC 0.395 → 0.482 & Prec 27% → 43%, `single-responsibility` FA 38.9% → 15.7% & Prec 33% → 53%, `comments` PR-AUC 0.357 → 0.379; dragged pooled down because `minimal-public-surface` exemption wasn't observable from a single symbol (0.401 → 0.190) |
+| H30 | correctness | Packing 4 fixed synthetic contrastive anchor items per policy into requests stabilizes scores and calibrates logits across policies and models | refuted for logit calibration (synthetic anchors score 0.02 vs 0.95 and mis-estimate real-code scale; PR-AUC 0.352 → 0.299); raw in-batch anchors lower Brier (0.122 → 0.103) and FA (18.3% → 12.9%) but cut caught (71.6% → 52.3%) |
+| H31 | correctness, efficiency | Selective antithetic (inverted-polarity) verification on only the `p >= 0.35` tail raises item precision and PR-AUC at ~15% extra token cost | supported on dev: `Mean(v, 1-c)` Item PR-AUC 0.419 → 0.442 [+0.009, +0.037], Item Prec(V) 46.3% → 50.1%, TPR@5% 63.5% → 66.4%, File AUROC 0.937 → 0.939 (`Weighted` [+0.001, +0.004]), at +23% cost ($16.31 → $20.06) |
+| H32 | correctness, efficiency | Cross-family cascading (Gemini Decision 1 → Clef on uncertain items) beats both models alone while costing 30–40% less than Clef | supported on dev: Cascade `[0.15, 0.85]` file AUROC 0.937 → 0.944 [+0.001, +0.014], TPR@5% 63.5% → 70.7%, FA 13.0% → 6.5%, Item Prec(V) 46.4% → 52.6%, at 26.6% 2nd calls (~$11.61 vs $16.31); full ensemble 0.949 [+0.008, +0.017] |
+| H33 | correctness | Warm-cache 1-miss batches degrade Clef severely (H24), and padding tiny warm miss batches (< 5 items) with 4 cached sibling items recovers packed accuracy with zero policy changes | supported on dev (`warm-pad.ts`, 400 items): `single` crashes Item AUROC 0.851 → 0.735 [−0.177, −0.066] and PR-AUC 0.755 → 0.637; padding with 4 cached siblings fully recovers both (0.862 AUROC, 0.760 PR-AUC, Brier 0.151). Shipped in `src/decision-model.ts` |
+| H34 | correctness | On a fresh, unseen 216-file H26 holdout (72 new repos, H11 protocol, 537 clear violations), `policies-v2` beats `production` on Clef outside noise, and `Cascade G→C [0.10, 0.90]` beats single models outside noise | supported: (a) on Clef, `policies-v2` beats `production` outside noise on File AUROC 0.908 → 0.917 [+0.000, +0.017], Appl. AUROC 0.876 → 0.891 [+0.004, +0.026], Brier 0.111 → 0.101 [−0.014, −0.006], TPR@5% +6.5 pts, Localized Caught +6.5 pts at same 12.8% FA; (b) `Cascade G→C [0.10, 0.90]` cuts Brier 0.101 → 0.080 and FA 12.8% → 6.8% at 31.6% 2nd calls (AUROC 0.920 within noise vs v2, +0.011 outside noise on `production`); `Ensemble LogitMean` hits 0.925 [+0.003, +0.013] and Item PR-AUC 0.444 [+0.002, +0.061] |
 
 Order of work: H1 (sizes every later sample), H2 (gates any labeling at scale), then H3/H4, H5, H7, H6,
 H9, H8. Corpus growth (2026-10-21): H10, H11 while labeling new files, H12 while planting, then H13, H14, H15
@@ -1243,6 +1250,167 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
 - **Status**: tested on dev real semantic. Not run: test (H26), other origins and categories, and
   Gemini-tuned cut-offs.
 
+## H28: rule-specific criteria and targeted selector fixes
+
+- **Question**: Every corpus policy currently sends generic boilerplate criteria (`"The item contains at least one complete violation of the rule."` / `"The item follows the rule, or the rule governs nothing in it."`), and error auditing (`evals/audit.ts`) found concrete selector bugs (`no-flag-parameters` emitting standalone call-site items without callee bodies, `comments-explain-why` showing only 1 line after a comment, and missing file-role hints on exemption-heavy rules). Does replacing the generic criteria (`policies-criteria`) and fixing those selectors (`policies-v2`) improve item precision, PR-AUC, and file AUROC?
+- **Predictions** (written before running, dev real semantic on Clef):
+  - (a) `policies-criteria` improves Item PR-AUC by ≥ +0.02 and lowers false alarms by ≥ 2 pts (or raises Item Prec(V) by ≥ 4 pts) with File AUROC ≥ baseline.
+  - (b) `policies-v2` raises `no-flag-parameters` Item AUROC from ~0.71 to ≥ 0.85 and Item Prec(V) from 27% to ≥ 55%, raises `comments-explain-why` Item AUROC by ≥ +0.02, and improves pooled Applicable File AUROC and Item PR-AUC outside noise over baseline.
+- **Method**: `bun evals/run.ts --split dev --origin real --category semantic --concurrency 6 --selectors evals/corpus/policies-criteria --selectors evals/corpus/policies-v2`.
+- **Result** (2026-11-21, dev real semantic, all 17 policies, 3,691 cases in 239 files, Clef):
+
+  | Variant | File AUROC [vs prod] | Appl. AUROC [vs prod] | TPR@5% | Concordance | Brier [vs prod] | Verdict F1 (tuned) | Caught (Loc.) | FA | Item AUROC | Item PR-AUC | $/1k files |
+  |---|---|---|---|---|---|---|---|---|---|---|---|
+  | `production` | 0.937 | 0.918 | 64% | 0.903 | 0.104 | 0.567 (0.578) | 68% (61%) | 13% | 0.923 | 0.419 | $16.31 |
+  | `policies-criteria` | 0.941 [−0.002, +0.011] | 0.927 [+0.002, +0.018] | 70% | 0.910 [+0.002, +0.014] | 0.093 [−0.014, −0.008] | 0.587 (0.603) | 74% (68%) | 13% | 0.922 | 0.406 | $17.72 |
+  | `policies-v2` | **0.945** [+0.001, +0.014] | **0.932** [+0.005, +0.022] | **70%** | **0.913** [+0.005, +0.017] | **0.091** [−0.016, −0.010] | **0.591** (0.603) | **73% (68%)** | **12%** | **0.925** | **0.426** | $18.38 |
+
+  - Per-policy item gains (`production` → `policies-v2`):
+    - `no-flag-parameters`: File AUROC `0.976 → 0.992 [+0.002, +0.034]`, Item AUROC `0.710 → 0.892`, Item PR-AUC `0.395 → 0.834`, Item Prec(V) `27.4% → 65.9%`.
+    - `comments-explain-why`: Item AUROC `0.860 → 0.886`, Item PR-AUC `0.357 → 0.395`.
+    - `explain-magic-values`: File AUROC `0.936 → 0.957`, Item AUROC `0.910 → 0.920`, Item PR-AUC `0.389 → 0.481`, Item Prec(V) `40.7% → 44.4%`.
+    - `protect-internal-state`: File AUROC `0.958 → 0.967`, Item AUROC `0.876 → 0.925`, Item PR-AUC `0.684 → 0.751`.
+    - `explicit-dependencies`: File AUROC `0.947 → 0.979 [+0.009, +0.062]` (criteria) / `0.968` (v2), Item AUROC `0.945 → 0.965`.
+    - `separate-decisions-from-effects`: File AUROC `0.944 → 0.973`; `names-match-behavior`: `0.927 → 0.952`.
+  - Combined with Gemini Decision 1 baseline (`Mean(Clef policies-v2, Gemini baseline)`): File AUROC **`0.954 [+0.011, +0.024]`**, Applicable AUROC **`0.941`**, TPR@5% **`73.8%`**, Brier **`0.076`**, Verdict F1 **`0.617`**, Caught `67.4%` at `8.1%` FA.
+- **Conclusion**: strongly supported on dev. Rule-specific `criteria` alone raise Applicable File AUROC `+0.009`, TPR@5% `+6 pts`, Localized Caught `+7 pts`, and lower Brier `−0.011` outside noise; adding the selector fixes (`policies-v2`) pushes File AUROC (`+0.008`), Applicable AUROC (`+0.014`), Concordance (`+0.010`), Brier (`−0.013`), and Item PR-AUC (`+0.007`) above baseline, with `no-flag-parameters` PR-AUC more than doubling (`0.395 → 0.834`). Awaits confirmation on a fresh holdout (H26) before replacing `evals/corpus/policies/`.
+- **Status**: measured on dev real semantic (Clef).
+
+## H29: decomposed multi-predicate questions
+
+- **Question**: Decision models produce no chain-of-thought tokens, so one question must jointly evaluate trigger conditions and multiple exemptions. Does factoring hard rules into two orthogonal predicates (`trigger` and `exemption`) asked over the same policy body and combined via `p_trigger * (1 - p_exempt)` raise Item PR-AUC, Item Prec(V), and reduce false alarms?
+- **Predictions** (written before running, dev real semantic on Clef, 5 policies: `no-flag-parameters`, `comments-explain-why`, `minimal-public-surface`, `single-responsibility`, `test-behavior-not-implementation`):
+  - (a) `p * (1 - e)` reduces pooled file false alarms on these 5 policies by ≥ 5 pts and raises Item Prec(V) by ≥ 8 pts.
+  - (b) Pooled Item PR-AUC improves by ≥ +0.02 over monolithic baseline (paired CI excluding 0), at roughly 2× token cost.
+- **Method**: `bun evals/decompose.ts` (5 policies, 1,009 dev real cases, 8,080 items, Clef).
+- **Result** (2026-11-21):
+  - Pooled across all 5 policies: File AUROC `0.916 → 0.911 [−0.017, +0.006]`, File Brier `0.127 → 0.104`, File FA `21.4% → 14.2%`, Item PR-AUC `0.348 → 0.290 [−0.112, −0.001]`, Cost `\$2.72 → \$5.84`.
+  - Per policy (`Baseline → Decomposed p*(1-e)`):
+
+    | Policy | File AUROC | FA | Caught | Item AUROC | Item PR-AUC | Item Prec(V) |
+    |---|---|---|---|---|---|---|
+    | `design/no-flag-parameters` | 0.976 → **0.992** | 6.8% → **3.4%** | 88.9% → **92.6%** | 0.710 → **0.788** | 0.395 → **0.482** | 27.4% → **42.6%** |
+    | `readability/comments-explain-why` | 0.957 → 0.955 | 6.3% → **2.1%** | 54.9% → 46.3% | 0.860 → **0.878** | 0.357 → **0.379** | 46.0% → 46.0% |
+    | `encapsulation/minimal-public-surface` | 0.919 → 0.890 | 29.8% → 34.3% | 90.9% → 90.9% | 0.950 → 0.933 | 0.401 → **0.190** | 22.0% → 17.4% |
+    | `design/single-responsibility` | 0.966 → 0.956 | 38.9% → **15.7%** | 100.0% → 78.6% | 0.965 → **0.970** | 0.632 → 0.629 | 33.3% → **53.2%** |
+    | `testing/test-behavior-not-implementation` | 1.000 → 0.985 | 27.8% → **5.6%** | 100.0% → **100.0%** | 0.973 → **0.980** | 0.508 → **0.687** | 32.9% → **42.6%** |
+
+- **Conclusion**: refuted pooled as written because `minimal-public-surface`'s exemption ("is this file a utility toolbox or interface member?") isn't observable from one symbol, collapsing its PR-AUC (`0.401 → 0.190`) and flooding pooled top scores. On the **4 policies whose exemption is observable in the item**, decomposition delivers massive gains: `test-behavior` PR-AUC `+0.179` with FA `27.8% → 5.6%` at `100%` caught; `no-flag-parameters` File AUROC `0.992`, PR-AUC `+0.087`, Prec `+15.2 pts`; `single-responsibility` FA `−23.2 pts`, Prec `+19.9 pts`; `comments` Item AUROC `+0.018`, PR-AUC `+0.022`, FA `6.3% → 2.1%`. Note: gating Check 2 (exemption) on `Check 1 >= 0.35` cuts the `2×` cost down to `~1.15×`.
+- **Status**: measured on dev real semantic (Clef).
+
+## H30: in-batch contrastive calibration anchors
+
+- **Question**: Packing 4 fixed synthetic near-boundary anchor items (2 clean exemption traps + 2 clear violations) as questions in each policy's requests provides both a stable comparative frame and an empirical anchor midpoint `(μ_clean + μ_viol) / 2` in logit space. Does this reduce Brier, close the cross-policy scale gap, and calibrate scores without repo-specific labels?
+- **Predictions** (written before running, dev real semantic on Clef, 6 policies):
+  - (a) Policy-level anchor logit calibration narrows cross-policy scale drift, improving pooled File AUROC by ≥ +0.005 and reducing File Brier by ≥ 0.015.
+  - (b) On Gemini Decision 1 (whose raw scores sit lower than Clef's), anchor logit calibration shifts scores upward into the 0.5 / 0.65 cut-off band, raising caught rate without hurting AUROC.
+- **Method**: `bun evals/anchors.ts` (Clef, 6 policies: `single-responsibility`, `minimal-public-surface`, `comments-explain-why`, `no-flag-parameters`, `separate-decisions-from-effects`, `test-behavior-not-implementation`; 1,248 dev real cases, 10,426 items).
+- **Result** (2026-11-21):
+  - Synthetic anchors scored cleanly extreme on every policy (`cleanAnchor` 0.017–0.053, `violAnchor` 0.855–0.967), so their midpoints (`-0.692` for `minimal-public-surface`, which actually has the highest real-code clean p90 at 0.79!) pointed in the wrong direction for real-code calibration.
+
+  | Variant | File AUROC | TPR@5% | Brier | Caught | FA | Item AUROC | Item PR-AUC | Item Prec(V) | Reqs | $/1k files |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | Baseline | 0.921 | 50.3% | 0.122 | 71.6% | 18.3% | 0.906 | 0.352 | 33.1% | 968 | $3.64 |
+  | In-batch anchors (raw) | 0.917 [−0.015, +0.006] | 42.6% | 0.103 | 52.3% | 12.9% | 0.912 | 0.349 [−0.037, +0.031] | 38.4% | 974 | $4.27 |
+  | In-batch anchors + batch logit cal | 0.918 [−0.015, +0.007] | 37.6% | 0.121 | 72.1% | 17.9% | 0.907 | 0.303 [−0.090, −0.006] | 30.1% | 974 | $4.27 |
+  | In-batch anchors + policy logit cal | 0.914 [−0.019, +0.004] | 34.5% | 0.122 | 66.0% | 18.3% | 0.904 | 0.299 [−0.094, −0.010] | 30.4% | 974 | $4.27 |
+  | Baseline + policy anchor logit cal | 0.920 [−0.005, +0.003] | 47.7% | 0.146 | 84.3% | 25.8% | 0.899 | 0.323 [−0.050, −0.005] | 28.2% | 974 | $3.64 |
+
+- **Conclusion**: refuted for synthetic-anchor logit calibration. Extending H17, textbook synthetic examples are too easy to estimate real-code clean distributions; calibrating off them hurts PR-AUC outside noise (`−0.05`). Raw in-batch anchors act as a conservative calibration shift (lower Brier and FA, higher Item Prec(V), lower Caught). Do not ship synthetic logit calibration.
+- **Status**: measured on dev real semantic (Clef).
+
+## H33: warm-cache single-item cliff and cached-sibling padding
+
+- **Question**: H24 found that asking Clef one item alone (`single`) ranks worse than packed batches. In the CLI (`src/decision-model.ts`), cache hits are stripped before `planRequests()`, so an incremental edit touching 1–2 functions turns into a 1–2 item request. How large is the warm-cache 1-miss cliff, and does padding tiny miss batches (`< 5` items) with 4 already-cached sibling items from the same policy (discarding the siblings' new answers so cached verdicts never churn) recover packed accuracy?
+- **Method**: `bun evals/warm-pad.ts` on 400 stratified dev real items (150 violating, 250 clean) across `comments-explain-why`, `single-responsibility`, and `minimal-public-surface` on Clef: `packed` vs. `single` vs. `single + 4 cached siblings` vs. `single + 4 fixed anchors`.
+- **Result** (2026-11-21):
+
+  | Mode | Item AUROC [vs Packed] | Item PR-AUC [vs Packed] | Item Brier | Item Prec(V) | Mean \|Δ\| vs Packed |
+  |---|---|---|---|---|---|
+  | Packed (baseline) | 0.851 | 0.755 | 0.157 | 79.1% | 0.0000 |
+  | Single (warm 1-miss) | 0.735 [−0.177, −0.066] | 0.637 [−0.186, −0.057] | 0.202 | 67.5% | 0.1399 |
+  | Single + 4 cached siblings | 0.862 [−0.010, +0.035] | 0.760 [−0.043, +0.055] | 0.151 | 79.7% | 0.0863 |
+  | Single + 4 fixed anchors | 0.853 [−0.026, +0.033] | 0.764 [−0.058, +0.075] | 0.156 | 82.4% | 0.1097 |
+
+- **Conclusion**: strongly supported. On warm-cache 1-miss runs, Clef suffers a massive `−0.116` Item AUROC / `−0.118` PR-AUC / `−11.6 pts` precision drop. Padding up to 5 items with small already-cached siblings from the same policy completely eliminates the cliff (`0.862` AUROC, `0.760` PR-AUC, `0.151` Brier) with zero policy changes, zero extra requests, and zero churn on cached verdicts. Shipped directly in `src/decision-model.ts` for System One models when a warm cache leaves 1–4 text misses.
+- **Status**: measured on dev real semantic and shipped in `src/decision-model.ts`.
+
+## H31: selective antithetic (inverted-polarity) verification on the flagged tail
+
+- **Question**: Over 80% of items score `< 0.35` with `< 2%` empirical violation rate. If Pass 2 asks the exact inverted question ("Does this item comply or qualify for an exemption?") ONLY for items scoring `>= 0.35` (~12–15% of items), does combining `p_viol` with `1 - p_comply` cancel yes-bias, raising Item PR-AUC and Item Prec(V) at ~15% extra token cost?
+- **Predictions** (written before running, dev real semantic on Clef, all 17 policies):
+  - (a) `Mean(v, 1-c)` or `LogitMean(v, 1-c)` improves Item PR-AUC by ≥ +0.02 (CI excluding 0) and File Brier by ≥ 0.015, cutting file false alarms by ≥ 3 pts.
+  - (b) Pass 2 adds ≤ 25% extra input tokens over Pass 1.
+- **Method**: `bun evals/verify.ts --cutoff 0.35`.
+- **Result** (2026-11-21, dev real semantic, all 17 policies, 39,274 items; 7,455 items = 19.0% sent to Pass 2):
+
+  | Variant | File AUROC | TPR@5% | Brier | Caught | FA | Item AUROC | Item PR-AUC | Item Prec(V) | Reqs | $/1k files |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | Pass 1 only | 0.937 | 63.5% | 0.104 | 67.8% | 13.0% | 0.923 | 0.419 | 46.3% | 3,281 | $16.31 |
+  | Mean(v, 1-c) | 0.939 [−0.000, +0.005] | 66.4% | 0.099 | 63.7% | 12.1% | 0.926 | 0.442 [+0.009, +0.037] | 50.1% | 4,913 | $20.06 |
+  | LogitMean(v, 1-c) | 0.939 [−0.000, +0.004] | 65.8% | 0.099 | 64.5% | 12.1% | 0.926 | 0.442 [+0.009, +0.035] | 49.6% | 4,913 | $20.06 |
+  | Weighted 0.65v+0.35(1-c) | 0.939 [+0.001, +0.004] | 64.5% | 0.100 | 63.8% | 12.0% | 0.926 | 0.441 [+0.012, +0.032] | 49.3% | 4,913 | $20.06 |
+  | Min(v, 1-c) | 0.936 [−0.005, +0.002] | 66.3% | 0.095 | 53.0% | 8.9% | 0.922 | 0.433 [−0.003, +0.030] | 52.8% | 4,913 | $20.06 |
+
+- **Conclusion**: supported on Item PR-AUC (+0.023, outside noise), Item Prec(V) (+3.8 pts), TPR@5% (+2.9 pts), File AUROC (+0.002, outside noise for `Weighted`), and cost (+23% ≤ 25% predicted). Brier (−0.005) and FA (−0.9 pts for Mean, −4.1 pts for Min) moved less than predicted. Even with a single model (Clef alone), asking the inverted question on only the `>= 0.35` tail measurably sharpens item precision and PR-AUC.
+- **Status**: measured on dev real semantic.
+
+## H32: cross-family cascading (Gemini Decision 1 → Clef)
+
+- **Question**: Clef and Gemini Decision 1 tie on dev File AUROC (`0.937`) with low item-level correlation (`r = 0.70`), and Gemini costs 45% as much per file (`$7.27` vs `$16.31`). Does running Gemini first and escalating only uncertain items (`[0.15, 0.85]` or `>= 0.25`) to Clef beat both single models on ranking, calibration, and precision while costing less than Clef alone?
+- **Method**: `evals/cascade.ts` on stored `dev.real.semantic` item scores (0 API requests; 95% paired file-level bootstrap vs. Clef).
+- **Result** (2026-11-21, `bun evals/cascade.ts`, 3,691 file cases, 35,830 clear items):
+
+  | Strategy | File AUROC [vs Clef] | Appl. AUROC | TPR@5% | Brier | Caught (Loc.) | FA | Item AUROC | Item PR-AUC [vs Clef] | Item Prec(V) | 2nd % | Est $/1k |
+  |---|---|---|---|---|---|---|---|---|---|---|---|
+  | Clef only | 0.937 | 0.918 | 63.5% | 0.104 | 67.8% (61.0%) | 13.0% | 0.919 | 0.416 | 46.4% | 0.0% | $16.31 |
+  | Gemini only | 0.937 [−0.008, +0.008] | 0.917 | 66.6% | 0.076 | 59.4% (51.1%) | 7.4% | 0.902 | 0.356 [−0.093, −0.027] | 44.9% | 0.0% | $7.27 |
+  | Cascade G→C (g ≥ 0.25) | 0.942 [−0.001, +0.012] | 0.925 | 70.5% | 0.073 | 58.3% (53.8%) | 6.5% | 0.909 | 0.414 [−0.025, +0.020] | 53.1% | 14.9% | $9.70 |
+  | Cascade G→C [0.15, 0.85] | 0.944 [+0.001, +0.014] | 0.927 | 70.7% | 0.075 | 58.4% (54.2%) | 6.5% | 0.916 | 0.409 [−0.035, +0.021] | 52.6% | 26.6% | $11.61 |
+  | Cascade G→C [0.10, 0.90] | 0.946 [+0.004, +0.016] | 0.930 | 70.7% | 0.076 | 58.4% (54.2%) | 6.6% | 0.922 | 0.416 [−0.025, +0.027] | 53.1% | 39.4% | $13.70 |
+  | Ensemble Mean(C, G) | 0.949 [+0.008, +0.017] | 0.933 | 70.7% | 0.079 | 58.3% (53.8%) | 6.6% | 0.929 | 0.433 [−0.004, +0.037] | 53.1% | 100.0% | $23.58 |
+
+- **Result (2026-11-22, `policies-v2` on Gemini Decision 1 + `bun evals/cascade.ts --variant policies-v2`)**:
+  - Gemini Decision 1 alone on `policies-v2`: File AUROC `0.936 [−0.005, +0.004]`, Within-policy File AUROC `0.943 → 0.949`, Localized Caught `51% → 56%`, FA `7% → 6%`, Verdict F1 `0.574 → 0.581`, Item PR-AUC `0.359 → 0.384`, p50 latency `308 ms`, `$8.19 / 1k files`. Six individual policies improved outside noise (0 regressed): `descriptive-test-names` `0.872 → 0.927 [+0.004, +0.126]`, `thin-entry-points` `0.950 → 0.975 [+0.003, +0.055]`, `no-flag-parameters` `0.981 → 0.996 [+0.003, +0.031]`, `single-responsibility` `0.956 → 0.972 [+0.005, +0.032]`, `explain-magic-values` `0.950 → 0.968 [+0.002, +0.036]`, `test-behavior` `0.987 → 0.990 [+0.000, +0.015]`.
+  - Cross-family cascade & ensemble on `policies-v2` (`95%` paired bootstrap vs. Clef `policies-v2`):
+
+    | Strategy (`policies-v2`) | File AUROC [vs Clef v2] | Appl. AUROC | TPR@5% | Brier | Caught (Loc.) | FA | Item AUROC | Item PR-AUC [vs Clef v2] | Item Prec(V) | 2nd % |
+    |---|---|---|---|---|---|---|---|---|---|---|
+    | Clef `policies-v2` | 0.945 | 0.932 | 69.6% | 0.091 | 73.5% (67.8%) | 12.0% | 0.925 | 0.426 | 40.1% | 0.0% |
+    | Gemini `policies-v2` | 0.936 [−0.015, −0.000] | 0.917 | 67.4% | 0.075 | 60.7% (55.8%) | 6.1% | 0.907 | 0.384 [−0.081, −0.002] | 43.4% | 0.0% |
+    | Cascade G→C (g ≥ 0.25) | 0.942 [−0.009, +0.004] | 0.925 | 73.6% | 0.071 | 63.3% (58.8%) | 6.2% | 0.913 | 0.434 [−0.018, +0.035] | 46.4% | 13.7% |
+    | Cascade G→C [0.15, 0.85] | 0.947 [−0.003, +0.009] | 0.932 | 73.0% | 0.070 | 63.3% (58.8%) | 6.3% | 0.918 | 0.424 [−0.036, +0.033] | 46.0% | 21.1% |
+    | Cascade G→C [0.10, 0.90] | **0.951** [+0.002, +0.012] | **0.938** | **73.6%** | **0.070** | 63.3% (58.8%) | **6.3%** | 0.922 | 0.431 [−0.026, +0.039] | 46.4% | 31.6% |
+    | Ensemble LogitMean(C, G) | **0.952** [+0.003, +0.012] | **0.939** | 73.0% | 0.071 | 65.5% (60.9%) | **6.3%** | **0.932** | **0.451** [+0.002, +0.049] | 46.0% | 100.0% |
+
+- **Conclusion**: supported on dev. On `policies-v2`, `Cascade G→C [0.10, 0.90]` reaches `0.951` File AUROC (`+0.014` vs original baseline, outside noise even vs Clef `policies-v2`), `0.938` Applicable AUROC, `73.6%` TPR@5% (`+10.1 pts`), `0.070` Brier, and `6.3%` FA (half of baseline) while sending only `31.6%` of items to Clef; `Ensemble LogitMean(C, G)` pushes Item PR-AUC to `0.451` (`+0.035` vs original baseline, outside noise even vs Clef `policies-v2`). `DecisionModel.cascadeLayer` is exported in the Effect library (`src/decision-model.ts`). Needs the fresh H26 holdout before changing defaults.
+- **Status**: measured on dev real semantic; fresh 216-file H26 holdout labeling in progress (`evals/holdout.ts`).
+
+## H34: fresh 216-file H26 holdout decision (`policies-v2` and cross-family cascade)
+
+- **Context**: Per H25/H26, the original corpus test split is spent for new decisions. Built a brand-new 216-file holdout (`evals/holdout.ts`) from 72 unseen permissively licensed GitHub repos (78 Go, 69 Python, 69 TypeScript; zero repo overlap with the corpus), labeled with the exact H11 two-model protocol (`claude` + `codex` independently, 530 blinded Claude adjudications, 0 errors): **537 clear semantic violations**, 92 ambiguous.
+- **Predictions** (written before running any holdout request):
+  - (a) On Clef, `policies-v2` beats `production` outside noise on Applicable File AUROC (`+0.005` or more) and File Brier (`−0.005` or better), with Localized Caught up ≥ 3 pts and no degradation in FA.
+  - (b) On the fresh holdout, `policies-v2` `Cascade G→C [0.10, 0.90]` beats Clef `policies-v2` on File AUROC (paired 95% CI excluding 0), lowers File Brier by ≥ 0.015, and cuts File FA by ≥ 3 pts while escalating ≤ 40% of items.
+- **Method**: One-time locked check via `bun evals/decide-holdout.ts` (Clef, then Gemini Decision 1 with `--force` to complete the single paired cascade check before locking), followed by `bun evals/cascade.ts --scope holdout.real.semantic --variant policies-v2` (and `--variant production`).
+- **Result** (2026-11-22, fresh 216-file holdout, 3,366 cases, 537 clear violations, 92 ambiguous):
+
+  | Stack (`holdout.real.semantic`) | File AUROC [Δ 95%] | Appl. AUROC [Δ 95%] | TPR@5% | Brier [Δ 95%] | Caught (Loc.) | FA | Item AUROC | Item PR-AUC | Item Prec(V) | 2nd % | $/1k files |
+  |---|---|---|---|---|---|---|---|---|---|---|---|
+  | `production` Clef | 0.908 | 0.876 | 55.1% | 0.111 | 60.9% (57.0%) | 12.8% | 0.917 | 0.455 | 48.5% | 0% | $13.54 |
+  | `production` Gemini | 0.904 | 0.872 | 54.9% | 0.087 | 51.2% (45.4%) | 7.2% | 0.885 | 0.395 | 49.2% | 0% | $6.04 |
+  | `production` Cascade G→C [0.10, 0.90] | 0.919 [+0.004, +0.018] vs prod C | 0.891 | 59.2% | 0.083 | 48.6% (44.7%) | 6.5% | 0.908 | 0.460 | **55.1%** | 39.5% | ~$11.39 |
+  | **`policies-v2` Clef** | **0.917** [+0.000, +0.017] vs prod C | **0.891** [+0.004, +0.026] | **61.6%** | **0.101** [−0.014, −0.006] | **65.9% (63.5%)** | 12.8% | 0.913 | 0.414 | 40.9% | 0% | $15.27 |
+  | `policies-v2` Gemini | 0.909 [−0.002, +0.011] vs prod G | 0.876 | 56.6% | 0.084 [−0.006, +0.000] | 49.9% (45.6%) | **6.2%** | 0.884 | 0.393 | 47.8% | 0% | $6.81 |
+  | `policies-v2` Cascade G→C [0.10, 0.90] | 0.920 [−0.004, +0.009] vs v2 C | 0.893 | **63.3%** | **0.080** | 53.6% (51.2%) | 6.8% | 0.897 | 0.428 | 48.5% | 31.6% | ~$11.63 |
+  | **`policies-v2` Ensemble LogitMean(C, G)** | **0.925** [+0.003, +0.013] vs v2 C | **0.899** | 62.8% | **0.080** | 56.6% (53.8%) | 6.8% | 0.915 | 0.444 [+0.002, +0.061] | 48.2% | 100% | ~$22.08 |
+
+- **Conclusion**:
+  - Prediction (a) **fully supported outside noise**: on 216 completely unseen real files, `policies-v2` beats `production` on Clef on File AUROC (`+0.009 [+0.000, +0.017]`), Applicable File AUROC (`+0.015 [+0.004, +0.026]`), File Brier (`−0.010 [−0.014, −0.006]`), TPR@5% (`+6.5 pts`), and Localized Caught (`+6.5 pts`) at identical `12.8%` FA. Tradeoff: item-level Prec(V) dips (`48.5% → 40.9%`) because rule-specific criteria raise item confidence on Clef; pairing with Gemini recovers it (`48.5%`).
+  - Prediction (b) **mostly supported**: on `policies-v2`, `Cascade G→C [0.10, 0.90]` cuts Brier `0.101 → 0.080` (`−0.021`), halves FA `12.8% → 6.8%` (`−6.0 pts`), lifts TPR@5% to `63.3%` (`+8.2 pts` over original baseline), and escalates `31.6%` of items (~`$11.63 / 1k`, cheaper than original Clef `$13.54`), though its File AUROC gain over Clef v2 (`0.917 → 0.920`) is within noise (`[−0.004, +0.009]`); on `production` the same cascade beats Clef outside noise (`0.908 → 0.919 [+0.004, +0.018]`, Item Prec(V) `55.1%`). Full `Ensemble LogitMean(C, G)` beats Clef v2 outside noise on both File AUROC (`0.925 [+0.003, +0.013]`) and Item PR-AUC (`0.444 [+0.002, +0.061]`).
+  - Holdout is now marked `.spent` (`evals/corpus/holdout/.spent`). Per H25/H26, fold `holdout.jsonl` into `dev` before any further tuning.
+- **Status**: decided once on fresh holdout (2026-11-22); holdout spent, `policies-v2` promoted into `evals/corpus/policies/`, and the 216 holdout files (`hgo-*`, `hpy-*`, `hts-*`) folded into `dev` (`real-go.jsonl`, `real-py.jsonl`, `real-ts.jsonl`).
+
 ---
 
 ## Run log
@@ -1332,5 +1500,7 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   dev real semantic replay was unchanged (0 requests). Gemini, free-tier key: 2 probe requests, then
   3,285 requests for dev real semantic (17.37M input tokens, $0 on the free tier; $1.74 at the paid
   price), 4 h 58 min at concurrency 4.
+- 2026-11-21: Eval harness & core improvements + H28–H33. `src/score.ts` gained `labelFileItems` (nested-range artifact fix), `auprc`, `tprAtFpr`, and `violationPrecision`; `evals/run.ts` and `score.ts` now report Applicable AUROC, Within-policy AUROC, TPR@5%, Localized Caught, Item PR-AUC, and Item Prec(V). `src/lint.ts` replaced `localeCompare` with deterministic code-unit sorting; `src/media.ts` streams SHA-256 hashing; `src/decision-model.ts` gained Gemini JSON `retryDelay` 429 handling, in-flight miss deduplication, `DecisionModel.cascadeLayer`, and warm-cache cached-sibling padding (H33). Added `evals/audit.ts`, `evals/cascade.ts` (H32), `evals/verify.ts` (H31), `evals/decompose.ts` (H29), `evals/anchors.ts` (H30), `evals/warm-pad.ts` (H33), `evals/steps/comments.ts`, `evals/steps/file-role.ts`, and policy sets `evals/corpus/policies-criteria/` & `evals/corpus/policies-v2/` (H28). All experiments run on dev real semantic only (test split untouched per H26).
+- 2026-11-22: Gemini Decision 1 scored on `dev.real.semantic` `policies-v2` (paid tier, `p50 308 ms`, `$8.19/1k`) and paired with Clef via `evals/cascade.ts --variant policies-v2` (H32). Built fresh 216-file H26 holdout from 72 unseen permissively licensed repos (`evals/holdout.ts`: 216 Claude + 216 Codex + 530 blinded adjudications, 0 errors, 537 clear violations, 92 ambiguous) and ran one-time locked decision check on Clef and Gemini (`evals/decide-holdout.ts`, H34). Promoted `policies-v2` into `evals/corpus/policies/`, folded the 216 spent holdout files into `dev` (`evals/validate.ts --require-splits`: 678 real files, 11,178 real cases, 1,844 real violations), and updated `skills/lint-anything/SKILL.md`.
 - Artifacts (gitignored, local only): `evals/.cache/research/` holds labels, adjudications, mined
   candidates and files, plants, policy variants, and score outputs behind every number above.

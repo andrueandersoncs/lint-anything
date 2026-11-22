@@ -3,10 +3,11 @@
 select: |
   rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
   bun "$EVAL_STEPS/module-exports.ts" |
+  bun "$EVAL_STEPS/file-role.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "An exported or public symbol is evidently an internal implementation helper used only by other members of this file, with no sign external callers need it."
+  "false": "The symbol is part of the module public API, the module is a utility toolbox of independent helpers, or the member is required by an interface or framework."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

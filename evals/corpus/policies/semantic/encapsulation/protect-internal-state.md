@@ -3,10 +3,11 @@
 select: |
   rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
   bun "$EVAL_STEPS/module-state.ts" |
+  bun "$EVAL_STEPS/file-role.ts" |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "Code exposes internal mutable state directly (public mutable field, returning an internal collection/object by reference, or storing a caller mutable object uncopied) risking owner invariants."
+  "false": "The value is immutable, copied, a read-only view, or part of a plain data record/DTO/config struct with no invariants."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

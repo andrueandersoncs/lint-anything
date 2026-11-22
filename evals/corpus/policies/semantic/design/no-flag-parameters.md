@@ -2,11 +2,11 @@
 # Each function with a positional boolean parameter (with its calls), and each call passing it a bare boolean.
 select: |
   rg --files --hidden --sort path -g '*.{ts,tsx,js,jsx,py,go}' |
-  bun "$EVAL_STEPS/functions.ts" --flags |
+  bun "$EVAL_STEPS/functions.ts" --flags --no-call-items |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "A positional boolean parameter makes the function choose between two different jobs or execution modes."
+  "false": "The boolean is stored or forwarded as plain data, lives in an options object or keyword-only argument, or is not a mode-switching flag."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

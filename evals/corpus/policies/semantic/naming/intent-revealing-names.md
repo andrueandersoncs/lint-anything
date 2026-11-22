@@ -5,8 +5,8 @@ select: |
   bun "$EVAL_STEPS/functions.ts" --outer --module --names |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "A non-trivial variable, function, parameter, or type uses a generic placeholder name (data, info, obj, item, tmp, res, val, handle, process, helper) where a domain-specific name is obvious."
+  "false": "Names reflect domain meaning, or short/generic names are loop counters, tiny-scope conventions (i, err, ctx), external API names, or genuinely generic code."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

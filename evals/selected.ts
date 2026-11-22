@@ -8,7 +8,7 @@ import { itemQuestion } from "../src/lint.ts"
 import { parsePolicy, type Policy } from "../src/policy.ts"
 import { runSelector } from "../src/select.ts"
 import { type makeClient, model } from "./client.ts"
-import { itemLabel, reachedRanges, type Scored, targetScore } from "../src/score.ts"
+import { labelFileItems, reachedRanges, type Scored, targetScore } from "../src/score.ts"
 import { type Case, type Corpus, corpusDirectory, ruleText, scoreLabel } from "./corpus.ts"
 
 /** Policies whose selectors pick the items to judge, each standing in for the corpus policy `original`. */
@@ -93,9 +93,11 @@ export const selectItems = async (
     const gold = fileCase.gold.label === "violates" ? fileCase.gold.lines ?? [] : []
     for (const entry of selected) {
       if (entry.lines === undefined) throw new Error(`${policy.name}: eval selectors must emit lines (${entry.id})`)
-      const label = itemLabel(target, entry)
-      items.push({ id: `${fileCase.id}:${entry.id}`, file: fileCase.file, policy, gold: { label, note: "" }, entry })
     }
+    const labels = labelFileItems(target, selected)
+    selected.forEach((entry, index) => {
+      items.push({ id: `${fileCase.id}:${entry.id}`, file: fileCase.file, policy, gold: { label: labels[index]!, note: "" }, entry })
+    })
     goldRanges += gold.length
     coveredRanges += reachedRanges(gold, selected)
   }

@@ -5,8 +5,8 @@ select: |
   bun "$EVAL_STEPS/functions.ts" --named --docs --chunk 40 --context --effects |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "The function name lies about what it does: a query-like name (get/is/has/find/compute/validate) performs hidden side effects, or the body does a substantially different/larger job than the name states."
+  "false": "The function behavior matches its name, or a getter only performs benign caching or lazy initialization."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

@@ -5,8 +5,8 @@ select: |
   bun "$EVAL_STEPS/tests.ts" behavior |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "The test couples to internals by asserting on private fields, internal helper call sequences/counts, or mocking parts of the unit under test itself."
+  "false": "The test verifies public behavior, or only mocks/stubs true external boundaries (network, database, clock, filesystem)."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

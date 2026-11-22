@@ -5,8 +5,8 @@ select: |
   bun "$EVAL_STEPS/functions.ts" --min-lines 20 --context --classes 3 |
   bun "$EVAL_STEPS/present.ts"
 criteria:
-  "true": "The item contains at least one complete violation of the rule."
-  "false": "The item follows the rule, or the rule governs nothing in it."
+  "true": "The function or class combines multiple unrelated jobs that would change for different reasons (e.g. parsing, business rules, persistence, formatting) in one unit."
+  "false": "The unit has one coherent responsibility, or is a coordinating function that delegates well-named steps in sequence."
 ---
 Each question shows one item with its location and any context. Decide whether that item contains at least one violation of the rule below.
 Return a calibrated probability that the answer is yes.

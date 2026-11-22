@@ -82,7 +82,7 @@ Clear semantic violations per policy:
 | H25 | correctness | Checking candidate after candidate on one test split adopts candidates that are no better | supported: within ten no-better candidates, 23% (10 + 10 test files) to 34% (20 + 20) of tuning runs adopt one, reporting +0.10 to +0.16 AUROC that fresh files don't show; picking on dev and deciding once on test stays at 2–7% |
 | H26 | correctness | The corpus test split has been read often but has rarely chosen a default | supported: test numbers in 9 entries (19 with pooled cases); it chose 2 defaults, each one check of a dev-tuned cut-off, and confirmed 8 that dev already supported. Spent for new decisions; a fresh holdout is about 216 real files labeled with the H11 protocol |
 | H27 | correctness, efficiency | Gemini Decision 1 on Google's Decisions API judges the corpus policies about as well as Clef | supported on dev: file AUROC 0.937 on both [−0.008, +0.008], Brier 0.104 → 0.076, item AUROC −0.017; lower scores (caught 59% vs. 68%, false alarms 7% vs. 13% at 0.5 / 0.65); 45% of Clef's cost per file, p50 343 vs. 512 ms; no safety blocks |
-| H28 | correctness, efficiency | Julia-1, with requests laid out for its 256-token question, judges the corpus policies well enough to be an offline alternative to Clef, and its layout beats the rule as the question | open: layout, limits, and eval shape done; planning checked (0.3% of dev items over its limit, 12× Clef's requests); no Julia answer yet |
+| H28 | correctness, efficiency | Julia 2 (Supersonic Labs, open, 1.06B) judges the corpus policies about as well as Clef | open: format, limits, and media parts done; planning checked (no dev item over its 32,256-byte limit, 3,803 requests vs. 3,281); no Julia 2 answer yet |
 
 Order of work: H1 (sizes every later sample), H2 (gates any labeling at scale), then H3/H4, H5, H7, H6,
 H9, H8. Corpus growth (2026-10-21): H10, H11 while labeling new files, H12 while planting, then H13, H14, H15
@@ -1244,49 +1244,46 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
 - **Status**: tested on dev real semantic. Not run: test (H26), other origins and categories, and
   Gemini-tuned cut-offs.
 
-## H28: Julia-1 against Clef
+## H28: Julia 2 against Clef
 
-- **Question**: Supersonic Labs' Julia-1 ([SupersonicLabs/Julia-1](https://huggingface.co/SupersonicLabs/Julia-1);
-  144.3M parameters, a fine-tune of mmBERT-small, Apache 2.0, runs on a CPU; no hosted API yet) is a
-  System One model that encodes each question alone: `noul question: <instructions>` and its options
-  `false: <criteria.false>` and `true: <criteria.true>`, cut to 256 tokens (48 per option), then the state,
-  up to the server's budget of at most 8,192 tokens (`buildSequence` in the `julia-system-one` 1.0.4 npm
-  package, a third-party build that says it matches the reference runtime; read 2026-11-22). Production's
-  item text in the question would be cut after about 150 tokens, so lint-anything now lays requests out
-  for it (format `julia`): state = policy body, a blank line, the item's text; instructions =
-  `criteria.true`; one request per placed state; at most 8,192 bytes, so nothing is truncated. Does Julia-1
-  judge the corpus policies as well as Clef, and does that layout beat the alternative of Julia's own
-  examples, the text judged as the state and the policy body as the question (`rule-question`)?
+- **Question**: Supersonic Labs announced Julia 1.5 and Julia 2 on 2026-11-21
+  ([post](https://x.com/supersonicai/status/2124246485931876596)). Julia 2
+  ([SupersonicLabs/Julia-2](https://huggingface.co/SupersonicLabs/Julia-2), card and runtime read
+  2026-11-22) is a 1.06B-parameter decision model on a hybrid linear-attention trunk (Apache 2.0): text,
+  images, and speech; 32,768 tokens tested; the System One request and answer format of Julia 1 and 1.5.
+  It reads the state once and answers each question as a branch of it, the way lint-anything packs a
+  policy's items. Its runtime renders each question as `### State`, the state, `### Question (noul)`, the
+  instructions, `### Options` (`A. true: …`, `B. false: …`), `### Answer:`, and reads the answer at the last
+  token; an over-long one-sequence question is cut and marked `truncated`, and a shared state must leave
+  512 tokens free. lint-anything now speaks it (format `julia-2`, picked by the model's name): the same
+  bodies and packing as System One, at most 32,256 bytes per request, media as `image_url` /
+  `input_audio` parts of the state, `truncated` answers unanswered. With the same cut-offs, does it judge
+  the corpus policies as well as Clef?
 - **Planning check** (2026-11-22, no model needed; the corpus selectors run, nothing sent): dev real
-  semantic, 3,691 file cases, 39,274 items. Production plans 39,138 requests (82.4 MB of bodies) for
-  Julia against 3,281 (51.5 MB) for Clef; 136 items (0.3%) are over 8,192 bytes, 34 of the 1,577 violating
-  ones: separate-decisions-from-effects 21, intent-revealing-names 21, thin-entry-points 20,
-  explicit-dependencies 20, consistent-abstraction-level 20, single-responsibility 19,
-  test-behavior-not-implementation 8, cohesive-modules 5, no-flag-parameters 2, the other 8 policies 0.
-  They are `inconclusive` and score `null`. Clef sends every item.
-- **Predictions** (written before any Julia answer; Clef's dev real semantic numbers from H27):
-  - (a) Julia ranks below Clef: file AUROC between 0.70 and 0.88 (Clef 0.937), item AUROC below 0.85
-    (Clef 0.919). It is a 144M encoder tuned on short typed decisions (73.15% on its vendor's suite),
-    not on code.
-  - (b) Its scores run high: the `julia-system-one` README reports `noul` "leans true" on a 12-case
-    fixture, so the mean compliant item score is above Clef's 0.197 and false alarms at 0.5 / 0.65 above
-    Clef's 13%.
-  - (c) `rule-question` ranks below production (paired item AUROC interval below 0), most on the
-    policies with the longest bodies (intent-revealing-names, 991 bytes), whose rule is cut.
-  - (d) On a 4-core CPU, request latency p50 is under 500 ms.
-- **Method**: serve Julia-1 locally behind a System One endpoint (Supersonic Labs' Python runtime is in
-  the model's repository) with its full 8,192-token window, then score both shapes and compare production
-  with Clef's H27 scores:
+  semantic, 3,691 file cases, 39,274 items. Julia 2 plans 3,803 requests (52.0 MB of bodies) against Clef's
+  3,281 (51.5 MB); the smaller byte limit splits more groups. No item is over 32,256 bytes, so every item
+  Clef judges, Julia 2 judges.
+- **Predictions** (written before any Julia 2 answer; Clef's dev real semantic numbers from H27):
+  - (a) Julia 2 ranks below Clef: file AUROC between 0.85 and 0.93 (Clef 0.937), paired interval
+    excluding 0 on the low side. Its card reports 77.2% on held-out business decisions and accuracy that
+    falls with state length (63% at 2K tokens to 53% at 32K on one buried fact); the corpus is code.
+  - (b) At the CLI's 0.5 / 0.65 cut-offs at least 10% of item verdicts differ from Clef's, so it needs its
+    own cut-offs (as Gemini did, H27).
+  - (c) No answer is marked `truncated` with the runtime's default 32,768-token window.
+  - (d) On a 4-thread CPU, its card's 0.8 s per question (on a 183-token state) puts the sweep (39,274
+    questions) at 9 hours or more; on a GPU, minutes.
+- **Method**: serve Julia 2's runtime (`julia2.Runtime`, from the model repository) behind an HTTP endpoint
+  that takes `{model, state, questions}` and returns `predict_questions`' result, as Julia 1.5's runtime
+  server does at `POST /v1/predict`; then
   ```
-  LINT_ANYTHING_ENDPOINT=http://127.0.0.1:8080/v1/systemone LINT_ANYTHING_MODEL=julia-1 \
-    bun evals/run.ts --split dev --origin real --category semantic --concurrency 4 production rule-question
+  LINT_ANYTHING_ENDPOINT=http://127.0.0.1:8080/v1/predict LINT_ANYTHING_MODEL=julia-2 \
+    bun evals/run.ts --split dev --origin real --category semantic --concurrency 4
   bun evals/engines.ts evals/results/dev.real.semantic/production.items.jsonl \
-    evals/results/dev.real.semantic.model-julia-1/production.items.jsonl
+    evals/results/dev.real.semantic.model-julia-2/production.items.jsonl
   ```
-  `engines.ts` needs Clef's H27 result files. It measures agreement over the items both models answered,
-  so Julia's 136 oversized items (`null`) drop out of it; the file-level comparison uses `production.jsonl`.
-- **Status**: open. The layout, limits, `rule-question` shape, and planning check are done; no Julia-1
-  answer has been scored.
+  The same `engines.ts` on the file results (`production.jsonl`); it needs Clef's H27 result files.
+- **Status**: open. The format, limits, media parts, and planning check are done; no Julia 2 answer has
+  been scored.
 
 ---
 

@@ -1,9 +1,9 @@
 import { Effect, Redacted, Result } from "effect"
 import { configuredModel, configuredTarget, declinesAll, decodeReply, keyHeader, type Model } from "../src/decision-model.ts"
 
-/** One reply: each question's probability of yes, or `declined`, by question id. */
+/** One reply: each question's probability of yes, or `declined`, or `truncated` (Julia 2), by question id. */
 export interface Reply {
-  readonly answers: ReadonlyMap<string, number | "declined">
+  readonly answers: ReadonlyMap<string, number | "declined" | "truncated">
   /** Input tokens the model reported for the original request; 0 when it reported none. */
   readonly inputTokens: number
   /** Round-trip time of the original (uncached) request. */

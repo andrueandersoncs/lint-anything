@@ -140,7 +140,8 @@ export interface ItemRun {
 
 /**
  * Judges `items` with `plan`, one group per selector run (one policy on one file), as the CLI groups a
- * policy's items when linting that file. Oversized items, and items the model declines, score `null`.
+ * policy's items when linting that file. Oversized items, and items the model declines or truncates, score
+ * `null`.
  */
 export const scoreItems = async (ask: ReturnType<typeof makeClient>, items: ReadonlyArray<ItemCase>, plan: Plan): Promise<ItemRun> => {
   const groups = new Map<string, Array<ItemCase>>()
@@ -164,7 +165,7 @@ export const scoreItems = async (ask: ReturnType<typeof makeClient>, items: Read
       for (const { id, index } of request.questions) {
         const answer = reply.answers.get(id)
         if (answer === undefined) throw new Error(`no answer for ${id}`)
-        scores.set(group[index]!, answer === "declined" ? null : answer)
+        scores.set(group[index]!, typeof answer === "number" ? answer : null)
       }
     }))
   }))

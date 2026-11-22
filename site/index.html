@@ -483,8 +483,8 @@ written as `#123`, `ABC-123`, or a full issue URL.</code></pre>
             <p>
               Files in <code>media</code> are shown to the model with the text,
               where it takes them: Gemini Decision and clef-omni see images,
-              audio, and video; OpenAI Decisions and Clef see images; Julia-1
-              reads text only.
+              audio, and video; Julia 2 sees images and hears speech;
+              OpenAI Decisions and Clef see images.
             </p>
             <div class="code-block">
               <pre><code data-highlight="policy">select: |
@@ -816,7 +816,7 @@ bun .claude/skills/lint-anything/scripts/score.js todo-has-issue candidate.md</c
               <h3>Connect a decision model</h3>
               <p>
                 Any System One, OpenAI Decisions, or Gemini Decisions endpoint,
-                such as a LiteLLM proxy, OpenAI, Google, or Julia-1 on your own
+                such as a LiteLLM proxy, OpenAI, Google, or Julia 2 on your own
                 machine. With no endpoint set, lint-anything asks Clef on
                 Workers AI with your Cloudflare account ID and an API token. Bun
                 loads <code>.env</code> and <code>.env.local</code> on its own.

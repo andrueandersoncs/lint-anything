@@ -106,7 +106,7 @@ const judgeNorms = async (comments: ReadonlyArray<RawComment>) => {
     if (!reply.cached) inputTokens += reply.inputTokens
     for (const { id, value } of request.questions) {
       const answer = reply.answers.get(id)
-      if (answer === undefined || answer === "declined") throw new Error(`no answer for ${id}`)
+      if (typeof answer !== "number") throw new Error(`no answer for ${id}`)
       scores[value] = answer
     }
   }))

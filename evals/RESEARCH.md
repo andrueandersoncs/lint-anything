@@ -1274,10 +1274,10 @@ semantic policies, 95% paired bootstrap over files. Scripts and per-case scores:
   - (c) `rule-question` ranks below production (paired item AUROC interval below 0), most on the
     policies with the longest bodies (intent-revealing-names, 991 bytes), whose rule is cut.
   - (d) On a 4-core CPU, request latency p50 is under 500 ms.
-- **Method**: serve Julia-1 locally with its full window, then score both shapes and compare production
+- **Method**: serve Julia-1 locally behind a System One endpoint (Supersonic Labs' Python runtime is in
+  the model's repository) with its full 8,192-token window, then score both shapes and compare production
   with Clef's H27 scores:
   ```
-  JULIA_MAX_LEN=8192 npx julia-system-one@1.0.4 --host 127.0.0.1 --port 8080   # in another shell
   LINT_ANYTHING_ENDPOINT=http://127.0.0.1:8080/v1/systemone LINT_ANYTHING_MODEL=julia-1 \
     bun evals/run.ts --split dev --origin real --category semantic --concurrency 4 production rule-question
   bun evals/engines.ts evals/results/dev.real.semantic/production.items.jsonl \
